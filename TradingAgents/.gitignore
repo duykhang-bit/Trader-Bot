@@ -1,0 +1,30 @@
+# Environment & secrets
+.env
+*.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data & cache
+*.db
+*.sqlite
+.tradingagents/
+
+# Temp scripts tạo trong session này
+run_btc.py
+check_slx.py
+check_slx_crypto.py
+check_sol.py
+
+# OS
+.DS_Store
+Thumbs.db

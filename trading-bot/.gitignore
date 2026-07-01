@@ -1,4 +1,4 @@
-# Secrets
+# Environment & secrets
 .env
 config.py
 *.key
@@ -15,6 +15,7 @@ env/
 # Logs & data
 logs/
 *.log
+*.json
 
 # OS
 .DS_Store
