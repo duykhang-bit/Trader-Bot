@@ -121,6 +121,20 @@ def find_optimal_entry(exchange, symbol: str, side: str, config) -> dict:
         entry_price = round(entry_price, _price_dec(price))
         improvement = abs(price - entry_price) / price * 100
 
+        # SAFETY: đảm bảo entry đúng hướng
+        # LONG: entry phải <= price (mua rẻ hơn)
+        # SHORT: entry phải >= price (bán đắt hơn)
+        if side == "LONG" and entry_price > price:
+            entry_price = round(price * 0.998, _price_dec(price))  # 0.2% dưới
+            method = "safety_cap_long"
+            confluence_score = 1
+        elif side == "SHORT" and entry_price < price:
+            entry_price = round(price * 1.002, _price_dec(price))  # 0.2% trên
+            method = "safety_cap_short"
+            confluence_score = 1
+
+        improvement = abs(price - entry_price) / price * 100
+
         # Nếu improvement quá nhỏ (<0.03%) hoặc confluent=1 → market
         use_limit = improvement >= 0.03 and confluence_score >= 2
 
@@ -425,8 +439,10 @@ def _find_confluence(levels: dict, side: str, price: float) -> Tuple[float, int,
 
     if not valid:
         # Không có level nào đúng hướng → dùng offset nhỏ
-        offset = price * 0.002
-        entry = price - offset if side == "LONG" else price + offset
+        if side == "LONG":
+            entry = price * 0.998  # 0.2% dưới price
+        else:
+            entry = price * 1.002  # 0.2% trên price
         return entry, 1, "offset_only"
 
     # Clustering: nhóm các level trong 0.3% range
