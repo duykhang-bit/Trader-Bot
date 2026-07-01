@@ -472,7 +472,7 @@ def api_state():
         } for sym, sp in splits.items()],
     })
 
-    # Add entry targets - luôn tính, dùng liq data nếu có, fallback ±1.5%
+    # Add entry targets - dùng smart_entry tìm giá entry tối ưu
     entry_targets = {}
     liq_tracker = _state.get("liq_tracker") if _state else None
     for sym in watchlist:
@@ -487,11 +487,11 @@ def api_state():
                 below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=1000)
             except Exception:
                 pass
-        # Fallback
+        # Fallback: dùng ±1% estimate (sẽ được smart_entry override khi đặt lệnh thật)
         if above is None:
-            above = round(p * 1.015, 2 if p >= 100 else 5)
+            above = round(p * 1.01, 2 if p >= 100 else 5)
         if below is None:
-            below = round(p * 0.985, 2 if p >= 100 else 5)
+            below = round(p * 0.99, 2 if p >= 100 else 5)
         entry_targets[sym] = {"short_entry": above, "long_entry": below}
 
     resp = jsonify({
@@ -625,32 +625,34 @@ def api_place_order():
         if qty * price < 5.0:
             qty = _round_qty(symbol, 5.0 / price + 0.01, price)
 
-        _exchange.set_leverage(symbol, leverage)
-        order_side = "BUY" if side == "LONG" else "SELL"
-        _exchange.place_market_order(symbol, order_side, qty)
+        # Smart entry: tìm giá tốt hơn từ chart 1m
+        from smart_entry import find_optimal_entry, place_smart_order
+        entry_info = find_optimal_entry(_exchange, symbol, side, _config)
 
-        # Place SL if provided
-        close_side = "SELL" if side == "LONG" else "BUY"
+        # Override SL/TP nếu user nhập
         if sl > 0:
-            _exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+            entry_info["sl"] = sl
         if tp > 0:
-            _exchange.place_take_profit_order(symbol, close_side, qty, tp)
+            entry_info["tp"] = tp
+
+        result = place_smart_order(_exchange, symbol, side, qty, entry_info, _config)
 
         with _lock:
             _state["trade_log"].append({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": symbol, "side": side,
-                "entry": price, "sl": sl, "tp": tp,
+                "entry": result["price"], "sl": entry_info["sl"], "tp": entry_info["tp"],
                 "qty": qty, "status": "OPEN",
-                "note": "manual_web"
+                "note": f"web_{result['type'].lower()}"
             })
 
         sl_tp_msg = ""
-        if sl > 0: sl_tp_msg += f" SL=${sl:.4f}"
-        if tp > 0: sl_tp_msg += f" TP=${tp:.4f}"
+        if entry_info["sl"]: sl_tp_msg += f" SL=${entry_info['sl']:.4f}"
+        if entry_info["tp"]: sl_tp_msg += f" TP=${entry_info['tp']:.4f}"
+        order_type = "LIMIT (chờ khớp)" if result["type"] == "LIMIT" else "MARKET"
 
-        logger.info(f"Manual order: {side} {symbol} qty={qty} ~${usdt} margin {leverage}x{sl_tp_msg}")
-        return jsonify({"ok": True, "msg": f"{side} {symbol} @ ${price:.4f} qty={qty} {leverage}x{sl_tp_msg}"})
+        logger.info(f"Smart order: {side} {symbol} qty={qty} {order_type}{sl_tp_msg}")
+        return jsonify({"ok": True, "msg": f"{side} {symbol} @ ${result['price']:.4f} [{order_type}] qty={qty}{sl_tp_msg}"})
 
     except Exception as e:
         logger.error(f"Manual order failed: {e}")

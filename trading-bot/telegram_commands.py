@@ -956,29 +956,25 @@ class TelegramCommandHandler:
         return self.state.get("_notifier")
 
     def _execute_trade_from_callback(self, signal: str, sl: float, tp: float, symbol: str):
-        """Thực thi lệnh sau khi user bấm xác nhận từ /trade"""
+        """Thực thi lệnh sau khi user bấm xác nhận từ /trade — dùng smart entry"""
         try:
             exchange = self._get_exchange()
             if not exchange:
                 self.send("❌ Không kết nối được exchange")
                 return
 
-            # Lấy giá thực tế lúc vào lệnh
-            price = exchange.get_mark_price(symbol)
+            from smart_entry import find_optimal_entry, place_smart_order
 
-            # Tính qty dựa trên risk
-            balance  = exchange.get_account_balance()
-            risk_amt = balance * getattr(self.config, "RISK_PER_TRADE", 0.02)
-            lev      = getattr(self.config, "LEVERAGE", 10)
+            # Tìm entry tối ưu từ 1m/5m chart
+            self.send(f"🔍 Phân tích chart 1m/5m tìm entry tối ưu...")
+            entry_info = find_optimal_entry(exchange, symbol, signal, self.config)
+
+            # Tính qty
+            lev = getattr(self.config, "LEVERAGE", 10)
             max_usdt = getattr(self.config, "MAX_ORDER_USDT", 15)
-            risk_dist = abs(price - sl)
-            qty = round(risk_amt * lev / price, _qty_decimals(price)) if risk_dist > 0 else 0.001
-
-            # Cap theo MAX_ORDER_USDT (margin tối đa)
-            max_qty = (max_usdt * lev) / price
-            qty = min(qty, max_qty)
+            price = entry_info["entry_price"]
+            qty = (max_usdt * lev) / price
             qty = round(qty, _qty_decimals(price))
-
             qty = max(qty, _min_qty(price))
 
             # Set leverage
@@ -987,43 +983,41 @@ class TelegramCommandHandler:
             except Exception:
                 pass
 
-            # Đặt lệnh
-            if signal == "LONG":
-                exchange.place_market_order(symbol, "BUY", qty)
-                # Đợi position được ghi nhận trước khi đặt SL/TP
-                import time as _t; _t.sleep(1)
-                try:
-                    exchange.place_stop_loss_order(symbol, "SELL", qty, sl)
-                except Exception as e:
-                    logger.warning(f"SL failed (will retry): {e}")
-                try:
-                    exchange.place_take_profit_order(symbol, "SELL", qty, tp)
-                except Exception as e:
-                    logger.warning(f"TP failed: {e}")
-            else:
-                exchange.place_market_order(symbol, "SELL", qty)
-                import time as _t; _t.sleep(1)
-                try:
-                    exchange.place_stop_loss_order(symbol, "BUY", qty, sl)
-                except Exception as e:
-                    logger.warning(f"SL failed (will retry): {e}")
-                try:
-                    exchange.place_take_profit_order(symbol, "BUY", qty, tp)
-                except Exception as e:
-                    logger.warning(f"TP failed: {e}")
+            # Đặt lệnh thông minh
+            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config)
 
-            rr = abs(tp - price) / abs(price - sl) if abs(price - sl) > 0 else 0
+            rr = abs(entry_info["tp"] - price) / abs(price - entry_info["sl"]) if abs(price - entry_info["sl"]) > 0 else 0
             notional = qty * price
+            improvement = entry_info["improvement_pct"]
+
+            if result["type"] == "LIMIT":
+                order_type_msg = f"📋 LIMIT ORDER (chờ khớp)\n💡 Tốt hơn market: <b>{improvement:.2f}%</b>"
+            else:
+                order_type_msg = f"⚡ MARKET ORDER (khớp ngay)"
+
+            # Levels chi tiết
+            levels_msg = ""
+            if entry_info.get("levels"):
+                lvl_parts = []
+                for name, val in entry_info["levels"].items():
+                    lvl_parts.append(f"{name}=${val:,.2f}")
+                levels_msg = "\n🔬 Levels: " + " | ".join(lvl_parts[:5])
 
             self.send(
                 f"🚀 <b>ĐÃ VÀO LỆNH {signal} — {symbol}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💵 Entry   : <b>${price:,.4f}</b>\n"
-                f"🛑 SL      : <b>${sl:,.4f}</b>  ({abs(price-sl)/price*100:.2f}%)\n"
-                f"🎯 TP      : <b>${tp:,.4f}</b>  ({abs(tp-price)/price*100:.2f}%)\n"
+                f"📊 Current : ${entry_info['current_price']:,.4f}\n"
+                f"🛑 SL      : <b>${entry_info['sl']:,.4f}</b>  ({abs(price-entry_info['sl'])/price*100:.2f}%)\n"
+                f"🎯 TP      : <b>${entry_info['tp']:,.4f}</b>  ({abs(entry_info['tp']-price)/price*100:.2f}%)\n"
                 f"📐 RR      : <b>1:{rr:.1f}</b>\n"
                 f"📦 Qty     : <b>{qty}</b>  (~${notional:,.2f} USDT)\n"
-                f"⚡ Leverage: <b>{lev}x</b>"
+                f"⚡ Leverage: <b>{lev}x</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{order_type_msg}\n"
+                f"🧠 Method  : {entry_info['method']}\n"
+                f"🎯 Confluence: <b>{entry_info.get('confluence_score', 0)}/7</b>"
+                f"{levels_msg}"
             )
 
         except Exception as e:
