@@ -988,6 +988,43 @@ if __name__ == "__main__":
     # Liq strategy thread
     t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
     t5.start()
+
+    # AI Analyzer thread — chạy TradingAgents mỗi 4h
+    def ai_analyzer_loop():
+        import time as _t
+        AI_INTERVAL = getattr(config, "AI_ANALYSIS_INTERVAL_HOURS", 4) * 3600
+        # Chờ 60s sau khi bot start để ổn định
+        _t.sleep(60)
+        while state["running"]:
+            try:
+                from ai_analyzer import analyze_all
+                from scanner import WATCHLIST as _wl
+                logger.info("[AI Analyzer] Starting analysis...")
+                with lock:
+                    state["ai_analyzing"] = True
+                results = analyze_all(list(_wl))
+                with lock:
+                    state["ai_analyzing"] = False
+                    state["ai_last_run"] = datetime.now().strftime("%H:%M")
+                # Notify
+                summary = []
+                for sym, info in results.items():
+                    icon = "🟢" if info["bias"] == "LONG" else ("🔴" if info["bias"] == "SHORT" else "⚪")
+                    summary.append(f"{icon} {sym.replace('USDT','')}: {info['bias']}")
+                notifier.telegram.send(
+                    f"🧠 <b>AI Analysis Complete</b>\n" + "\n".join(summary)
+                )
+                logger.info(f"[AI Analyzer] Done: {results}")
+            except Exception as e:
+                logger.error(f"[AI Analyzer] Error: {e}")
+                with lock:
+                    state["ai_analyzing"] = False
+            _t.sleep(AI_INTERVAL)
+
+    if getattr(config, "AI_AUTO_ANALYSIS", True):
+        t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
+        t6.start()
+
     try:
         from telegram_commands import TelegramCommandHandler
         from notifier import NOTIFICATION_CONFIG

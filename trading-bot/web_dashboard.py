@@ -147,6 +147,11 @@ async function closePosition(sym) {
     await apiPost('/api/close', {symbol: sym});
     refresh();
 }
+async function runAI() {
+    toast('AI Analysis started... (2-5 min per coin)');
+    await apiPost('/api/ai/run');
+    refresh();
+}
 
 function renderDashboard(d) {
     // Bot status
@@ -163,7 +168,8 @@ function renderDashboard(d) {
             <button class="btn ${running ? 'btn-red' : 'btn-green'}" onclick="toggleBot()">
                 ${running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot'}
             </button>
-            <span style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}</span>
+            <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
+            <span style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
         </div>
     </div>`;
 
@@ -256,6 +262,14 @@ function renderDashboard(d) {
         }
         let pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 2 : 5);
 
+        // AI Bias
+        const aiBias = (d.ai_bias || {})[sym] || '';
+        let aiHtml = '';
+        if (aiBias) {
+            const aiCls = aiBias === 'LONG' ? 'green' : (aiBias === 'SHORT' ? 'red' : 'yellow');
+            aiHtml = `<div style="font-size:9px;margin-top:2px"><span class="${aiCls}">AI: <b>${aiBias}</b></span></div>`;
+        }
+
         // Entry targets from liq tracker
         const targets = (d.entry_targets || {})[sym] || {};
         let targetHtml = '';
@@ -272,6 +286,7 @@ function renderDashboard(d) {
             <div class="coin">${trendIcon} ${name}</div>
             <div class="price">${pStr}</div>
             <div style="font-size:11px;margin-top:2px" class="${trendCls}"><b>${trendText}</b></div>
+            ${aiHtml}
             ${targetHtml}
         </div>`;
     });
@@ -279,16 +294,27 @@ function renderDashboard(d) {
 
     // Signal details table
     if (d.candidates && d.candidates.length > 0) {
-        html += `<table><tr><th>Coin</th><th>Signal</th><th>Score</th><th>Price</th><th>RSI</th><th>Reason</th></tr>`;
+        html += `<table><tr><th>Coin</th><th>Signal</th><th>Score</th><th>Now</th><th>Entry Target</th><th>RSI</th><th>Reason</th></tr>`;
         d.candidates.forEach(c => {
             const filled = Math.round(c.score / 10);
             const bar = '&#x2588;'.repeat(filled) + '&#x2591;'.repeat(10 - filled);
             const pStr = c.price >= 1000 ? fmtUsd(c.price) : '$' + fmt(c.price, c.price >= 1 ? 3 : 5);
+            // Entry target: từ entry_targets
+            const targets = (d.entry_targets || {})[c.symbol] || {};
+            let entryStr = '-';
+            if (c.signal === 'LONG' && targets.long_entry) {
+                const ep = targets.long_entry >= 1000 ? fmtUsd(targets.long_entry) : '$'+fmt(targets.long_entry, targets.long_entry>=1?2:5);
+                entryStr = `<span style="color:#3fb950">${ep}</span>`;
+            } else if (c.signal === 'SHORT' && targets.short_entry) {
+                const ep = targets.short_entry >= 1000 ? fmtUsd(targets.short_entry) : '$'+fmt(targets.short_entry, targets.short_entry>=1?2:5);
+                entryStr = `<span style="color:#f85149">${ep}</span>`;
+            }
             html += `<tr>
                 <td><b>${c.symbol.replace('USDT','')}</b></td>
                 <td>${sideHtml(c.signal)}</td>
-                <td>${bar} ${fmt(c.score,0)}</td>
+                <td>${bar} <b>${fmt(c.score,0)}%</b></td>
                 <td>${pStr}</td>
+                <td><b>${entryStr}</b></td>
                 <td>${fmt(c.rsi,0)}</td>
                 <td style="font-size:11px;color:#8b949e;max-width:200px;overflow:hidden;text-overflow:ellipsis">${c.reason}</td>
             </tr>`;
@@ -446,41 +472,27 @@ def api_state():
         } for sym, sp in splits.items()],
     })
 
-    # Add entry targets from liq tracker
+    # Add entry targets - luôn tính, dùng liq data nếu có, fallback ±1.5%
     entry_targets = {}
-    try:
-        liq_tracker = _state.get("liq_tracker")
+    liq_tracker = _state.get("liq_tracker") if _state else None
+    for sym in watchlist:
+        p = prices.get(sym, 0)
+        if p <= 0:
+            continue
+        above = None
+        below = None
         if liq_tracker:
-            for sym in watchlist:
-                p = prices.get(sym, 0)
-                if p <= 0:
-                    continue
-                # Liq levels (rất thấp threshold cho testnet)
+            try:
                 above = liq_tracker.get_nearest_liq_above(sym, p, min_usd=1000)
                 below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=1000)
-
-                # Fallback: nếu chưa có liq data, dùng ±1.5% ATR estimate
-                if above is None:
-                    above = round(p * 1.015, 2 if p >= 100 else 4)
-                if below is None:
-                    below = round(p * 0.985, 2 if p >= 100 else 4)
-
-                entry_targets[sym] = {
-                    "short_entry": above,
-                    "long_entry": below,
-                }
-        else:
-            # Không có liq tracker → dùng ±1.5% làm estimate
-            for sym in watchlist:
-                p = prices.get(sym, 0)
-                if p <= 0:
-                    continue
-                entry_targets[sym] = {
-                    "short_entry": round(p * 1.015, 2 if p >= 100 else 4),
-                    "long_entry": round(p * 0.985, 2 if p >= 100 else 4),
-                }
-    except Exception:
-        pass
+            except Exception:
+                pass
+        # Fallback
+        if above is None:
+            above = round(p * 1.015, 2 if p >= 100 else 5)
+        if below is None:
+            below = round(p * 0.985, 2 if p >= 100 else 5)
+        entry_targets[sym] = {"short_entry": above, "long_entry": below}
 
     resp = jsonify({
         "running": s.get("running", False),
@@ -489,6 +501,8 @@ def api_state():
         "win_rate": wr, "total_trades": len(closed),
         "scan_no": s.get("scan_no", 0), "last_scan": s.get("last_scan", "--:--"),
         "liq_connected": s.get("liq_connected", False),
+        "ai_analyzing": s.get("ai_analyzing", False),
+        "ai_last_run": s.get("ai_last_run", ""),
         "open_positions": open_fmt, "prices": prices,
         "liq_data": liq_data, "trades_history": trades_fmt,
         "watchlist": watchlist,
@@ -507,8 +521,17 @@ def api_state():
             "filled1": sp.filled1, "filled2": sp.filled2,
         } for sym, sp in splits.items()],
         "entry_targets": entry_targets,
+        "ai_bias": _get_ai_bias_safe(),
     })
     return resp
+
+
+def _get_ai_bias_safe():
+    try:
+        from ai_analyzer import load_bias
+        return load_bias()
+    except Exception:
+        return {}
 
 
 @app.route("/api/toggle", methods=["POST"])
@@ -653,6 +676,30 @@ def _round_qty(symbol: str, qty: float, price: float) -> float:
         return round(qty, 0)
     else:                # very small
         return round(qty, 0)
+
+
+@app.route("/api/ai/run", methods=["POST"])
+def api_ai_run():
+    """Manually trigger AI analysis."""
+    import threading as _t
+
+    def _run():
+        try:
+            from ai_analyzer import analyze_all
+            with _lock:
+                wl = list(_state.get("_watchlist", []))
+                _state["ai_analyzing"] = True
+            analyze_all(wl)
+            with _lock:
+                _state["ai_analyzing"] = False
+                _state["ai_last_run"] = datetime.now().strftime("%H:%M")
+        except Exception as e:
+            logger.error(f"Manual AI analysis error: {e}")
+            with _lock:
+                _state["ai_analyzing"] = False
+
+    _t.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "msg": "AI Analysis started (2-5 min/coin)..."})
 
 
 @app.route("/api/close", methods=["POST"])
