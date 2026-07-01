@@ -726,9 +726,14 @@ def api_close_position():
         side_pos = "LONG" if amt > 0 else "SHORT"
         close_side = "SELL" if amt > 0 else "BUY"
         qty = abs(amt)
-
-        # Lấy giá đóng
+        # Round qty cho coin giá rẻ (Binance stepSize = 1 cho coin < $1)
         close_price = _exchange.get_ticker_price(symbol)
+        if close_price < 1:
+            qty = int(qty)  # integer only
+        elif close_price < 10:
+            qty = round(qty, 1)
+        else:
+            qty = round(qty, 3)
         _exchange.place_market_order(symbol, close_side, qty)
         _exchange.cancel_all_orders(symbol)
 
