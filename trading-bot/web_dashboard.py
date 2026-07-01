@@ -514,32 +514,6 @@ def api_state():
         "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
         "time":t.get("time","")} for t in recent]
 
-    return jsonify({
-        "running": s.get("running", False),
-        "balance": s.get("balance", 0),
-        "today_pnl": today_pnl, "total_pnl": total_pnl, "unrealized": unrealized,
-        "win_rate": wr, "total_trades": len(closed),
-        "scan_no": s.get("scan_no", 0), "last_scan": s.get("last_scan", "--:--"),
-        "liq_connected": s.get("liq_connected", False),
-        "open_positions": open_fmt, "prices": prices,
-        "liq_data": liq_data, "trades_history": trades_fmt,
-        "watchlist": watchlist,
-        "settings": {
-            "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
-            "leverage": getattr(_config, "LEVERAGE", 10),
-        },
-        "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
-                         "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
-                         "price": prices.get(c.symbol, 0)}
-                        for c in candidates[:10]] if candidates else [],
-        "split_positions_web": [{
-            "symbol": sym, "direction": sp.direction,
-            "entry1": sp.entry1, "entry2": sp.entry2,
-            "sl": sp.sl, "tp": sp.tp,
-            "filled1": sp.filled1, "filled2": sp.filled2,
-        } for sym, sp in splits.items()],
-    })
-
     # Add entry targets - dùng smart_entry tìm giá entry tối ưu
     entry_targets = {}
     liq_tracker = _state.get("liq_tracker") if _state else None
@@ -555,12 +529,12 @@ def api_state():
                 below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=1000)
             except Exception:
                 pass
-        # Fallback: dùng ±1% estimate (sẽ được smart_entry override khi đặt lệnh thật)
+        # Fallback: dùng ±1% estimate
         if above is None:
-            above = round(p * 1.01, 2 if p >= 100 else 5)
+            above = round(p * 1.01, 2 if p >= 100 else 6)
         if below is None:
-            below = round(p * 0.99, 2 if p >= 100 else 5)
-        entry_targets[sym] = {"short_entry": above, "long_entry": below}
+            below = round(p * 0.99, 2 if p >= 100 else 6)
+        entry_targets[sym] = {"short_entry": float(above), "long_entry": float(below)}
 
     resp = jsonify({
         "running": s.get("running", False),
@@ -811,8 +785,10 @@ def api_close_position():
         entry = float(p.get("entryPrice", 0))
         side_pos = "LONG" if amt > 0 else "SHORT"
         close_side = "SELL" if amt > 0 else "BUY"
-        # Dùng exact qty từ Binance — KHÔNG round
+        # Exact qty — convert to int if it's a whole number
         qty = abs(amt)
+        if qty == int(qty):
+            qty = int(qty)
         close_price = _exchange.get_ticker_price(symbol)
         _exchange.place_market_order(symbol, close_side, qty)
         _exchange.cancel_all_orders(symbol)

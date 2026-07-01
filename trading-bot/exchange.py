@@ -161,6 +161,9 @@ class BinanceFutures:
         Đặt lệnh market
         side: 'BUY' hoặc 'SELL'
         """
+        # Convert to int if whole number (Binance rejects "113295.0" for some coins)
+        if quantity == int(quantity):
+            quantity = int(quantity)
         result = self._post("/fapi/v1/order", {
             "symbol": symbol,
             "side": side,
