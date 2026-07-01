@@ -977,6 +977,7 @@ class TelegramCommandHandler:
             # Cap theo MAX_ORDER_USDT (margin tối đa)
             max_qty = (max_usdt * lev) / price
             qty = min(qty, max_qty)
+            qty = round(qty, _qty_decimals(price))
 
             qty = max(qty, _min_qty(price))
 
