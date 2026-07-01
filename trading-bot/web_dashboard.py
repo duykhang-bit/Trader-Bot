@@ -346,8 +346,34 @@ function renderDashboard(d) {
         });
         html += `</table>`;
     } else {
-        html += `<p style="color:#8b949e;font-size:12px">&#x23F3; Scanning... no signals above threshold yet</p>`;
+        html += `<p style="color:#8b949e;font-size:12px">&#x23F3; Bot đang quét mỗi 60s. Chưa có coin nào đủ score ≥ 70%</p>`;
+        html += `<p style="color:#8b949e;font-size:11px;margin-top:4px">Điều kiện vào lệnh: RSI + EMA + MACD + Volume + MTF trend phải đồng thuận</p>`;
     }
+
+    // Trigger prices - hiện rõ giá cụ thể bot sẽ vào lệnh
+    html += `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">`;
+    html += `<b style="font-size:12px;color:#58a6ff">&#x1F3AF; TRIGGER PRICES (bot vào lệnh khi giá đạt):</b>`;
+    html += `<table style="margin-top:8px"><tr><th>Coin</th><th style="color:#f85149">SHORT khi giá ≥</th><th style="color:#3fb950">LONG khi giá ≤</th><th>Current</th><th>Gap</th></tr>`;
+    d.watchlist.forEach(sym => {
+        const name = sym.replace('USDT','');
+        const p = d.prices[sym] || 0;
+        const targets = (d.entry_targets || {})[sym] || {};
+        const shortP = targets.short_entry || 0;
+        const longP = targets.long_entry || 0;
+        const shortStr = shortP >= 1000 ? fmtUsd(shortP) : '$'+fmt(shortP, shortP>=1?2:5);
+        const longStr = longP >= 1000 ? fmtUsd(longP) : '$'+fmt(longP, longP>=1?2:5);
+        const curStr = p >= 1000 ? fmtUsd(p) : '$'+fmt(p, p>=1?2:5);
+        const shortGap = shortP > 0 ? fmt((shortP-p)/p*100,2)+'%' : '-';
+        const longGap = longP > 0 ? fmt((p-longP)/p*100,2)+'%' : '-';
+        html += `<tr>
+            <td><b>${name}</b></td>
+            <td style="color:#f85149">${shortStr} <span style="font-size:10px;color:#8b949e">(+${shortGap})</span></td>
+            <td style="color:#3fb950">${longStr} <span style="font-size:10px;color:#8b949e">(-${longGap})</span></td>
+            <td>${curStr}</td>
+            <td style="font-size:10px;color:#8b949e">SHORT: ${shortGap} | LONG: ${longGap}</td>
+        </tr>`;
+    });
+    html += `</table></div>`;
 
     // Liq Strategy pending entries
     if (d.split_positions_web && d.split_positions_web.length > 0) {
@@ -785,15 +811,9 @@ def api_close_position():
         entry = float(p.get("entryPrice", 0))
         side_pos = "LONG" if amt > 0 else "SHORT"
         close_side = "SELL" if amt > 0 else "BUY"
+        # Dùng exact qty từ Binance — KHÔNG round
         qty = abs(amt)
-        # Round qty cho coin giá rẻ (Binance stepSize = 1 cho coin < $1)
         close_price = _exchange.get_ticker_price(symbol)
-        if close_price < 1:
-            qty = int(qty)  # integer only
-        elif close_price < 10:
-            qty = round(qty, 1)
-        else:
-            qty = round(qty, 3)
         _exchange.place_market_order(symbol, close_side, qty)
         _exchange.cancel_all_orders(symbol)
 
