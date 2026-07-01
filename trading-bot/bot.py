@@ -10,6 +10,8 @@ from exchange import BinanceFutures
 from indicators import calculate_atr, get_signal
 from scanner import scan_market, WATCHLIST, _klines_to_df
 from notifier import Notifier
+from liquidation_tracker import LiquidationTracker
+from liq_strategy import LiqStrategy, SplitPosition
 
 os.makedirs("logs", exist_ok=True)
 
@@ -48,6 +50,9 @@ state = {
     "trade_log":      [],
     "open_positions": [],   # Tất cả positions từ Binance API
     "running":        True,
+    # --- Liquidation strategy state ---
+    "split_positions": {},  # {symbol: SplitPosition} — các lệnh split đang chờ/mở
+    "liq_data":       {},   # {symbol: total_liq_usd} — để hiển thị dashboard
 }
 lock = threading.Lock()
 
@@ -83,6 +88,31 @@ def print_dashboard():
     print(row(f"🕐 {now}   💼 Balance: ${s['balance']:,.2f} USDT"))
     print(row(f"🔍 Scanning: {n_scanning} coins  |  Scan #{s['scan_no']}  ({s['last_scan']})"))
     print(row(f"{pnl_icon} PnL: ${total_pnl:+.2f}  |  ✅{wins}W ❌{loss}L  WR:{wr:.0f}%"))
+
+    # Liq tracker status
+    liq_data = s.get("liq_data", {})
+    liq_ws   = s.get("liq_connected", False)
+    ws_icon  = "🟢" if liq_ws else "🔴"
+    if liq_data:
+        liq_parts = [f"{sym.replace('USDT','')}:${v/1e6:.1f}M" for sym,v in list(liq_data.items())[:4]]
+        print(row(f"{ws_icon} LiqWS  |  " + "  ".join(liq_parts)))
+    else:
+        print(row(f"{ws_icon} LiqWS: {'connected, warming up...' if liq_ws else 'connecting...'}"))
+
+    # Split positions đang chờ/mở
+    splits = s.get("split_positions", {})
+    if splits:
+        print("╠" + "═"*W + "╣")
+        print("║" + " ⚡  SPLIT POSITIONS (LIQ STRATEGY) ".center(W) + "║")
+        for sym_sp, sp in splits.items():
+            f1 = "✅" if sp.filled1 else "⏳"
+            f2 = "✅" if sp.filled2 else "⏳"
+            icon = "🟢" if sp.direction == "LONG" else "🔴"
+            print(row(
+                f"{icon}{sym_sp:<10} {sp.direction:<5} "
+                f"E1:{f1}${sp.entry1:.2f}  E2:{f2}${sp.entry2:.2f}  "
+                f"SL:${sp.sl:.2f}  TP:${sp.tp:.2f}"
+            ))
     if closed_real:
         rr_color = "🟢" if avg_win > abs(avg_loss) else "🔴"
         print(row(f"{rr_color} Avg Win: ${avg_win:+.2f}  |  Avg Loss: ${avg_loss:+.2f}  |  RR:{abs(avg_win/avg_loss):.1f}x" if avg_loss != 0 else f"Avg Win: ${avg_win:+.2f}"))
@@ -531,6 +561,280 @@ def scan_engine(exchange, notifier):
         time.sleep(config.LOOP_INTERVAL_SECONDS)
 
 # ============================================================
+# THREAD 4: Liquidation Strategy Engine
+# Mỗi 30s: phân tích liq data → vào 2 lệnh split nếu có setup
+# Mỗi 5s : monitor các lệnh split đang chờ khớp + theo dõi SL/TP
+# ============================================================
+def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
+    """
+    2 nhiệm vụ:
+    A. Scan setup (30s): dùng LiqStrategy.analyze() tìm setup mới
+    B. Monitor (5s)    : theo dõi lệnh split đang chờ, đặt SL/TP khi lệnh 1 khớp
+    """
+    # Kiểm tra có bật strategy này không
+    if not getattr(config, "LIQ_STRATEGY_ENABLED", True):
+        logger.info("[LiqEngine] LIQ_STRATEGY_ENABLED=False, thread idle")
+        while state["running"]:
+            time.sleep(30)
+        return
+
+    from liq_strategy import LiqStrategy
+    strategy       = LiqStrategy(liq_tracker, config)
+    min_confidence = getattr(config, "LIQ_MIN_CONFIDENCE", 40)
+    timeout_hours  = getattr(config, "LIQ_SETUP_TIMEOUT_HOURS", 6)
+
+    last_scan_time = 0
+    SCAN_INTERVAL  = 30   # giây
+
+    while state["running"]:
+        now = time.time()
+
+        # ── A. Scan setup mới ────────────────────────────────
+        if now - last_scan_time >= SCAN_INTERVAL:
+            last_scan_time = now
+
+            # Cập nhật liq_data cho dashboard
+            liq_data = {}
+            for sym in WATCHLIST:
+                total = liq_tracker.total_liq_usd(sym)
+                if total > 0:
+                    liq_data[sym] = total
+            with lock:
+                state["liq_data"]       = liq_data
+                state["liq_connected"]  = liq_tracker.is_connected()
+
+            # Kiểm tra số lệnh đang mở
+            with lock:
+                n_open   = len(state.get("open_positions", []))
+                n_splits = len(state.get("split_positions", {}))
+            max_pos = getattr(config, "MAX_OPEN_POSITIONS", 3)
+
+            if n_open + n_splits >= max_pos:
+                logger.info(f"[LiqEngine] Max positions ({n_open}+{n_splits}/{max_pos}), skip scan")
+                time.sleep(5)
+                continue
+
+            # Scan từng coin trong WATCHLIST
+            for sym in WATCHLIST:
+                with lock:
+                    # Bỏ qua nếu đã có split position cho coin này
+                    if sym in state.get("split_positions", {}):
+                        continue
+                    # Bỏ qua nếu đang có position thường cho coin này
+                    if state["symbol"] == sym:
+                        continue
+
+                try:
+                    price = exchange.get_ticker_price(sym)
+                except Exception:
+                    continue
+
+                setup = strategy.analyze(sym, price)
+                if setup is None:
+                    continue
+
+                # Bỏ qua nếu confidence không đủ
+                if setup.confidence < min_confidence:
+                    logger.info(f"[LiqEngine] {sym} confidence={setup.confidence:.0f} < {min_confidence}, skip")
+                    continue
+
+                # Tính qty
+                with lock:
+                    bal = state["balance"]
+                qty1, qty2 = strategy.calc_quantities(setup, bal, config.LEVERAGE)
+
+                # Tạo split position object
+                sp = SplitPosition(
+                    symbol    = sym,
+                    direction = setup.direction,
+                    entry1    = setup.entry1,
+                    entry2    = setup.entry2,
+                    sl        = setup.sl,
+                    tp        = setup.tp,
+                    qty1      = qty1,
+                    qty2      = qty2,
+                )
+                with lock:
+                    state["split_positions"][sym] = sp
+
+                icon = "🟢" if setup.direction == "LONG" else "🔴"
+                notifier.telegram.send(
+                    f"⚡ <b>LIQ SETUP: {setup.direction} {sym}</b>\n"
+                    f"{icon} Entry1 (35%): <b>${setup.entry1:.4f}</b>  qty={qty1}\n"
+                    f"{icon} Entry2 (65%): <b>${setup.entry2:.4f}</b>  qty={qty2}\n"
+                    f"🛑 SL     : <b>${setup.sl:.4f}</b>\n"
+                    f"🎯 TP     : <b>${setup.tp:.4f}</b>\n"
+                    f"💧 Liq1   : ${setup.liq1_usd/1e6:.2f}M  |  Liq2: ${setup.liq2_usd/1e6:.2f}M\n"
+                    f"⭐ Conf   : {setup.confidence:.0f}  |  {setup.reason}\n"
+                    f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                )
+                logger.info(f"[LiqEngine] Setup: {setup}")
+
+        # ── B. Monitor split positions ───────────────────────
+        with lock:
+            splits_copy = dict(state.get("split_positions", {}))
+
+        for sym, sp in splits_copy.items():
+            try:
+                price = exchange.get_ticker_price(sym)
+            except Exception:
+                continue
+
+            side_market = "BUY"  if sp.direction == "LONG"  else "SELL"
+            side_close  = "SELL" if sp.direction == "LONG"  else "BUY"
+
+            # ── Lệnh 1 chưa khớp → kiểm tra giá đã chạm entry1 chưa ──
+            if not sp.filled1:
+                hit1 = (
+                    (sp.direction == "LONG"  and price <= sp.entry1) or
+                    (sp.direction == "SHORT" and price >= sp.entry1)
+                )
+                if hit1:
+                    try:
+                        exchange.set_leverage(sym, config.LEVERAGE)
+                        exchange.place_market_order(sym, side_market, sp.qty1)
+                        with lock:
+                            state["split_positions"][sym].filled1 = True
+                            state["trade_log"].append({
+                                "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": sp.direction,
+                                "entry" : price, "sl": sp.sl, "tp": sp.tp,
+                                "qty"   : sp.qty1, "status": "OPEN",
+                                "note"  : "liq_order1"
+                            })
+                        icon = "🟢" if sp.direction == "LONG" else "🔴"
+                        notifier.telegram.send(
+                            f"{icon} <b>LIQ ORDER 1 FILLED: {sp.direction} {sym}</b>\n"
+                            f"💰 Price  : <b>${price:.4f}</b>  qty={sp.qty1}\n"
+                            f"⏳ Chờ Order 2 @ ${sp.entry2:.4f}\n"
+                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[LiqEngine] Order1 filled {sym} @ {price}")
+                    except Exception as e:
+                        logger.error(f"[LiqEngine] Order1 place failed {sym}: {e}")
+
+            # ── Lệnh 2 chưa khớp → kiểm tra giá chạm entry2 ──
+            elif sp.filled1 and not sp.filled2:
+                hit2 = (
+                    (sp.direction == "LONG"  and price <= sp.entry2) or
+                    (sp.direction == "SHORT" and price >= sp.entry2)
+                )
+                if hit2:
+                    try:
+                        exchange.place_market_order(sym, side_market, sp.qty2)
+                        with lock:
+                            state["split_positions"][sym].filled2 = True
+                            state["trade_log"].append({
+                                "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": sp.direction,
+                                "entry" : price, "sl": sp.sl, "tp": sp.tp,
+                                "qty"   : sp.qty2, "status": "OPEN",
+                                "note"  : "liq_order2"
+                            })
+                        # Đặt SL + TP sau khi lệnh 2 khớp
+                        total_qty = sp.qty1 + sp.qty2
+                        try:
+                            exchange.cancel_all_orders(sym)
+                            exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
+                            exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
+                            with lock:
+                                state["split_positions"][sym].sl_placed = True
+                                state["split_positions"][sym].tp_placed = True
+                        except Exception as e:
+                            logger.error(f"[LiqEngine] SL/TP place failed {sym}: {e}")
+
+                        icon = "🟢" if sp.direction == "LONG" else "🔴"
+                        notifier.telegram.send(
+                            f"{icon} <b>LIQ ORDER 2 FILLED: {sp.direction} {sym}</b>\n"
+                            f"💰 Price  : <b>${price:.4f}</b>  qty={sp.qty2}\n"
+                            f"📦 Total  : {total_qty} (order1+order2)\n"
+                            f"🛑 SL set : <b>${sp.sl:.4f}</b>\n"
+                            f"🎯 TP set : <b>${sp.tp:.4f}</b>\n"
+                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[LiqEngine] Order2 filled + SL/TP set {sym}")
+                    except Exception as e:
+                        logger.error(f"[LiqEngine] Order2 place failed {sym}: {e}")
+
+                # Nếu giá đã đi ngược quá xa mà lệnh 2 chưa khớp → huỷ setup
+                elif sp.direction == "SHORT" and price < sp.entry1 * 0.985:
+                    logger.info(f"[LiqEngine] {sym} price reversed, cancel split setup")
+                    _cancel_split(sym, sp, exchange, notifier, side_close, "Giá đảo chiều trước khi Order2 khớp")
+                elif sp.direction == "LONG" and price > sp.entry1 * 1.015:
+                    logger.info(f"[LiqEngine] {sym} price reversed, cancel split setup")
+                    _cancel_split(sym, sp, exchange, notifier, side_close, "Giá đảo chiều trước khi Order2 khớp")
+
+            # ── Cả 2 lệnh đã khớp → monitor SL/TP hit ────────
+            elif sp.filled1 and sp.filled2:
+                # SL check
+                sl_hit = (
+                    (sp.direction == "LONG"  and price <= sp.sl) or
+                    (sp.direction == "SHORT" and price >= sp.sl)
+                )
+                tp_hit = (
+                    (sp.direction == "LONG"  and price >= sp.tp) or
+                    (sp.direction == "SHORT" and price <= sp.tp)
+                )
+                if sl_hit or tp_hit:
+                    tag = "❌ SL HIT" if sl_hit else "✅ TP HIT"
+                    total_qty = sp.qty1 + sp.qty2
+                    avg_entry = (sp.entry1 * sp.qty1 + sp.entry2 * sp.qty2) / total_qty
+                    pnl_pct = (
+                        (price - avg_entry) / avg_entry * 100
+                        if sp.direction == "LONG"
+                        else (avg_entry - price) / avg_entry * 100
+                    )
+                    pnl_usd = total_qty * abs(price - avg_entry) * (1 if pnl_pct > 0 else -1)
+
+                    try:
+                        exchange.cancel_all_orders(sym)
+                        exchange.place_market_order(sym, side_close, total_qty)
+                    except Exception as e:
+                        logger.error(f"[LiqEngine] Close failed {sym}: {e}")
+
+                    notifier.telegram.send(
+                        f"{tag} <b>{sp.direction} {sym}</b>\n"
+                        f"📌 AvgEntry: ${avg_entry:.4f} → Close: ${price:.4f}\n"
+                        f"💵 PnL: <b>${pnl_usd:+.2f}</b> ({pnl_pct:+.2f}%)\n"
+                        f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    # Update trade log + xoá split position
+                    with lock:
+                        for t in reversed(state["trade_log"]):
+                            if t["symbol"] == sym and t["status"] == "OPEN":
+                                t.update({"status": "CLOSED", "close": price,
+                                          "pnl_pct": round(pnl_pct, 2),
+                                          "pnl_usdt": round(pnl_usd, 2)})
+                        state["split_positions"].pop(sym, None)
+                    from trade_history import save_history
+                    save_history(state["trade_log"])
+                    logger.info(f"[LiqEngine] {tag} {sym} pnl={pnl_usd:+.2f}")
+
+            # ── Setup quá cũ → huỷ ──
+            if not sp.filled1 and time.time() - sp.open_time > timeout_hours * 3600:
+                logger.info(f"[LiqEngine] {sym} setup expired ({timeout_hours}h), cancel")
+                with lock:
+                    state["split_positions"].pop(sym, None)
+
+        time.sleep(5)
+
+
+def _cancel_split(sym, sp, exchange, notifier, side_close, reason):
+    """Huỷ split setup: đóng lệnh 1 nếu đã khớp, xoá khỏi state."""
+    if sp.filled1 and not sp.filled2:
+        try:
+            exchange.place_market_order(sym, side_close, sp.qty1)
+        except Exception as e:
+            logger.error(f"[LiqEngine] Cancel split close failed {sym}: {e}")
+    with lock:
+        state["split_positions"].pop(sym, None)
+    notifier.telegram.send(
+        f"⚠️ <b>LIQ SETUP CANCELLED: {sym}</b>\n"
+        f"Lý do: {reason}"
+    )
+
+
+# ============================================================
 # THREAD 3: Grid Bot engine
 # ============================================================
 def grid_engine(exchange, notifier):
@@ -556,6 +860,16 @@ if __name__ == "__main__":
     state["_exchange"] = exchange
     state["_notifier"] = notifier
     state["grids"]     = {}
+
+    # Khởi động Liquidation Tracker
+    from scanner import WATCHLIST as _wl
+    liq_tracker = LiquidationTracker(
+        symbols  = list(_wl),
+        testnet  = config.USE_TESTNET,
+        bucket_pct = getattr(config, "LIQ_BUCKET_PCT", 0.001),
+    )
+    liq_tracker.start()
+    state["liq_tracker"] = liq_tracker
 
     # Load lịch sử từ file (nếu có)
     from trade_history import load_history, save_history
@@ -648,6 +962,15 @@ if __name__ == "__main__":
     t0 = threading.Thread(target=dashboard_updater, daemon=True)
     t0.start()
 
+    # Web Dashboard — mở http://localhost:5555
+    try:
+        from web_dashboard import start_web_dashboard
+        WEB_PORT = getattr(config, "WEB_DASHBOARD_PORT", 5555)
+        start_web_dashboard(state, lock, config, port=WEB_PORT)
+        print(f"🌐 Web Dashboard: http://localhost:{WEB_PORT}")
+    except Exception as e:
+        logger.warning(f"Web dashboard disabled: {e}")
+
     t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
     t1.start()
 
@@ -661,6 +984,10 @@ if __name__ == "__main__":
 
     t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
     t3.start()
+
+    # Liq strategy thread
+    t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
+    t5.start()
     try:
         from telegram_commands import TelegramCommandHandler
         from notifier import NOTIFICATION_CONFIG
@@ -696,6 +1023,30 @@ if __name__ == "__main__":
         state["running"] = False
         clear()
         print("⛔ Bot dừng.")
+        # Dừng liq tracker
+        try: liq_tracker.stop()
+        except: pass
+
+        # Generate & send daily report
+        try:
+            from report_generator import generate_and_send
+            from notifier import NOTIFICATION_CONFIG
+            with lock:
+                tlog = list(state["trade_log"])
+                bal  = state["balance"]
+                opos = list(state.get("open_positions", []))
+                spos = dict(state.get("split_positions", {}))
+            report_path = generate_and_send(
+                trade_log       = tlog,
+                balance         = bal,
+                open_positions  = opos,
+                split_positions = spos,
+                bot_token       = NOTIFICATION_CONFIG["telegram"]["bot_token"],
+                chat_id         = NOTIFICATION_CONFIG["telegram"]["chat_id"],
+            )
+            print(f"📊 Report saved: {report_path}")
+        except Exception as e:
+            print(f"⚠️ Report failed: {e}")
         # Dừng tất cả grids
         for g in state.get("grids", {}).values():
             try: g.stop()

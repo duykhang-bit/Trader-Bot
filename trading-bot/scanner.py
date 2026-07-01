@@ -75,8 +75,21 @@ def fetch_dynamic_watchlist(base_url: str = "https://testnet.binancefuture.com",
         return _FALLBACK_WATCHLIST.copy()
 
 
-# WATCHLIST được load lúc khởi động, refresh mỗi 30 phút
-WATCHLIST = fetch_dynamic_watchlist()
+# WATCHLIST được load lúc khởi động
+# - Nếu config.WATCHLIST_MODE = "fixed" → dùng config.FIXED_COINS
+# - Nếu config.WATCHLIST_MODE = "dynamic" → fetch từ Binance theo volume
+def _load_initial_watchlist() -> List[str]:
+    try:
+        import config as _cfg
+        if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            coins = list(getattr(_cfg, "FIXED_COINS", _FALLBACK_WATCHLIST))
+            logger.info(f"📌 Fixed watchlist: {coins}")
+            return coins
+    except Exception:
+        pass
+    return fetch_dynamic_watchlist()
+
+WATCHLIST = _load_initial_watchlist()
 _watchlist_last_update = 0
 
 # Active universe: top 10 coin được lọc mỗi 5 phút để scan nhanh
@@ -84,9 +97,17 @@ _active_universe: List[str] = []
 _universe_last_update = 0
 
 def get_watchlist(base_url: str = "https://testnet.binancefuture.com") -> List[str]:
-    """Trả về WATCHLIST, tự refresh mỗi 30 phút. Priority coins luôn đứng đầu."""
+    """Trả về WATCHLIST. Fixed mode: dùng FIXED_COINS từ config. Dynamic mode: refresh mỗi 30 phút."""
     import time
     global WATCHLIST, _watchlist_last_update
+
+    try:
+        import config as _cfg
+        if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            return list(getattr(_cfg, "FIXED_COINS", WATCHLIST))
+    except Exception:
+        pass
+
     if time.time() - _watchlist_last_update > 1800:  # 30 phút
         WATCHLIST = fetch_dynamic_watchlist(base_url)
         _watchlist_last_update = time.time()
@@ -101,13 +122,23 @@ def get_watchlist(base_url: str = "https://testnet.binancefuture.com") -> List[s
 def get_active_universe(base_url: str = "https://testnet.binancefuture.com",
                         top_n: int = 10) -> List[str]:
     """
-    Lọc top N coin để scan chi tiết, refresh mỗi 5 phút.
-    Tiêu chí: volume cao + biến động mạnh + momentum tốt
+    Fixed mode: trả về FIXED_COINS từ config.
+    Dynamic mode: lọc top N coin theo volume + biến động, refresh mỗi 3 phút.
     """
     import time
     global _active_universe, _universe_last_update
 
-    if time.time() - _universe_last_update < 180 and _active_universe:  # 3 phút
+    # Fixed mode → trả thẳng, không fetch Binance
+    try:
+        import config as _cfg
+        if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            coins = list(getattr(_cfg, "FIXED_COINS", WATCHLIST))
+            logger.info(f"🎯 Active universe (fixed): {coins}")
+            return coins
+    except Exception:
+        pass
+
+    if time.time() - _universe_last_update < 180 and _active_universe:  # 3 phút cache
         return _active_universe
 
     try:
