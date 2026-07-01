@@ -785,12 +785,22 @@ def api_close_position():
         entry = float(p.get("entryPrice", 0))
         side_pos = "LONG" if amt > 0 else "SHORT"
         close_side = "SELL" if amt > 0 else "BUY"
-        # Exact qty — convert to int if it's a whole number
         qty = abs(amt)
         if qty == int(qty):
             qty = int(qty)
         close_price = _exchange.get_ticker_price(symbol)
-        _exchange.place_market_order(symbol, close_side, qty)
+
+        # Binance MARKET_LOT_SIZE maxQty = 100000 cho một số coin
+        # Chia nhỏ nếu qty > 100000
+        max_market_qty = 100000
+        remaining = qty
+        while remaining > 0:
+            batch = min(remaining, max_market_qty)
+            if batch == int(batch):
+                batch = int(batch)
+            _exchange.place_market_order(symbol, close_side, batch)
+            remaining -= batch
+
         _exchange.cancel_all_orders(symbol)
 
         # Tính PnL
