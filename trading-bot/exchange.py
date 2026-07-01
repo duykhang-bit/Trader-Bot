@@ -172,60 +172,44 @@ class BinanceFutures:
 
     def _round_price(self, price: float) -> float:
         """Làm tròn giá đúng theo độ lớn của coin"""
-        if price >= 1000:
-            return round(price, 1)
+        if price >= 10000:
+            return round(price, 1)   # BTC: tick 0.1
+        elif price >= 1000:
+            return round(price, 2)   # ETH: tick 0.01
         elif price >= 10:
-            return round(price, 2)
+            return round(price, 2)   # SOL, BNB: tick 0.01
         elif price >= 1:
-            return round(price, 3)
+            return round(price, 4)
         elif price >= 0.1:
             return round(price, 4)
         else:
             return round(price, 6)
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — thử STOP_MARKET trước, fallback LIMIT reduceOnly"""
+        """SL — dùng STOP_MARKET với closePosition"""
         price = self._round_price(stop_price)
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "STOP_MARKET",
-                "stopPrice": price,
-                "closePosition": "true",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"SL (STOP_MARKET) {side} @ {price}")
-            return result
-        except Exception:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "LIMIT", "quantity": quantity,
-                "price": price, "timeInForce": "GTC", "reduceOnly": "true"
-            })
-            logger.info(f"SL (LIMIT) {side} @ {price}")
-            return result
+        result = self._post("/fapi/v1/order", {
+            "symbol": symbol, "side": side,
+            "type": "STOP_MARKET",
+            "stopPrice": price,
+            "closePosition": "true",
+            "workingType": "MARK_PRICE"
+        })
+        logger.info(f"SL (STOP_MARKET) {side} @ {price}")
+        return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — thử TAKE_PROFIT_MARKET trước, fallback LIMIT reduceOnly"""
+        """TP — dùng TAKE_PROFIT_MARKET với closePosition"""
         price = self._round_price(stop_price)
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "TAKE_PROFIT_MARKET",
-                "stopPrice": price,
-                "closePosition": "true",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"TP (TAKE_PROFIT_MARKET) {side} @ {price}")
-            return result
-        except Exception:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "LIMIT", "quantity": quantity,
-                "price": price, "timeInForce": "GTC", "reduceOnly": "true"
-            })
-            logger.info(f"TP (LIMIT) {side} @ {price}")
-            return result
+        result = self._post("/fapi/v1/order", {
+            "symbol": symbol, "side": side,
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": price,
+            "closePosition": "true",
+            "workingType": "MARK_PRICE"
+        })
+        logger.info(f"TP (TAKE_PROFIT_MARKET) {side} @ {price}")
+        return result
 
     def cancel_all_orders(self, symbol: str):
         """Hủy tất cả lệnh đang mở"""

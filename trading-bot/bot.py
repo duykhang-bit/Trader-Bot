@@ -966,7 +966,7 @@ if __name__ == "__main__":
     try:
         from web_dashboard import start_web_dashboard
         WEB_PORT = getattr(config, "WEB_DASHBOARD_PORT", 5555)
-        start_web_dashboard(state, lock, config, port=WEB_PORT)
+        start_web_dashboard(state, lock, config, port=WEB_PORT, exchange=exchange)
         print(f"🌐 Web Dashboard: http://localhost:{WEB_PORT}")
     except Exception as e:
         logger.warning(f"Web dashboard disabled: {e}")

@@ -355,23 +355,55 @@ class TelegramCommandHandler:
             except Exception as e:
                 return f"❌ Lỗi: {e}"
 
-        # /long — vào lệnh LONG coin mặc định (BTCUSDT)
+        # /long — vào lệnh LONG coin
         elif cmd == "/long":
-            symbol = parts[1].upper() + "USDT" if len(parts) > 1 else self.config.SYMBOL
-            if not symbol.endswith("USDT"):
-                symbol += "USDT"
-            self.send(f"🔍 Đang phân tích <b>{symbol}</b> cho LONG...")
-            self._analyze_and_send(symbol)
-            return None
+            if len(parts) > 1:
+                symbol = parts[1].upper()
+                if not symbol.endswith("USDT"):
+                    symbol += "USDT"
+                self.send(f"🔍 Đang phân tích <b>{symbol}</b> cho LONG...")
+                self._analyze_and_send(symbol)
+                return None
+            else:
+                # Hiện menu chọn coin
+                buttons = []
+                row = []
+                for sym in self.watchlist:
+                    name = sym.replace("USDT", "")
+                    row.append({"text": f"🟢 {name}", "callback_data": f"quick_LONG_{sym}"})
+                    if len(row) == 3:
+                        buttons.append(row)
+                        row = []
+                if row:
+                    buttons.append(row)
+                buttons.append([{"text": "❌ Hủy", "callback_data": "cancel_trade"}])
+                self.send("🟢 <b>LONG — Chọn coin:</b>", markup={"inline_keyboard": buttons})
+                return None
 
-        # /short — vào lệnh SHORT coin mặc định
+        # /short — vào lệnh SHORT coin
         elif cmd == "/short":
-            symbol = parts[1].upper() + "USDT" if len(parts) > 1 else self.config.SYMBOL
-            if not symbol.endswith("USDT"):
-                symbol += "USDT"
-            self.send(f"🔍 Đang phân tích <b>{symbol}</b> cho SHORT...")
-            self._analyze_and_send(symbol)
-            return None
+            if len(parts) > 1:
+                symbol = parts[1].upper()
+                if not symbol.endswith("USDT"):
+                    symbol += "USDT"
+                self.send(f"🔍 Đang phân tích <b>{symbol}</b> cho SHORT...")
+                self._analyze_and_send(symbol)
+                return None
+            else:
+                # Hiện menu chọn coin
+                buttons = []
+                row = []
+                for sym in self.watchlist:
+                    name = sym.replace("USDT", "")
+                    row.append({"text": f"🔴 {name}", "callback_data": f"quick_SHORT_{sym}"})
+                    if len(row) == 3:
+                        buttons.append(row)
+                        row = []
+                if row:
+                    buttons.append(row)
+                buttons.append([{"text": "❌ Hủy", "callback_data": "cancel_trade"}])
+                self.send("🔴 <b>SHORT — Chọn coin:</b>", markup={"inline_keyboard": buttons})
+                return None
 
         # /history
         elif cmd == "/history":
@@ -816,32 +848,38 @@ class TelegramCommandHandler:
 
             msg = "\n".join(lines)
 
-            # ── Inline keyboard ──────────────────────────────────────
-            if signal in ("LONG", "SHORT"):
-                markup = {"inline_keyboard": [[
-                    {
-                        "text": f"✅ XÁC NHẬN {signal} @ ${entry:,.4f}",
-                        "callback_data": f"trade_{signal}_{sl}_{tp}_auto_{symbol}"
-                    },
-                    {
-                        "text": "❌ HỦY",
-                        "callback_data": "cancel_trade"
-                    }
-                ]]}
+            # ── Inline keyboard — luôn cho chọn cả LONG và SHORT ──
+            # Tính SL/TP cho hướng ngược lại
+            if signal == "LONG":
+                sl_reverse = round(price + atr_val * sl_mult, _price_decimals(price))
+                tp_reverse = round(price - atr_val * tp_mult, _price_decimals(price))
             else:
-                # WAIT — chỉ cho phép force LONG hoặc SHORT nếu muốn
-                markup = {"inline_keyboard": [[
-                    {
-                        "text": f"⚡ Force LONG @ ${entry:,.4f}",
-                        "callback_data": f"trade_LONG_{sl}_{tp}_auto_{symbol}"
-                    },
-                    {
-                        "text": f"⚡ Force SHORT @ ${entry:,.4f}",
-                        "callback_data": f"trade_SHORT_{round(price+atr_val*sl_mult, _price_decimals(price))}_{round(price-atr_val*tp_mult, _price_decimals(price))}_auto_{symbol}"
-                    }
-                ], [
-                    {"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}
-                ]]}
+                sl_reverse = round(price - atr_val * sl_mult, _price_decimals(price))
+                tp_reverse = round(price + atr_val * tp_mult, _price_decimals(price))
+
+            if signal == "LONG":
+                markup = {"inline_keyboard": [
+                    [{"text": f"✅ LONG @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_LONG_{sl}_{tp}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{sl_reverse}_{tp_reverse}_auto_{symbol}"}],
+                    [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
+                ]}
+            elif signal == "SHORT":
+                markup = {"inline_keyboard": [
+                    [{"text": f"✅ SHORT @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_SHORT_{sl}_{tp}_auto_{symbol}"}],
+                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{sl_reverse}_{tp_reverse}_auto_{symbol}"}],
+                    [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
+                ]}
+            else:
+                # WAIT
+                sl_long  = round(price - atr_val * sl_mult, _price_decimals(price))
+                tp_long  = round(price + atr_val * tp_mult, _price_decimals(price))
+                sl_short = round(price + atr_val * sl_mult, _price_decimals(price))
+                tp_short = round(price - atr_val * tp_mult, _price_decimals(price))
+                markup = {"inline_keyboard": [
+                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{sl_long}_{tp_long}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{sl_short}_{tp_short}_auto_{symbol}"}],
+                    [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
+                ]}
 
             self.send(msg, markup=markup)
 
@@ -945,12 +983,27 @@ class TelegramCommandHandler:
             # Đặt lệnh
             if signal == "LONG":
                 exchange.place_market_order(symbol, "BUY", qty)
-                exchange.place_stop_loss_order(symbol, "SELL", qty, sl)
-                exchange.place_take_profit_order(symbol, "SELL", qty, tp)
+                # Đợi position được ghi nhận trước khi đặt SL/TP
+                import time as _t; _t.sleep(1)
+                try:
+                    exchange.place_stop_loss_order(symbol, "SELL", qty, sl)
+                except Exception as e:
+                    logger.warning(f"SL failed (will retry): {e}")
+                try:
+                    exchange.place_take_profit_order(symbol, "SELL", qty, tp)
+                except Exception as e:
+                    logger.warning(f"TP failed: {e}")
             else:
                 exchange.place_market_order(symbol, "SELL", qty)
-                exchange.place_stop_loss_order(symbol, "BUY", qty, sl)
-                exchange.place_take_profit_order(symbol, "BUY", qty, tp)
+                import time as _t; _t.sleep(1)
+                try:
+                    exchange.place_stop_loss_order(symbol, "BUY", qty, sl)
+                except Exception as e:
+                    logger.warning(f"SL failed (will retry): {e}")
+                try:
+                    exchange.place_take_profit_order(symbol, "BUY", qty, tp)
+                except Exception as e:
+                    logger.warning(f"TP failed: {e}")
 
             rr = abs(tp - price) / abs(price - sl) if abs(price - sl) > 0 else 0
             notional = qty * price
@@ -1019,8 +1072,22 @@ class TelegramCommandHandler:
                         else:
                             self.send("❌ Callback data lỗi định dạng")
 
+                    elif data.startswith("quick_"):
+                        # Format: quick_LONG_BTCUSDT or quick_SHORT_SOLUSDT
+                        parts_cb = data.split("_")
+                        if len(parts_cb) >= 3:
+                            sig = parts_cb[1]              # LONG / SHORT
+                            sym = parts_cb[2]              # BTCUSDT
+                            self.send(f"🔍 Đang phân tích <b>{sym}</b> cho {sig}...")
+                            t = threading.Thread(
+                                target=self._analyze_and_send,
+                                args=(sym,),
+                                daemon=True
+                            )
+                            t.start()
+
                     elif data == "cancel_trade":
-                        self.send("❌ <b>Đã hủy lệnh.</b>")
+                        self.send("❌ <b>Đã hủy.</b>")
 
                     continue
 
