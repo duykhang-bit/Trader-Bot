@@ -152,6 +152,11 @@ async function runAI() {
     await apiPost('/api/ai/run');
     refresh();
 }
+async function cancelOrder(sym, orderId) {
+    if (!confirm('Cancel order?')) return;
+    await apiPost('/api/cancel_order', {symbol: sym, order_id: orderId});
+    refresh();
+}
 
 function renderDashboard(d) {
     // Bot status
@@ -238,6 +243,26 @@ function renderDashboard(d) {
                 <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
                 <td class="${pnlColor(p.pct)}">${fmt(p.pct,1)}%</td><td>${p.lev}x</td>
                 <td><button class="btn btn-red btn-sm" onclick="closePosition('${p.symbol}')">Close</button></td></tr>`;
+        });
+        html += `</table></div>`;
+    }
+
+    // Pending Orders (lệnh chờ khớp)
+    if (d.pending_orders && d.pending_orders.length > 0) {
+        html += `<div class="section"><h2>&#x23F3; Pending Orders (${d.pending_orders.length})</h2><table>
+            <tr><th>Coin</th><th>Side</th><th>Type</th><th>Price</th><th>Qty</th><th></th></tr>`;
+        d.pending_orders.forEach(o => {
+            const name = o.symbol.replace('USDT','');
+            const pStr = o.price >= 1000 ? fmtUsd(o.price) : '$'+fmt(o.price, o.price>=1?3:5);
+            const sideClass = o.side === 'BUY' ? 'green' : 'red';
+            html += `<tr>
+                <td><b>${name}</b></td>
+                <td class="${sideClass}">${o.side}</td>
+                <td>${o.type}</td>
+                <td>${pStr}</td>
+                <td>${o.qty}</td>
+                <td><button class="btn btn-red btn-sm" onclick="cancelOrder('${o.symbol}','${o.order_id}')">Cancel</button></td>
+            </tr>`;
         });
         html += `</table></div>`;
     }
@@ -441,6 +466,23 @@ def api_state():
             "entry": float(p.get("entryPrice",0)), "mark": p.get("_mark",0),
             "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
 
+    # Pending orders (lệnh chờ khớp)
+    pending_orders = []
+    try:
+        if _exchange:
+            all_orders = _exchange._get("/fapi/v1/openOrders", signed=True)
+            for o in all_orders:
+                pending_orders.append({
+                    "symbol": o.get("symbol", ""),
+                    "side": o.get("side", ""),
+                    "type": o.get("type", ""),
+                    "qty": float(o.get("origQty", 0)),
+                    "price": float(o.get("price", 0) or o.get("stopPrice", 0)),
+                    "order_id": str(o.get("orderId", "")),
+                })
+    except Exception:
+        pass
+
     recent = sorted(closed, key=lambda t: t.get("time",""), reverse=True)[:15]
     trades_fmt = [{"symbol":t.get("symbol",""),"side":t.get("side",""),"entry":t.get("entry",0),
         "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
@@ -503,7 +545,8 @@ def api_state():
         "liq_connected": s.get("liq_connected", False),
         "ai_analyzing": s.get("ai_analyzing", False),
         "ai_last_run": s.get("ai_last_run", ""),
-        "open_positions": open_fmt, "prices": prices,
+        "open_positions": open_fmt, "pending_orders": pending_orders,
+        "prices": prices,
         "liq_data": liq_data, "trades_history": trades_fmt,
         "watchlist": watchlist,
         "settings": {
@@ -702,6 +745,23 @@ def api_ai_run():
 
     _t.Thread(target=_run, daemon=True).start()
     return jsonify({"ok": True, "msg": "AI Analysis started (2-5 min/coin)..."})
+
+
+@app.route("/api/cancel_order", methods=["POST"])
+def api_cancel_order():
+    """Cancel a specific pending order."""
+    data = request.get_json() or {}
+    symbol = data.get("symbol", "").upper()
+    order_id = data.get("order_id", "")
+    if not symbol or not order_id:
+        return jsonify({"ok": False, "msg": "Missing symbol or order_id"})
+    if _exchange is None:
+        return jsonify({"ok": False, "msg": "Exchange not initialized"})
+    try:
+        _exchange._delete("/fapi/v1/order", {"symbol": symbol, "orderId": int(order_id)})
+        return jsonify({"ok": True, "msg": f"Cancelled order {symbol}"})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)[:200]})
 
 
 @app.route("/api/close", methods=["POST"])
