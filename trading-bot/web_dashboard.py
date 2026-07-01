@@ -668,13 +668,60 @@ def api_close_position():
 
         p = pos[0]
         amt = float(p["positionAmt"])
-        side = "SELL" if amt > 0 else "BUY"
+        entry = float(p.get("entryPrice", 0))
+        side_pos = "LONG" if amt > 0 else "SHORT"
+        close_side = "SELL" if amt > 0 else "BUY"
         qty = abs(amt)
-        _exchange.place_market_order(symbol, side, qty)
+
+        # Lấy giá đóng
+        close_price = _exchange.get_ticker_price(symbol)
+        _exchange.place_market_order(symbol, close_side, qty)
         _exchange.cancel_all_orders(symbol)
 
-        logger.info(f"Closed position: {symbol} qty={qty}")
-        return jsonify({"ok": True, "msg": f"Closed {symbol} ({qty})"})
+        # Tính PnL
+        if side_pos == "LONG":
+            pnl_usd = qty * (close_price - entry)
+            pnl_pct = (close_price - entry) / entry * 100
+        else:
+            pnl_usd = qty * (entry - close_price)
+            pnl_pct = (entry - close_price) / entry * 100
+
+        # Ghi vào trade_log
+        with _lock:
+            # Tìm lệnh OPEN tương ứng và update
+            found = False
+            for t in reversed(_state.get("trade_log", [])):
+                if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                    t.update({
+                        "status": "CLOSED",
+                        "close": close_price,
+                        "pnl_usdt": round(pnl_usd, 2),
+                        "pnl_pct": round(pnl_pct, 2),
+                    })
+                    found = True
+                    break
+            if not found:
+                # Thêm mới nếu không tìm thấy (lệnh mở từ trước khi bot chạy)
+                _state.setdefault("trade_log", []).append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": symbol, "side": side_pos,
+                    "entry": entry, "close": close_price,
+                    "qty": qty, "status": "CLOSED",
+                    "pnl_usdt": round(pnl_usd, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "note": "closed_web"
+                })
+
+        # Save to file
+        try:
+            from trade_history import save_history
+            save_history(_state["trade_log"])
+        except Exception:
+            pass
+
+        icon = "✅" if pnl_usd >= 0 else "❌"
+        logger.info(f"Closed position: {symbol} qty={qty} pnl=${pnl_usd:+.2f}")
+        return jsonify({"ok": True, "msg": f"{icon} Closed {symbol} PnL: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)"})
     except Exception as e:
         logger.error(f"Close position failed: {e}")
         return jsonify({"ok": False, "msg": str(e)[:200]})

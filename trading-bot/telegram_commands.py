@@ -970,8 +970,14 @@ class TelegramCommandHandler:
             balance  = exchange.get_account_balance()
             risk_amt = balance * getattr(self.config, "RISK_PER_TRADE", 0.02)
             lev      = getattr(self.config, "LEVERAGE", 10)
+            max_usdt = getattr(self.config, "MAX_ORDER_USDT", 15)
             risk_dist = abs(price - sl)
             qty = round(risk_amt * lev / price, _qty_decimals(price)) if risk_dist > 0 else 0.001
+
+            # Cap theo MAX_ORDER_USDT (margin tối đa)
+            max_qty = (max_usdt * lev) / price
+            qty = min(qty, max_qty)
+
             qty = max(qty, _min_qty(price))
 
             # Set leverage
