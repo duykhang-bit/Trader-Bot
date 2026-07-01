@@ -260,13 +260,12 @@ function renderDashboard(d) {
         const targets = (d.entry_targets || {})[sym] || {};
         let targetHtml = '';
         if (targets.short_entry) {
-            targetHtml += `<div style="font-size:10px;color:#f85149">&#x2B07; SHORT @ $${fmt(targets.short_entry, targets.short_entry>=1000?0:2)}</div>`;
+            const sp = targets.short_entry >= 1000 ? fmtUsd(targets.short_entry) : '$'+fmt(targets.short_entry, targets.short_entry>=1?2:5);
+            targetHtml += `<div style="font-size:10px;color:#f85149;margin-top:3px"><b>SHORT</b> @ ${sp}</div>`;
         }
         if (targets.long_entry) {
-            targetHtml += `<div style="font-size:10px;color:#3fb950">&#x2B06; LONG @ $${fmt(targets.long_entry, targets.long_entry>=1000?0:2)}</div>`;
-        }
-        if (!targets.short_entry && !targets.long_entry) {
-            targetHtml = `<div style="font-size:10px;color:#484f58">Collecting data...</div>`;
+            const lp = targets.long_entry >= 1000 ? fmtUsd(targets.long_entry) : '$'+fmt(targets.long_entry, targets.long_entry>=1?2:5);
+            targetHtml += `<div style="font-size:10px;color:#3fb950"><b>LONG</b> @ ${lp}</div>`;
         }
 
         html += `<div class="price-item">
@@ -329,17 +328,6 @@ function renderDashboard(d) {
             html += `<div class="price-item"><div class="coin">${name}</div><div class="price">${pStr}</div></div>`;
         }
         html += `</div></div>`;
-    }
-
-    // Liq Data
-    if (d.liq_data && Object.keys(d.liq_data).length > 0) {
-        html += `<div class="section"><h2>&#x1F4A7; Liquidation Data</h2><table><tr><th>Coin</th><th>Total Liq</th><th></th></tr>`;
-        for (const [sym, usd] of Object.entries(d.liq_data)) {
-            const pct = Math.min(usd/5000000*100,100);
-            html += `<tr><td><b>${sym.replace('USDT','')}</b></td><td>$${(usd/1e6).toFixed(2)}M</td>
-                <td style="width:40%"><div class="liq-bar"><div class="liq-fill" style="width:${pct}%;background:linear-gradient(90deg,#58a6ff,#3fb950)"></div></div></td></tr>`;
-        }
-        html += `</table></div>`;
     }
 
     // Trade History
@@ -467,12 +455,29 @@ def api_state():
                 p = prices.get(sym, 0)
                 if p <= 0:
                     continue
-                # Hạ threshold cho testnet (ít liq events hơn mainnet)
-                above = liq_tracker.get_nearest_liq_above(sym, p, min_usd=5000)
-                below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=5000)
+                # Liq levels (rất thấp threshold cho testnet)
+                above = liq_tracker.get_nearest_liq_above(sym, p, min_usd=1000)
+                below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=1000)
+
+                # Fallback: nếu chưa có liq data, dùng ±1.5% ATR estimate
+                if above is None:
+                    above = round(p * 1.015, 2 if p >= 100 else 4)
+                if below is None:
+                    below = round(p * 0.985, 2 if p >= 100 else 4)
+
                 entry_targets[sym] = {
-                    "short_entry": above,  # giá cần lên tới để SHORT
-                    "long_entry": below,   # giá cần xuống tới để LONG
+                    "short_entry": above,
+                    "long_entry": below,
+                }
+        else:
+            # Không có liq tracker → dùng ±1.5% làm estimate
+            for sym in watchlist:
+                p = prices.get(sym, 0)
+                if p <= 0:
+                    continue
+                entry_targets[sym] = {
+                    "short_entry": round(p * 1.015, 2 if p >= 100 else 4),
+                    "long_entry": round(p * 0.985, 2 if p >= 100 else 4),
                 }
     except Exception:
         pass
