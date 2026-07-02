@@ -356,7 +356,56 @@ class TelegramCommandHandler:
                     limit_p = float(o.get("price", 0) or 0)
                     price = stop_p if stop_p > 0 else limit_p
                     lines.append(f"• {sym} {t} {side} @ <b>${price:,.{_price_decimals(price)}f}</b>")
-                return "\n".join(lines)
+                lines.append("")
+                lines.append("Gõ /cancelall để hủy tất cả")
+                lines.append("Hoặc /cancel BTCUSDT để hủy 1 coin")
+
+                # Inline buttons cancel từng coin
+                symbols_with_orders = list(set(o.get("symbol", "") for o in all_orders))
+                buttons = []
+                row = []
+                for sym in symbols_with_orders:
+                    name = sym.replace("USDT", "")
+                    row.append({"text": f"❌ Cancel {name}", "callback_data": f"cancelorders_{sym}"})
+                    if len(row) == 2:
+                        buttons.append(row)
+                        row = []
+                if row:
+                    buttons.append(row)
+                buttons.append([{"text": "🗑 Cancel ALL", "callback_data": "cancelorders_ALL"}])
+
+                self.send("\n".join(lines), markup={"inline_keyboard": buttons})
+                return None
+            except Exception as e:
+                return f"❌ Lỗi: {e}"
+
+        # /cancel BTCUSDT — hủy tất cả orders cho 1 coin
+        elif cmd == "/cancel":
+            if len(parts) < 2:
+                return "❌ Dùng: /cancel BTC hoặc /cancel BTCUSDT"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            try:
+                exchange.cancel_all_orders(symbol)
+                return f"✅ Đã hủy tất cả orders cho <b>{symbol}</b>"
+            except Exception as e:
+                return f"❌ Lỗi: {e}"
+
+        # /cancelall — hủy tất cả orders tất cả coin
+        elif cmd == "/cancelall":
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            try:
+                all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                symbols = list(set(o.get("symbol", "") for o in all_orders))
+                for sym in symbols:
+                    exchange.cancel_all_orders(sym)
+                return f"✅ Đã hủy tất cả {len(all_orders)} orders ({len(symbols)} coins)"
             except Exception as e:
                 return f"❌ Lỗi: {e}"
 
@@ -1108,6 +1157,27 @@ class TelegramCommandHandler:
                                 daemon=True
                             )
                             t.start()
+
+                    elif data.startswith("cancelorders_"):
+                        # Format: cancelorders_BTCUSDT or cancelorders_ALL
+                        target = data.replace("cancelorders_", "")
+                        exchange = self._get_exchange()
+                        if exchange:
+                            if target == "ALL":
+                                try:
+                                    all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                                    symbols = list(set(o.get("symbol", "") for o in all_orders))
+                                    for s in symbols:
+                                        exchange.cancel_all_orders(s)
+                                    self.send(f"✅ Đã hủy tất cả {len(all_orders)} orders")
+                                except Exception as e:
+                                    self.send(f"❌ Lỗi: {e}")
+                            else:
+                                try:
+                                    exchange.cancel_all_orders(target)
+                                    self.send(f"✅ Đã hủy orders cho <b>{target}</b>")
+                                except Exception as e:
+                                    self.send(f"❌ Lỗi: {e}")
 
                     elif data == "cancel_trade":
                         self.send("❌ <b>Đã hủy.</b>")
