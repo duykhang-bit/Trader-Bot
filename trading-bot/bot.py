@@ -280,6 +280,8 @@ def print_dashboard():
 # THREAD 0: Dashboard refresh mỗi 1 giây (độc lập)
 # ============================================================
 def dashboard_updater():
+    if not sys.stdout.isatty():
+        return
     while state["running"]:
         try:
             print_dashboard()
@@ -1190,26 +1192,34 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Telegram commands disabled: {e}")
 
-    # Auto-start grid cho top 5 coin, mỗi coin $10, 10 lưới, range ±2%
-    GRID_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
-    for sym in GRID_COINS:
-        try:
-            price = exchange.get_ticker_price(sym)
-            lower = round(price * 0.98, 4)
-            upper = round(price * 1.02, 4)
-            from grid_strategy import GridBot
-            g = GridBot(sym, lower, upper, 10, 10, exchange, notifier)
-            g.setup(price)
-            state["grids"][sym] = g
-            logger.info(f"Auto-started grid {sym}: ${lower}-${upper}")
-        except Exception as e:
-            logger.warning(f"Auto grid {sym} skipped: {e}")
+    # Grid auto-start TẮT — gây spam notification + lỗi 400 trên testnet
+    # Muốn bật: dùng Telegram /grid hoặc uncomment bên dưới
+    # GRID_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+    # for sym in GRID_COINS:
+    #     try:
+    #         price = exchange.get_ticker_price(sym)
+    #         lower = round(price * 0.98, 4)
+    #         upper = round(price * 1.02, 4)
+    #         from grid_strategy import GridBot
+    #         g = GridBot(sym, lower, upper, 10, 10, exchange, notifier)
+    #         g.setup(price)
+    #         state["grids"][sym] = g
+    #     except Exception as e:
+    #         logger.warning(f"Auto grid {sym} skipped: {e}")
 
     try:
+        logger.info("=== Main loop started ===")
         while True: time.sleep(1)
     except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received")
+    except SystemExit as e:
+        logger.error(f"SystemExit received: {e}")
+    except Exception as e:
+        logger.error(f"Main loop crashed: {e}", exc_info=True)
+    finally:
         state["running"] = False
-        clear()
+        try: clear()
+        except: pass
         print("⛔ Bot dừng.")
         # Dừng liq tracker
         try: liq_tracker.stop()
@@ -1235,9 +1245,9 @@ if __name__ == "__main__":
             print(f"📊 Report saved: {report_path}")
         except Exception as e:
             print(f"⚠️ Report failed: {e}")
-        # Dừng tất cả grids
-        for g in state.get("grids", {}).values():
-            try: g.stop()
+        # Dừng tất cả grids (silent)
+        for sym, g in state.get("grids", {}).items():
+            try: g.exchange.cancel_all_orders(sym)
             except: pass
         # KHÔNG đóng position khi dừng bot — lệnh vẫn giữ trên Binance
         print("💡 Lệnh đang mở vẫn giữ trên Binance (SL/TP đã đặt sẵn)")

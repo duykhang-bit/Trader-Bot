@@ -1110,6 +1110,21 @@ class TelegramCommandHandler:
     def run(self):
         """Chạy ngầm, lắng nghe lệnh từ Telegram"""
         logger.info("Telegram command handler started")
+
+        # Bỏ qua tất cả updates cũ khi bot mới start
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{self.token}/getUpdates",
+                params={"offset": -1, "timeout": 1},
+                timeout=5
+            )
+            results = resp.json().get("result", [])
+            if results:
+                self.last_update_id = results[-1]["update_id"]
+                logger.info(f"Skipped {len(results)} old updates (last_id={self.last_update_id})")
+        except Exception:
+            pass
+
         self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh")
 
         while self.running and self.state.get("running", True):

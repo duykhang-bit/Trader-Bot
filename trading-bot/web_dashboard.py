@@ -921,7 +921,30 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     def run():
         log = logging.getLogger("werkzeug")
         log.setLevel(logging.WARNING)
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        try:
+            # Check port trước — nếu bị chiếm thì bỏ qua
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            if result == 0:
+                logger.warning(f"Port {port} already in use — web dashboard skipped")
+                return
+            # Monkey-patch os._exit để Flask không kill cả process
+            import os as _os
+            _real_exit = _os._exit
+            def _safe_exit(code):
+                logger.warning(f"Flask tried to call os._exit({code}) — blocked")
+                return
+            _os._exit = _safe_exit
+            try:
+                app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+            finally:
+                _os._exit = _real_exit
+        except (OSError, SystemExit):
+            logger.warning(f"Web dashboard failed on port {port}")
+        except Exception as e:
+            logger.warning(f"Web dashboard error: {e}")
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
