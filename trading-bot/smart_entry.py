@@ -507,18 +507,7 @@ def place_smart_order(exchange, symbol: str, side: str, qty: float,
                 "timeInForce": "GTC",
             })
             logger.info(f"[SmartEntry] LIMIT: {side} {symbol} @ {entry_price}")
-
-            import time
-            time.sleep(1)
-            try:
-                exchange.place_stop_loss_order(symbol, close_side, qty, sl)
-            except Exception as e:
-                logger.warning(f"[SmartEntry] SL pre-place: {e}")
-            try:
-                exchange.place_take_profit_order(symbol, close_side, qty, tp)
-            except Exception as e:
-                logger.warning(f"[SmartEntry] TP pre-place: {e}")
-
+            # SL/TP sẽ đặt sau khi LIMIT fill (không pre-place)
             return {"filled": False, "price": entry_price, "type": "LIMIT",
                     "sl": sl, "tp": tp}
         except Exception as e:
@@ -529,13 +518,15 @@ def place_smart_order(exchange, symbol: str, side: str, qty: float,
     actual_price = exchange.get_ticker_price(symbol)
 
     import time
-    time.sleep(1)
+    time.sleep(2)
     try:
         exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+        logger.info(f"[SmartEntry] SL placed: {close_side} qty={qty} @ {sl}")
     except Exception as e:
         logger.warning(f"[SmartEntry] SL: {e}")
     try:
         exchange.place_take_profit_order(symbol, close_side, qty, tp)
+        logger.info(f"[SmartEntry] TP placed: {close_side} qty={qty} @ {tp}")
     except Exception as e:
         logger.warning(f"[SmartEntry] TP: {e}")
 

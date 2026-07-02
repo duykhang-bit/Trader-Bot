@@ -189,29 +189,35 @@ class BinanceFutures:
             return round(price, 6)
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — dùng STOP_MARKET với closePosition"""
+        """SL — dùng STOP_MARKET với quantity và reduceOnly"""
         price = self._round_price(stop_price)
+        if quantity == int(quantity):
+            quantity = int(quantity)
         result = self._post("/fapi/v1/order", {
             "symbol": symbol, "side": side,
             "type": "STOP_MARKET",
             "stopPrice": price,
-            "closePosition": "true",
+            "quantity": quantity,
+            "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"SL (STOP_MARKET) {side} @ {price}")
+        logger.info(f"SL (STOP_MARKET) {side} qty={quantity} @ {price}")
         return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — dùng TAKE_PROFIT_MARKET với closePosition"""
+        """TP — dùng TAKE_PROFIT_MARKET với quantity và reduceOnly"""
         price = self._round_price(stop_price)
+        if quantity == int(quantity):
+            quantity = int(quantity)
         result = self._post("/fapi/v1/order", {
             "symbol": symbol, "side": side,
             "type": "TAKE_PROFIT_MARKET",
             "stopPrice": price,
-            "closePosition": "true",
+            "quantity": quantity,
+            "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"TP (TAKE_PROFIT_MARKET) {side} @ {price}")
+        logger.info(f"TP (TAKE_PROFIT_MARKET) {side} qty={quantity} @ {price}")
         return result
 
     def cancel_all_orders(self, symbol: str):
