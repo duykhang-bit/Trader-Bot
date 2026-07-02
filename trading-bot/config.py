@@ -133,4 +133,3 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 #Run bot 
 #cd /Users/leduykhang/Documents/Trading/trading-bot/trading-bot python3 bot.py
 
-#http://localhost:5555/
