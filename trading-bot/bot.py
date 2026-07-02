@@ -676,16 +676,16 @@ def scan_engine(exchange, notifier):
                 except: pass
 
                 if best.signal == "LONG":
-                    sl_dist = min(atr * 1.5, price * 0.02)  # ATR×1.5 nhưng tối đa 2%
+                    sl_dist = min(atr * 1.5, price * 0.02)  # tối đa 2%
                     sl_dist = max(sl_dist, price * 0.01)     # tối thiểu 1%
                     sl = price - sl_dist
-                    tp = price + sl_dist * 3   # RR 1:3
+                    tp = price + (price - sl) * 3   # RR 1:3 (giữ nguyên)
                     side = "BUY"
                 else:
                     sl_dist = min(atr * 1.5, price * 0.02)
                     sl_dist = max(sl_dist, price * 0.01)
                     sl = price + sl_dist
-                    tp = price - sl_dist * 3   # RR 1:3
+                    tp = price - (sl - price) * 3   # RR 1:3
                     side = "SELL"
 
                 qty = calc_qty(bal, price, sl)
