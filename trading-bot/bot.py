@@ -2,8 +2,17 @@
 # MULTI-COIN TRADING BOT — Dashboard + Auto Trade
 # ============================================================
 import time, logging, os, sys, threading
+import requests as _req
 import pandas as pd
 from datetime import datetime
+
+# Print server IP on startup (for Binance whitelist)
+try:
+    _my_ip = _req.get("https://ifconfig.me", timeout=5).text.strip()
+    print(f"🌐 SERVER IP: {_my_ip}")
+except:
+    _my_ip = "unknown"
+    print("⚠️ Could not detect server IP")
 
 import config
 from exchange import BinanceFutures
