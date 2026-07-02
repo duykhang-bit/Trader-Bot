@@ -435,7 +435,7 @@ function renderDashboard(d) {
         html += `</table></div>`;
     }
 
-    html += `<div class="footer">Auto-refresh 3s</div>`;
+    html += `<div class="footer">Auto-refresh 1s</div>`;
     return html;
 }
 
@@ -465,7 +465,7 @@ async function refresh(){
     }
     catch(e){ document.getElementById('content').innerHTML='<p style="color:#f85149">Connection lost...</p>'; }
 }
-setInterval(updateClock,1000); setInterval(refresh,3000); updateClock(); refresh();
+setInterval(updateClock,1000); setInterval(refresh,500); updateClock(); refresh();
 </script>
 </body>
 </html>"""
