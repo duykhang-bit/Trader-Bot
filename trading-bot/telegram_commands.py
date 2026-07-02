@@ -611,6 +611,7 @@ class TelegramCommandHandler:
         kèm Entry, SL, TP, tỉ lệ RR, win rate ước tính và nút xác nhận.
         """
         try:
+            logger.info(f"[Telegram] _analyze_and_send started for {symbol}")
             from indicators import (calculate_rsi, calculate_ema, calculate_macd,
                                     calculate_atr, calculate_bollinger,
                                     calculate_volume_ma, get_htf_trend)
@@ -635,7 +636,8 @@ class TelegramCommandHandler:
             data_source = "Binance 📡"
 
             try:
-                klines_15m = exchange.get_klines(symbol, "15m", limit=200)
+                logger.info(f"[Telegram] Fetching 15m klines for {symbol}...")
+                klines_15m = exchange.get_klines(symbol, "15m", limit=100)
             except Exception as e:
                 self.send(
                     f"❌ <b>{symbol} không tồn tại</b> trên Binance Futures.\n"
@@ -654,16 +656,20 @@ class TelegramCommandHandler:
             df15 = to_df(klines_15m)
 
             try:
-                klines_1h = exchange.get_klines(symbol, "1h", limit=100)
+                logger.info(f"[Telegram] Fetching 1h klines...")
+                klines_1h = exchange.get_klines(symbol, "1h", limit=50)
                 df1h = to_df(klines_1h)
             except Exception:
                 df1h = df15.copy()
 
             try:
-                klines_4h = exchange.get_klines(symbol, "4h", limit=100)
+                logger.info(f"[Telegram] Fetching 4h klines...")
+                klines_4h = exchange.get_klines(symbol, "4h", limit=50)
                 df4h = to_df(klines_4h)
             except Exception:
                 df4h = df15.copy()
+
+            logger.info(f"[Telegram] Klines fetched, calculating indicators...")
 
             close  = df15["close"]
             high   = df15["high"]
