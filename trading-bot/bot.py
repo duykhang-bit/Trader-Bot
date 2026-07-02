@@ -582,6 +582,20 @@ def scan_engine(exchange, notifier):
                     qty = round(min_notional / price + 0.001, 3)
                 exchange.place_market_order(best.symbol, side, qty)
 
+                # Đặt SL/TP trên Binance ngay sau khi vào lệnh
+                close_side = "SELL" if side == "BUY" else "BUY"
+                time.sleep(1)  # Đợi lệnh market fill
+                try:
+                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                    logger.info(f"SL placed: {best.symbol} @ {sl:.4f}")
+                except Exception as e:
+                    logger.error(f"SL place failed {best.symbol}: {e}")
+                try:
+                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                    logger.info(f"TP placed: {best.symbol} @ {tp:.4f}")
+                except Exception as e:
+                    logger.error(f"TP place failed {best.symbol}: {e}")
+
                 with lock:
                     state["position"]  = best.signal
                     state["symbol"]    = best.symbol
