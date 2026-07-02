@@ -181,6 +181,19 @@ class TelegramCommandHandler:
             self.config.LEVERAGE = lev
             return f"✅ Đã đổi leverage thành <b>{lev}x</b>"
 
+        # /usdt 5
+        elif cmd == "/usdt":
+            if len(parts) < 2:
+                return f"❌ Dùng: /usdt 5\nHiện tại: ${self.config.MAX_ORDER_USDT}/lệnh"
+            try:
+                val = float(parts[1])
+                if val < 1 or val > 1000:
+                    return "❌ USDT phải từ 1 - 1000"
+                self.config.MAX_ORDER_USDT = val
+                return f"✅ Đã đổi margin thành <b>${val}/lệnh</b>\n💰 Notional: ${val * self.config.LEVERAGE}/lệnh ({self.config.LEVERAGE}x)"
+            except ValueError:
+                return "❌ Nhập số, ví dụ: /usdt 5"
+
         # /risk 1
         elif cmd == "/risk":
             if len(parts) < 2:
@@ -300,6 +313,7 @@ class TelegramCommandHandler:
 /dashboard        — 📺 Dashboard đầy đủ (như terminal)
 /pnl              — Bảng lãi/lỗ tất cả lệnh
 /leverage 10      — Đổi đòn bẩy (1-20x)
+/usdt 5           — Đổi margin mỗi lệnh ($1-$1000)
 /risk 2           — Đổi risk % mỗi lệnh
 /closeall         — Đóng TẤT CẢ lệnh ngay
 /trade BTC        — Đánh giá LONG/SHORT coin

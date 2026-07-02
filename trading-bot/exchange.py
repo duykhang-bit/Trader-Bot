@@ -16,20 +16,16 @@ class BinanceFutures:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = (
-            "https://testnet.binancefuture.com" if testnet
-            else "https://demo-fapi.binance.com"
-        )
+        if testnet:
+            self.base_url = "https://testnet.binancefuture.com"
+        else:
+            import config as _cfg
+            self.base_url = getattr(_cfg, "LIVE_BASE_URL", "https://fapi.binance.com")
         self.session = requests.Session()
         self.session.headers.update({
             "X-MBX-APIKEY": self.api_key,
             "Content-Type": "application/json"
         })
-        # Binance Demo Futures dùng self-signed cert → tắt SSL verify
-        if not testnet:
-            self.session.verify = False
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def _sign(self, params: dict) -> dict:
         """Ký request với HMAC SHA256"""
@@ -68,6 +64,8 @@ class BinanceFutures:
             resp = self.session.post(
                 f"{self.base_url}{endpoint}", params=params, timeout=10
             )
+            if resp.status_code != 200:
+                logger.error(f"POST {endpoint} failed ({resp.status_code}): {resp.text[:300]}")
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
@@ -189,36 +187,68 @@ class BinanceFutures:
             return round(price, 6)
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — dùng STOP_MARKET với quantity và reduceOnly"""
+        """SL — dùng STOP (limit) với price=stopPrice để đảm bảo fill"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        result = self._post("/fapi/v1/order", {
-            "symbol": symbol, "side": side,
-            "type": "STOP_MARKET",
-            "stopPrice": price,
-            "quantity": quantity,
-            "reduceOnly": "true",
-            "workingType": "MARK_PRICE"
-        })
-        logger.info(f"SL (STOP_MARKET) {side} qty={quantity} @ {price}")
-        return result
+        # Thử STOP_MARKET trước, fallback sang STOP (limit)
+        try:
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "STOP_MARKET",
+                "stopPrice": price,
+                "quantity": quantity,
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"SL (STOP_MARKET) {side} qty={quantity} @ {price}")
+            return result
+        except Exception:
+            # Fallback: dùng STOP (limit order) — testnet cần loại này
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "STOP",
+                "stopPrice": price,
+                "price": price,
+                "quantity": quantity,
+                "reduceOnly": "true",
+                "timeInForce": "GTC",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"SL (STOP limit) {side} qty={quantity} @ {price}")
+            return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — dùng TAKE_PROFIT_MARKET với quantity và reduceOnly"""
+        """TP — dùng TAKE_PROFIT (limit) với price=stopPrice"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        result = self._post("/fapi/v1/order", {
-            "symbol": symbol, "side": side,
-            "type": "TAKE_PROFIT_MARKET",
-            "stopPrice": price,
-            "quantity": quantity,
-            "reduceOnly": "true",
-            "workingType": "MARK_PRICE"
-        })
-        logger.info(f"TP (TAKE_PROFIT_MARKET) {side} qty={quantity} @ {price}")
-        return result
+        # Thử TAKE_PROFIT_MARKET trước, fallback sang TAKE_PROFIT (limit)
+        try:
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": price,
+                "quantity": quantity,
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"TP (TAKE_PROFIT_MARKET) {side} qty={quantity} @ {price}")
+            return result
+        except Exception:
+            # Fallback: dùng TAKE_PROFIT (limit order) — testnet cần loại này
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "TAKE_PROFIT",
+                "stopPrice": price,
+                "price": price,
+                "quantity": quantity,
+                "reduceOnly": "true",
+                "timeInForce": "GTC",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"TP (TAKE_PROFIT limit) {side} qty={quantity} @ {price}")
+            return result
 
     def cancel_all_orders(self, symbol: str):
         """Hủy tất cả lệnh đang mở"""
