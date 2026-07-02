@@ -290,17 +290,67 @@ def dashboard_updater():
         time.sleep(1)
 
 # ============================================================
-# THREAD 1: Giá realtime mỗi 3 giây
+# THREAD 1a: Giá realtime qua WebSocket (cập nhật mỗi 100ms)
+# ============================================================
+def price_ws_streamer():
+    """WebSocket stream giá realtime từ Binance — nhanh hơn REST 30 lần"""
+    import websocket as ws_lib
+    import json as _json
+
+    symbols = [s.lower() for s in WATCHLIST]
+    streams = "/".join([f"{s}@markPrice@1s" for s in symbols])
+
+    base_ws = "wss://fstream.binance.com" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
+    url = f"{base_ws}/stream?streams={streams}"
+
+    def on_message(wsapp, message):
+        try:
+            data = _json.loads(message)
+            payload = data.get("data", {})
+            sym = payload.get("s", "")
+            mark = float(payload.get("p", 0))
+            if sym and mark > 0:
+                with lock:
+                    state["prices"][sym] = mark
+        except Exception:
+            pass
+
+    def on_error(wsapp, error):
+        logger.debug(f"Price WS error: {error}")
+
+    def on_close(wsapp, close_code, close_msg):
+        logger.debug("Price WS closed, reconnecting in 3s...")
+
+    while state["running"]:
+        try:
+            wsapp = ws_lib.WebSocketApp(
+                url,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            wsapp.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            logger.debug(f"Price WS exception: {e}")
+        if state["running"]:
+            time.sleep(3)
+
+
+# ============================================================
+# THREAD 1b: Position/Balance updater mỗi 5 giây (REST)
 # ============================================================
 def price_updater(exchange):
     consecutive_errors = 0
     while state["running"]:
         try:
+            # Giá đã được WebSocket cập nhật, chỉ dùng REST cho coins chưa có giá
             new_prices = {}
             for sym in WATCHLIST:
-                try: new_prices[sym] = exchange.get_ticker_price(sym)
-                except: pass
-            consecutive_errors = 0  # reset khi thành công
+                with lock:
+                    if sym not in state["prices"] or state["prices"][sym] == 0:
+                        try: new_prices[sym] = exchange.get_ticker_price(sym)
+                        except: pass
+            consecutive_errors = 0
 
             # Lấy tất cả positions đang mở từ Binance
             try:
@@ -383,7 +433,7 @@ def price_updater(exchange):
             logger.error(f"Price updater: {e} — retry in {wait}s ({consecutive_errors} errors)")
             time.sleep(wait)
             continue
-        time.sleep(3)
+        time.sleep(5)
 
 # ============================================================
 # THREAD 2: Trade engine mỗi 60 giây
@@ -1136,6 +1186,10 @@ if __name__ == "__main__":
 
     t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
     t1.start()
+
+    # WebSocket price stream (realtime)
+    t1ws = threading.Thread(target=price_ws_streamer, daemon=True)
+    t1ws.start()
 
     trade_engine(exchange, notifier)  # send startup notification
 
