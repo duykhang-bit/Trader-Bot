@@ -889,11 +889,22 @@ def limit_order_monitor(exchange, notifier):
                             logger.error(f"[LimitMonitor] TP failed {sym}: {e}")
 
                         # Notify
+                        fill_price = float(result.get("avgPrice", 0) or result.get("price", 0) or 0)
+                        def _pd(p):
+                            if p >= 10000: return 1
+                            if p >= 1000: return 2
+                            if p >= 10: return 2
+                            if p >= 1: return 4
+                            return 5
                         notifier.telegram.send(
-                            f"✅ <b>LIMIT FILLED + SL/TP SET</b>\n"
-                            f"📊 {sym} {side}\n"
-                            f"🛑 SL: ${sl:,.2f}\n"
-                            f"🎯 TP: ${tp:,.2f}"
+                            f"🔔 <b>LIMIT ORDER FILLED!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 {sym} <b>{side}</b>\n"
+                            f"💵 Fill Price: <b>${fill_price:,.{_pd(fill_price) if fill_price > 0 else 2}f}</b>\n"
+                            f"📦 Qty: {qty}\n"
+                            f"🛑 SL set: <b>${sl:,.{_pd(sl)}f}</b>\n"
+                            f"🎯 TP set: <b>${tp:,.{_pd(tp)}f}</b>\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                         )
 
                         # Remove from pending
