@@ -16,6 +16,9 @@ FIXED_COINS = [
     "ETHUSDT",
     "BNBUSDT",
     "NFPUSDT",
+    "4USDT",
+    "SIRENUSDT",
+    "PONDUSDT",
 ]
 
 # --- Binance API ---
