@@ -328,6 +328,30 @@ def auto_set_sltp(exchange, symbol: str, side: str, entry: float, qty: float,
     tp = suggestion["tp"]
     close_side = "SELL" if side == "LONG" else "BUY"
 
+    # Lấy giá hiện tại để validate SL/TP
+    try:
+        current_price = exchange.get_ticker_price(symbol)
+    except Exception:
+        current_price = entry
+
+    # Fix SL: phải dưới giá hiện tại (LONG) hoặc trên giá hiện tại (SHORT)
+    if side == "LONG":
+        if sl >= current_price:
+            # Giá đã rớt dưới SL đề xuất → đặt SL dưới giá hiện tại 1.5%
+            sl = round(current_price * 0.985, _price_decimals(current_price))
+            suggestion["method"] = f"SL: Emergency (price dropped) | TP: {suggestion['method'].split('|')[-1].strip()}"
+    else:  # SHORT
+        if sl <= current_price:
+            # Giá đã tăng trên SL đề xuất → đặt SL trên giá hiện tại 1.5%
+            sl = round(current_price * 1.015, _price_decimals(current_price))
+            suggestion["method"] = f"SL: Emergency (price pumped) | TP: {suggestion['method'].split('|')[-1].strip()}"
+
+    # Fix TP: phải trên giá hiện tại (LONG) hoặc dưới giá hiện tại (SHORT)
+    if side == "LONG" and tp <= current_price:
+        tp = round(current_price * 1.02, _price_decimals(current_price))
+    elif side == "SHORT" and tp >= current_price:
+        tp = round(current_price * 0.98, _price_decimals(current_price))
+
     sl_ok = False
     tp_ok = False
 
