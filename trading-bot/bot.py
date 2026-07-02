@@ -310,11 +310,11 @@ def price_updater(exchange):
                     sym   = p["symbol"]
                     amt   = float(p.get("positionAmt", 0))
                     entry = float(p.get("entryPrice", 0))
-                    mark  = new_prices.get(sym, float(p.get("markPrice", entry)))
+                    mark  = float(p.get("markPrice", 0)) or new_prices.get(sym, entry)
                     lev   = int(float(p.get("leverage", config.LEVERAGE)))
                     side  = "LONG" if amt > 0 else "SHORT"
                     pnl   = abs(amt) * (mark - entry) if side == "LONG" else abs(amt) * (entry - mark)
-                    pct   = (mark - entry) / entry * 100 if side == "LONG" else (entry - mark) / entry * 100
+                    pct   = ((mark - entry) / entry * 100 * lev) if side == "LONG" else ((entry - mark) / entry * 100 * lev)
                     p["_mark"] = mark
                     p["_pnl"]  = pnl
                     p["_pct"]  = pct

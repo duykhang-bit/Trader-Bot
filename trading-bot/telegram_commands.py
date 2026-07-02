@@ -1064,10 +1064,10 @@ class TelegramCommandHandler:
 
             side = "LONG " if amt > 0 else "SHORT"
 
-            # Tính % PnL theo chiều lệnh (có tính leverage)
+            # Tính % PnL theo chiều lệnh (có tính leverage) — giống Binance ROE%
             if entry > 0:
                 raw_pct = (mark - entry) / entry * 100
-                pnl_pct = raw_pct if amt > 0 else -raw_pct
+                pnl_pct = (raw_pct if amt > 0 else -raw_pct) * lev
             else:
                 pnl_pct = 0.0
 
