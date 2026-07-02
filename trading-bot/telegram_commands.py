@@ -772,6 +772,8 @@ class TelegramCommandHandler:
             else:
                 signal = "WAIT"
 
+            logger.info(f"[Telegram] Signal={signal} score L={long_score} S={short_score} for {symbol}")
+
             # ── Tính Entry / SL / TP ─────────────────────────────────
             atr_val = cur_atr
             sl_mult = getattr(self.config, "ATR_SL_MULTIPLIER", 2.0)
@@ -854,6 +856,8 @@ class TelegramCommandHandler:
 
             msg = "\n".join(lines)
 
+            logger.info(f"[Telegram] Building keyboard for {symbol} signal={signal}")
+
             # ── Inline keyboard — luôn cho chọn cả LONG và SHORT ──
             # Tính SL/TP cho hướng ngược lại
             if signal == "LONG":
@@ -863,16 +867,22 @@ class TelegramCommandHandler:
                 sl_reverse = round(price - atr_val * sl_mult, _price_decimals(price))
                 tp_reverse = round(price + atr_val * tp_mult, _price_decimals(price))
 
+            # Truncate prices cho callback_data (max 64 bytes)
+            def _cb_price(p):
+                if p >= 1000: return f"{p:.1f}"
+                if p >= 1: return f"{p:.2f}"
+                return f"{p:.4f}"
+
             if signal == "LONG":
                 markup = {"inline_keyboard": [
-                    [{"text": f"✅ LONG @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_LONG_{sl}_{tp}_auto_{symbol}"}],
-                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{sl_reverse}_{tp_reverse}_auto_{symbol}"}],
+                    [{"text": f"✅ LONG @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_LONG_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
             elif signal == "SHORT":
                 markup = {"inline_keyboard": [
-                    [{"text": f"✅ SHORT @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_SHORT_{sl}_{tp}_auto_{symbol}"}],
-                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{sl_reverse}_{tp_reverse}_auto_{symbol}"}],
+                    [{"text": f"✅ SHORT @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_SHORT_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
+                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
             else:
@@ -882,12 +892,13 @@ class TelegramCommandHandler:
                 sl_short = round(price + atr_val * sl_mult, _price_decimals(price))
                 tp_short = round(price - atr_val * tp_mult, _price_decimals(price))
                 markup = {"inline_keyboard": [
-                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{sl_long}_{tp_long}_auto_{symbol}"}],
-                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{sl_short}_{tp_short}_auto_{symbol}"}],
+                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{_cb_price(sl_long)}_{_cb_price(tp_long)}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{_cb_price(sl_short)}_{_cb_price(tp_short)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
 
             self.send(msg, markup=markup)
+            logger.info(f"[Telegram] Analysis sent for {symbol}")
 
         except Exception as e:
             logger.error(f"_analyze_and_send error: {e}", exc_info=True)
