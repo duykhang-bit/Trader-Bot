@@ -351,8 +351,11 @@ class TelegramCommandHandler:
                     t     = o.get("type", "")
                     side  = o.get("side", "")
                     sym   = o.get("symbol", "").replace("USDT", "")
-                    price = float(o.get("stopPrice") or o.get("price") or 0)
-                    lines.append(f"• {sym} {t} {side} @ <b>${price:,.4f}</b>")
+                    # stopPrice hoặc price — check cả 2, bỏ qua "0" và ""
+                    stop_p = float(o.get("stopPrice", 0) or 0)
+                    limit_p = float(o.get("price", 0) or 0)
+                    price = stop_p if stop_p > 0 else limit_p
+                    lines.append(f"• {sym} {t} {side} @ <b>${price:,.{_price_decimals(price)}f}</b>")
                 return "\n".join(lines)
             except Exception as e:
                 return f"❌ Lỗi: {e}"
