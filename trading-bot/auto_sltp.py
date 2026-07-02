@@ -248,12 +248,25 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
         if not open_pos:
             return []
 
-        # Lấy tất cả open orders
+        # Lấy tất cả open orders (regular)
         all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+
+        # Lấy Algo/Conditional orders (SL/TP mới dùng endpoint này)
+        try:
+            algo_orders = exchange._get("/fapi/v1/algo/openOrders", signed=True)
+            if isinstance(algo_orders, dict):
+                algo_orders = algo_orders.get("orders", [])
+        except Exception:
+            algo_orders = []
 
         # Group orders theo symbol
         orders_by_symbol = {}
         for o in all_orders:
+            sym = o.get("symbol", "")
+            orders_by_symbol.setdefault(sym, []).append(o)
+
+        # Group algo orders theo symbol
+        for o in algo_orders:
             sym = o.get("symbol", "")
             orders_by_symbol.setdefault(sym, []).append(o)
 
@@ -266,10 +279,20 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
             side = "LONG" if amt > 0 else "SHORT"
 
             orders = orders_by_symbol.get(sym, [])
+            # Check regular orders
             has_sl = any(o.get("type") in ("STOP_MARKET", "STOP") and
                         o.get("reduceOnly", False) for o in orders)
             has_tp = any(o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") and
                         o.get("reduceOnly", False) for o in orders)
+            # Check algo/conditional orders
+            if not has_sl:
+                has_sl = any(o.get("orderType") == "STOP_MARKET" or
+                            o.get("algoType") == "CONDITIONAL" and "STOP" in o.get("orderType", "")
+                            for o in orders)
+            if not has_tp:
+                has_tp = any(o.get("orderType") == "TAKE_PROFIT_MARKET" or
+                            o.get("algoType") == "CONDITIONAL" and "TAKE_PROFIT" in o.get("orderType", "")
+                            for o in orders)
 
             if not has_sl or not has_tp:
                 unprotected.append({
