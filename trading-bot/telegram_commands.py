@@ -723,9 +723,9 @@ class TelegramCommandHandler:
 
             # EMA
             if cur_ema9 > cur_ema21:
-                long_pts.append("EMA9>EMA21 uptrend")
+                long_pts.append("EMA9↑EMA21 uptrend")
             else:
-                short_pts.append("EMA9<EMA21 downtrend")
+                short_pts.append("EMA9↓EMA21 downtrend")
 
             if price > cur_ema50:
                 long_pts.append("Giá trên EMA50")
