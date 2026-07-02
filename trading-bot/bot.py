@@ -676,12 +676,12 @@ def scan_engine(exchange, notifier):
                 except: pass
 
                 if best.signal == "LONG":
-                    sl = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    tp = price + (price - sl) * 3   # RR 1:3
+                    sl = price * (1 - 0.01)   # SL 1% dưới entry
+                    tp = price * (1 + 0.015)  # TP 1.5% trên entry
                     side = "BUY"
                 else:
-                    sl = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    tp = price - (sl - price) * 3   # RR 1:3
+                    sl = price * (1 + 0.01)   # SL 1% trên entry
+                    tp = price * (1 - 0.015)  # TP 1.5% dưới entry
                     side = "SELL"
 
                 qty = calc_qty(bal, price, sl)

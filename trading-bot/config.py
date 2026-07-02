@@ -12,27 +12,24 @@ WATCHLIST_MODE = "fixed"
 # Thêm/bớt coin tùy ý, phải có hậu tố USDT
 FIXED_COINS = [
     "BTCUSDT",
-    "SOLUSDT",
     "ETHUSDT",
     "BNBUSDT",
     "XRPUSDT",
-    "SIRENUSDT",
-    "4USDT",
+    "SOLUSDT",
 ]
 
-# --- Binance API ---
-API_KEY    = "qVexTMqcOXpOn1hhCUYIft0mTC02mUG6AjqcAH5qhm0oelCXHQY0Gf5Pa3sbnNFs"
-API_SECRET = "bSeITXHc8BPDH8Ih3xrozBbhBAurTvJUP5jsI2whqi8SLrKvrlIFFDaJJRmDZo8X"
+# --- Binance API (REAL ACCOUNT) ---
+API_KEY    = "4nvrEO0C9JJaRLsvbQP4Foq6ZZqSrY3GFgxiBBBqWTllKm2UwNYqdgkGY093SX2J"
+API_SECRET = "FwTPwL0tgVlfDDQpZIdjaUZyyJ28OaD5RxSfMeqCwztIAuRm2bMFc04RwOoY7lSc"
 
-USE_TESTNET   = True
-LIVE_BASE_URL = "https://testnet.binancefuture.com"  # Testnet
-# LIVE_BASE_URL = "https://fapi.binance.com"     # Live thật
+USE_TESTNET   = False
+LIVE_BASE_URL = "https://fapi.binance.com"     # Live Futures
 
 # --- Timeframe ---
 SYMBOL       = "BTCUSDT"
 INTERVAL     = "15m"
 HTF_INTERVAL = "1h"
-LEVERAGE     = 10
+LEVERAGE     = 5
 
 # --- RSI ---
 RSI_PERIOD     = 14
@@ -61,13 +58,13 @@ ATR_TP_MULTIPLIER = 4.0
 RISK_PER_TRADE     = 0.01
 STOP_LOSS_PCT      = 0.02
 MAX_OPEN_POSITIONS = 3
-MAX_ORDER_USDT     = 15.0
+MAX_ORDER_USDT     = 5.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
 MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
 
 # --- Strategy ---
-MIN_SCORE           = 50.0
+MIN_SCORE           = 35.0
 COOLDOWN_AFTER_LOSS = 300
 
 # --- Bot Settings ---

@@ -218,20 +218,20 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
 
     except Exception as e:
         logger.error(f"suggest_sltp error for {symbol}: {e}")
-        # Fallback: 2% SL, 4% TP
+        # Fallback: 1% SL, 1.5% TP
         if side == "LONG":
-            sl = entry_price * 0.98
-            tp = entry_price * 1.04
+            sl = entry_price * 0.99
+            tp = entry_price * 1.015
         else:
-            sl = entry_price * 1.02
-            tp = entry_price * 0.96
+            sl = entry_price * 1.01
+            tp = entry_price * 0.985
         return {
             "sl": round(sl, _price_decimals(entry_price)),
             "tp": round(tp, _price_decimals(entry_price)),
-            "sl_pct": 2.0,
-            "tp_pct": 4.0,
-            "rr": 2.0,
-            "method": "Fallback 2%/4%",
+            "sl_pct": 1.0,
+            "tp_pct": 1.5,
+            "rr": 1.5,
+            "method": "Fallback 1%/1.5%",
             "details": f"Error: {e}",
         }
 
