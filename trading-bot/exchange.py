@@ -187,11 +187,11 @@ class BinanceFutures:
             return round(price, 6)
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — dùng STOP (limit) với price=stopPrice để đảm bảo fill"""
+        """SL — thử STOP_MARKET, fallback STOP, fallback Algo API"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        # Thử STOP_MARKET trước, fallback sang STOP (limit)
+        # Try 1: STOP_MARKET
         try:
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
@@ -204,7 +204,9 @@ class BinanceFutures:
             logger.info(f"SL (STOP_MARKET) {side} qty={quantity} @ {price}")
             return result
         except Exception:
-            # Fallback: dùng STOP (limit order) — testnet cần loại này
+            pass
+        # Try 2: STOP (limit)
+        try:
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
                 "type": "STOP",
@@ -217,13 +219,27 @@ class BinanceFutures:
             })
             logger.info(f"SL (STOP limit) {side} qty={quantity} @ {price}")
             return result
+        except Exception:
+            pass
+        # Try 3: Algo/Conditional order API (Portfolio Margin)
+        result = self._post("/fapi/v1/algo/order", {
+            "symbol": symbol, "side": side,
+            "positionSide": "BOTH",
+            "type": "STOP_MARKET",
+            "stopPrice": price,
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE"
+        })
+        logger.info(f"SL (Algo) {side} qty={quantity} @ {price}")
+        return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — dùng TAKE_PROFIT (limit) với price=stopPrice"""
+        """TP — thử TAKE_PROFIT_MARKET, fallback TAKE_PROFIT, fallback Algo API"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        # Thử TAKE_PROFIT_MARKET trước, fallback sang TAKE_PROFIT (limit)
+        # Try 1: TAKE_PROFIT_MARKET
         try:
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
@@ -236,7 +252,9 @@ class BinanceFutures:
             logger.info(f"TP (TAKE_PROFIT_MARKET) {side} qty={quantity} @ {price}")
             return result
         except Exception:
-            # Fallback: dùng TAKE_PROFIT (limit order) — testnet cần loại này
+            pass
+        # Try 2: TAKE_PROFIT (limit)
+        try:
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
                 "type": "TAKE_PROFIT",
@@ -249,6 +267,20 @@ class BinanceFutures:
             })
             logger.info(f"TP (TAKE_PROFIT limit) {side} qty={quantity} @ {price}")
             return result
+        except Exception:
+            pass
+        # Try 3: Algo/Conditional order API (Portfolio Margin)
+        result = self._post("/fapi/v1/algo/order", {
+            "symbol": symbol, "side": side,
+            "positionSide": "BOTH",
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": price,
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE"
+        })
+        logger.info(f"TP (Algo) {side} qty={quantity} @ {price}")
+        return result
 
     def cancel_all_orders(self, symbol: str):
         """Hủy tất cả lệnh đang mở"""
