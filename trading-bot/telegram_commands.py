@@ -41,11 +41,13 @@ class TelegramCommandHandler:
         if markup:
             payload["reply_markup"] = markup
         try:
-            requests.post(
+            resp = requests.post(
                 f"https://api.telegram.org/bot{self.token}/sendMessage",
                 json=payload,
                 timeout=10
             )
+            if resp.status_code != 200:
+                logger.error(f"Telegram send FAILED ({resp.status_code}): {resp.text[:300]}")
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
 
