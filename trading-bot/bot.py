@@ -512,16 +512,27 @@ def calc_qty(balance, entry, sl):
     return max(qty, 0.1 if entry >= 1 else 1)
 
 def trade_engine(exchange, notifier):
-    # Startup noti
-    bal = exchange.get_account_balance()
-    with lock: state["balance"] = bal
-    notifier.telegram.send(
-        f"🚀 <b>MULTI-COIN BOT STARTED</b>\n"
-        f"💼 Balance: <b>${bal:,.2f} USDT</b>\n"
-        f"⚡ Leverage: <b>{config.LEVERAGE}x</b>\n"
-        f"📊 Scanning <b>{len(WATCHLIST)} coins</b> mỗi {config.LOOP_INTERVAL_SECONDS}s\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-    )
+    # Startup noti — retry nếu bị rate limit
+    for attempt in range(5):
+        try:
+            bal = exchange.get_account_balance()
+            with lock: state["balance"] = bal
+            notifier.telegram.send(
+                f"🚀 <b>MULTI-COIN BOT STARTED</b>\n"
+                f"💼 Balance: <b>${bal:,.2f} USDT</b>\n"
+                f"⚡ Leverage: <b>{config.LEVERAGE}x</b>\n"
+                f"📊 Scanning <b>{len(WATCHLIST)} coins</b> mỗi {config.LOOP_INTERVAL_SECONDS}s\n"
+                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            )
+            return
+        except Exception as e:
+            if "418" in str(e):
+                wait = 30 * (attempt + 1)
+                logger.warning(f"Rate limited (418), waiting {wait}s... (attempt {attempt+1}/5)")
+                time.sleep(wait)
+            else:
+                logger.error(f"trade_engine startup error: {e}")
+                return
 
 # ============================================================
 # THREAD 2a: Monitor SL/TP cho position đang mở (mỗi 5 giây)
