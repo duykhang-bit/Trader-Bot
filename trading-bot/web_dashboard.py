@@ -588,9 +588,35 @@ def api_toggle():
     return jsonify({"ok": True, "msg": f"Bot {new_status}", "running": not current})
 
 
+def _save_coins_to_config(coins: list):
+    """Ghi danh sách coins vào config.py để persist khi restart."""
+    import os
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Replace FIXED_COINS block
+        import re
+        new_block = "FIXED_COINS = [\n"
+        for c in coins:
+            new_block += f'    "{c}",\n'
+        new_block += "]"
+        content = re.sub(
+            r'FIXED_COINS\s*=\s*\[.*?\]',
+            new_block,
+            content,
+            flags=re.DOTALL
+        )
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"Config saved: FIXED_COINS = {coins}")
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+
+
 @app.route("/api/coins/add", methods=["POST"])
 def api_add_coin():
-    """Add coin to watchlist."""
+    """Add coin to watchlist + save to config.py."""
     data = request.get_json() or {}
     symbol = data.get("symbol", "").upper().strip()
     if not symbol or not symbol.endswith("USDT"):
@@ -603,7 +629,7 @@ def api_add_coin():
         wl.append(symbol)
         _state["_watchlist"] = wl
 
-    # Also update scanner WATCHLIST
+    # Update scanner WATCHLIST
     try:
         from scanner import WATCHLIST
         if symbol not in WATCHLIST:
@@ -611,13 +637,16 @@ def api_add_coin():
     except Exception:
         pass
 
+    # Save to config.py
+    _save_coins_to_config(wl)
+
     logger.info(f"Coin added: {symbol}")
     return jsonify({"ok": True, "msg": f"Added {symbol}"})
 
 
 @app.route("/api/coins/remove", methods=["POST"])
 def api_remove_coin():
-    """Remove coin from watchlist."""
+    """Remove coin from watchlist + save to config.py."""
     data = request.get_json() or {}
     symbol = data.get("symbol", "").upper().strip()
 
@@ -636,6 +665,7 @@ def api_remove_coin():
         pass
 
     logger.info(f"Coin removed: {symbol}")
+    _save_coins_to_config(wl)
     return jsonify({"ok": True, "msg": f"Removed {symbol}"})
 
 

@@ -65,7 +65,7 @@ TRAILING_STOP_PCT  = 0.015
 MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
 
 # --- Strategy ---
-MIN_SCORE           = 70.0
+MIN_SCORE           = 50.0
 COOLDOWN_AFTER_LOSS = 300
 
 # --- Bot Settings ---
