@@ -157,6 +157,18 @@ async function cancelOrder(sym, orderId) {
     await apiPost('/api/cancel_order', {symbol: sym, order_id: orderId});
     refresh();
 }
+async function autoSetSlTp(sym) {
+    toast('Setting SL/TP for ' + sym + '...');
+    const r = await apiPost('/api/auto_sltp', {symbol: sym});
+    if (r && r.msg) toast(r.msg, r.ok);
+    refresh();
+}
+async function autoSetSlTpAll() {
+    toast('Setting SL/TP for ALL positions...');
+    const r = await apiPost('/api/auto_sltp', {symbol: 'ALL'});
+    if (r && r.msg) toast(r.msg, r.ok);
+    refresh();
+}
 
 function renderDashboard(d) {
     // Bot status
@@ -235,14 +247,17 @@ function renderDashboard(d) {
 
     // Open Positions
     if (d.open_positions && d.open_positions.length > 0) {
-        html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2><table>
+        html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
+            <button class="btn btn-green btn-sm" onclick="autoSetSlTpAll()" style="margin-bottom:8px">&#x1F6E1; Auto Set SL/TP ALL</button>
+            <table>
             <tr><th>Coin</th><th>Side</th><th>Entry</th><th>Mark</th><th>PnL</th><th>%</th><th>Lev</th><th></th></tr>`;
         d.open_positions.forEach(p => {
             html += `<tr><td><b>${p.symbol.replace('USDT','')}</b></td><td>${sideHtml(p.side)}</td>
                 <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
                 <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
                 <td class="${pnlColor(p.pct)}">${fmt(p.pct,1)}%</td><td>${p.lev}x</td>
-                <td><button class="btn btn-red btn-sm" onclick="closePosition('${p.symbol}')">Close</button></td></tr>`;
+                <td><button class="btn btn-green btn-sm" onclick="autoSetSlTp('${p.symbol}')" title="Auto SL/TP">&#x1F6E1;</button>
+                <button class="btn btn-red btn-sm" onclick="closePosition('${p.symbol}')">Close</button></td></tr>`;
         });
         html += `</table></div>`;
     }
@@ -880,6 +895,44 @@ def api_close_position():
         return jsonify({"ok": True, "msg": f"{icon} Closed {symbol} PnL: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)"})
     except Exception as e:
         logger.error(f"Close position failed: {e}")
+        return jsonify({"ok": False, "msg": str(e)[:200]})
+
+
+@app.route("/api/auto_sltp", methods=["POST"])
+def api_auto_sltp():
+    """Auto set SL/TP for a position (or ALL) using chart analysis."""
+    data = request.get_json() or {}
+    symbol = data.get("symbol", "").upper()
+    if not symbol:
+        return jsonify({"ok": False, "msg": "No symbol"})
+    if _exchange is None:
+        return jsonify({"ok": False, "msg": "Exchange not initialized"})
+
+    try:
+        from auto_sltp import get_positions_without_sltp, auto_set_sltp
+        liq_tracker = _state.get("liq_tracker") if _state else None
+        unprotected = get_positions_without_sltp(_exchange)
+
+        if symbol == "ALL":
+            if not unprotected:
+                return jsonify({"ok": True, "msg": "All positions already have SL/TP"})
+            results = []
+            for pos in unprotected:
+                r = auto_set_sltp(_exchange, pos["symbol"], pos["side"],
+                                  pos["entry"], pos["qty"], liq_tracker)
+                results.append(f"{pos['symbol']}: {'OK' if r['ok'] else 'FAILED'}")
+            msg = "Set SL/TP:\n" + "\n".join(results)
+            return jsonify({"ok": True, "msg": msg})
+        else:
+            pos = next((p for p in unprotected if p["symbol"] == symbol), None)
+            if not pos:
+                return jsonify({"ok": True, "msg": f"{symbol} already has SL/TP or no position"})
+            r = auto_set_sltp(_exchange, pos["symbol"], pos["side"],
+                              pos["entry"], pos["qty"], liq_tracker)
+            return jsonify({"ok": r["ok"], "msg": r["msg"]})
+
+    except Exception as e:
+        logger.error(f"Auto SL/TP failed: {e}")
         return jsonify({"ok": False, "msg": str(e)[:200]})
 
 

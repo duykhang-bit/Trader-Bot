@@ -245,6 +245,60 @@ class TelegramCommandHandler:
             except Exception as e:
                 return f"❌ Lỗi: {e}"
 
+        # /settp — Hiển thị positions chưa có SL/TP, bấm nút để auto set
+        elif cmd == "/settp":
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            from auto_sltp import get_positions_without_sltp, suggest_sltp
+            unprotected = get_positions_without_sltp(exchange)
+            if not unprotected:
+                return "✅ Tất cả positions đã có SL/TP"
+
+            liq_tracker = self.state.get("liq_tracker")
+            lines = ["⚠️ <b>POSITIONS CHƯA CÓ SL/TP:</b>\n"]
+            for pos in unprotected:
+                sym = pos["symbol"]
+                side = pos["side"]
+                entry = pos["entry"]
+                qty = pos["qty"]
+                pnl = pos["pnl"]
+                missing = []
+                if not pos["has_sl"]: missing.append("SL")
+                if not pos["has_tp"]: missing.append("TP")
+
+                # Suggest SL/TP
+                suggestion = suggest_sltp(exchange, sym, side, entry, liq_tracker)
+
+                icon = "🟢" if side == "LONG" else "🔴"
+                pnl_icon = "📈" if pnl >= 0 else "📉"
+                lines.append(
+                    f"{icon} <b>{sym.replace('USDT','')} {side}</b>\n"
+                    f"   Entry: ${entry:.4f} | {pnl_icon} PnL: ${pnl:+.2f}\n"
+                    f"   ❌ Thiếu: {', '.join(missing)}\n"
+                    f"   💡 Đề xuất: SL=${suggestion['sl']} (-{suggestion['sl_pct']}%)"
+                    f" | TP=${suggestion['tp']} (+{suggestion['tp_pct']}%)\n"
+                    f"   📐 RR: 1:{suggestion['rr']} | {suggestion['method']}\n"
+                )
+
+            lines.append("\n👇 Bấm nút bên dưới để auto set SL/TP:")
+            msg = "\n".join(lines)
+
+            # Tạo inline buttons cho từng position
+            buttons = []
+            for pos in unprotected:
+                sym = pos["symbol"]
+                buttons.append([{
+                    "text": f"🛡️ Set SL/TP — {sym.replace('USDT','')}",
+                    "callback_data": f"settp_{sym}"
+                }])
+            # Nút set tất cả
+            if len(unprotected) > 1:
+                buttons.append([{"text": "🛡️ Set ALL SL/TP", "callback_data": "settp_ALL"}])
+
+            self.send(msg, markup={"inline_keyboard": buttons})
+            return None  # Đã gửi message riêng
+
         # /grid BTCUSDT 78000 82000 20 100
         elif cmd == "/grid":
             if len(parts) < 6:
@@ -316,6 +370,7 @@ class TelegramCommandHandler:
 /usdt 5           — Đổi margin mỗi lệnh ($1-$1000)
 /risk 2           — Đổi risk % mỗi lệnh
 /closeall         — Đóng TẤT CẢ lệnh ngay
+/settp            — 🛡️ Auto set SL/TP cho lệnh chưa có
 /trade BTC        — Đánh giá LONG/SHORT coin
 /grid BTCUSDT 78000 82000 20 100  — Bật grid bot
 /stopgrid         — Dừng grid bot
@@ -1147,7 +1202,14 @@ class TelegramCommandHandler:
         except Exception:
             pass
 
-        self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh")
+        self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh",
+                 markup={"keyboard": [
+                     [{"text": "📊 Status"}, {"text": "💼 Balance"}],
+                     [{"text": "📌 Position"}, {"text": "📋 Orders"}],
+                     [{"text": "🟢 LONG"}, {"text": "🔴 SHORT"}],
+                     [{"text": "🛡️ Set SL/TP"}, {"text": "📈 Stats"}],
+                     [{"text": "🕐 History"}, {"text": "❌ Close Position"}],
+                 ], "resize_keyboard": True})
 
         while self.running and self.state.get("running", True):
             updates = self.get_updates()
@@ -1217,6 +1279,31 @@ class TelegramCommandHandler:
                                 except Exception as e:
                                     self.send(f"❌ Lỗi: {e}")
 
+                    elif data.startswith("settp_"):
+                        # Format: settp_BTCUSDT or settp_ALL
+                        target = data.replace("settp_", "")
+                        exchange = self._get_exchange()
+                        if exchange:
+                            from auto_sltp import get_positions_without_sltp, auto_set_sltp
+                            liq_tracker = self.state.get("liq_tracker")
+                            unprotected = get_positions_without_sltp(exchange)
+
+                            if target == "ALL":
+                                results = []
+                                for pos in unprotected:
+                                    r = auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                                                     pos["entry"], pos["qty"], liq_tracker)
+                                    results.append(r["msg"])
+                                self.send("\n\n".join(results) if results else "✅ Không có gì cần set")
+                            else:
+                                pos = next((p for p in unprotected if p["symbol"] == target), None)
+                                if pos:
+                                    r = auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                                                     pos["entry"], pos["qty"], liq_tracker)
+                                    self.send(r["msg"])
+                                else:
+                                    self.send(f"ℹ️ {target} đã có SL/TP hoặc không có position")
+
                     elif data == "cancel_trade":
                         self.send("❌ <b>Đã hủy.</b>")
 
@@ -1242,6 +1329,7 @@ class TelegramCommandHandler:
                     "🕐 history": "/history",
                     "❌ close position": "/closeall",
                     "📺 dashboard": "/dashboard",
+                    "🛡️ set sl/tp": "/settp",
                 }
                 text_lower = text.strip().lower()
                 if text_lower in button_map:
