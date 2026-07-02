@@ -465,7 +465,7 @@ async function refresh(){
     }
     catch(e){ document.getElementById('content').innerHTML='<p style="color:#f85149">Connection lost...</p>'; }
 }
-setInterval(updateClock,1000); setInterval(refresh,500); updateClock(); refresh();
+setInterval(updateClock,1000); setInterval(refresh,2000); updateClock(); refresh();
 </script>
 </body>
 </html>"""
