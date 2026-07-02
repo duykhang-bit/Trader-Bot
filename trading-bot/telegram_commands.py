@@ -830,8 +830,8 @@ class TelegramCommandHandler:
             lines = [
                 f"📊 <b>PHÂN TÍCH {coin_name}/USDT</b>  <i>[{data_source}]</i>",
                 f"━━━━━━━━━━━━━━━━━━━━━━━",
-                f"💰 Giá hiện tại : <b>${price:,.4f}</b>  {chg_arrow}{abs(chg_pct):.2f}%",
-                f"📈 ATR (14)     : ${atr_val:,.4f}",
+                f"💰 Giá hiện tại : <b>${price:,.{_price_decimals(price)}f}</b>  {chg_arrow}{abs(chg_pct):.2f}%",
+                f"📈 ATR (14)     : ${atr_val:,.{_price_decimals(atr_val)}f}",
                 f"📊 Volume       : ×{vol_ratio:.1f} so TB",
                 f"",
                 f"🎯 <b>TÍN HIỆU: {sig_icon}</b>",
@@ -846,9 +846,9 @@ class TelegramCommandHandler:
             lines += [
                 f"",
                 f"━━━━━━━━━━━━━━━━━━━━━━━",
-                f"💵 Entry  : <b>${entry:,.4f}</b>",
-                f"🛑 SL     : <b>${sl:,.4f}</b>  ({abs(entry-sl)/entry*100:.2f}%)",
-                f"🎯 TP     : <b>${tp:,.4f}</b>  ({abs(tp-entry)/entry*100:.2f}%)",
+                f"💵 Entry  : <b>${entry:,.{_price_decimals(entry)}f}</b>",
+                f"🛑 SL     : <b>${sl:,.{_price_decimals(sl)}f}</b>  ({abs(entry-sl)/entry*100:.2f}%)",
+                f"🎯 TP     : <b>${tp:,.{_price_decimals(tp)}f}</b>  ({abs(tp-entry)/entry*100:.2f}%)",
                 f"📐 RR     : <b>1:{rr_ratio:.1f}</b>",
                 f"🏆 Win rate ước tính: <b>~{win_rate}%</b>",
                 f"",
@@ -877,14 +877,14 @@ class TelegramCommandHandler:
 
             if signal == "LONG":
                 markup = {"inline_keyboard": [
-                    [{"text": f"✅ LONG @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_LONG_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
-                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
+                    [{"text": f"✅ LONG @ ${entry:,.{_price_decimals(entry)}f} (khuyến nghị)", "callback_data": f"trade_LONG_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.{_price_decimals(entry)}f}", "callback_data": f"trade_SHORT_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
             elif signal == "SHORT":
                 markup = {"inline_keyboard": [
-                    [{"text": f"✅ SHORT @ ${entry:,.2f} (khuyến nghị)", "callback_data": f"trade_SHORT_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
-                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
+                    [{"text": f"✅ SHORT @ ${entry:,.{_price_decimals(entry)}f} (khuyến nghị)", "callback_data": f"trade_SHORT_{_cb_price(sl)}_{_cb_price(tp)}_auto_{symbol}"}],
+                    [{"text": f"⚡ LONG @ ${entry:,.{_price_decimals(entry)}f}", "callback_data": f"trade_LONG_{_cb_price(sl_reverse)}_{_cb_price(tp_reverse)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
             else:
@@ -894,8 +894,8 @@ class TelegramCommandHandler:
                 sl_short = round(price + atr_val * sl_mult, _price_decimals(price))
                 tp_short = round(price - atr_val * tp_mult, _price_decimals(price))
                 markup = {"inline_keyboard": [
-                    [{"text": f"⚡ LONG @ ${entry:,.2f}", "callback_data": f"trade_LONG_{_cb_price(sl_long)}_{_cb_price(tp_long)}_auto_{symbol}"}],
-                    [{"text": f"⚡ SHORT @ ${entry:,.2f}", "callback_data": f"trade_SHORT_{_cb_price(sl_short)}_{_cb_price(tp_short)}_auto_{symbol}"}],
+                    [{"text": f"⚡ LONG @ ${entry:,.{_price_decimals(entry)}f}", "callback_data": f"trade_LONG_{_cb_price(sl_long)}_{_cb_price(tp_long)}_auto_{symbol}"}],
+                    [{"text": f"⚡ SHORT @ ${entry:,.{_price_decimals(entry)}f}", "callback_data": f"trade_SHORT_{_cb_price(sl_short)}_{_cb_price(tp_short)}_auto_{symbol}"}],
                     [{"text": "❌ Bỏ qua", "callback_data": "cancel_trade"}],
                 ]}
 
