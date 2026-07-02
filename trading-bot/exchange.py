@@ -48,12 +48,22 @@ class BinanceFutures:
                 resp = self.session.get(
                     f"{self.base_url}{endpoint}", params=params, timeout=10
                 )
+                if resp.status_code == 418 or resp.status_code == 429:
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited ({resp.status_code}), waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as e:
+                if "418" in str(e) or "429" in str(e):
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
                 logger.error(f"GET {endpoint} failed: {e}")
                 if attempt < retries - 1:
-                    time.sleep(2 ** attempt)  # backoff: 1s, 2s, 4s
+                    time.sleep(2 ** attempt)
                 else:
                     raise
 

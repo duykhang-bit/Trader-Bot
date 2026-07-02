@@ -481,7 +481,7 @@ def price_updater(exchange):
             logger.error(f"Price updater: {e} — retry in {wait}s ({consecutive_errors} errors)")
             time.sleep(wait)
             continue
-        time.sleep(5)
+        time.sleep(10)
 
 # ============================================================
 # THREAD 2: Trade engine mỗi 60 giây
