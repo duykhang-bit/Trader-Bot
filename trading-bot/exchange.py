@@ -201,97 +201,37 @@ class BinanceFutures:
             return round(price, 6)
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — thử STOP_MARKET, fallback STOP, fallback Algo API"""
+        """SL — dùng Algo Conditional Order API"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        # Try 1: STOP_MARKET
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "STOP_MARKET",
-                "stopPrice": price,
-                "quantity": quantity,
-                "reduceOnly": "true",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"SL (STOP_MARKET) {side} qty={quantity} @ {price}")
-            return result
-        except Exception:
-            pass
-        # Try 2: STOP (limit)
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "STOP",
-                "stopPrice": price,
-                "price": price,
-                "quantity": quantity,
-                "reduceOnly": "true",
-                "timeInForce": "GTC",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"SL (STOP limit) {side} qty={quantity} @ {price}")
-            return result
-        except Exception:
-            pass
-        # Try 3: Portfolio Margin API endpoint
-        result = self._post_url("https://papi.binance.com/papi/v1/um/order", {
+        result = self._post("/fapi/v1/algoOrder", {
             "symbol": symbol, "side": side,
+            "algotype": "CONDITIONAL",
             "type": "STOP_MARKET",
-            "stopPrice": price,
-            "quantity": quantity,
+            "triggerPrice": str(price),
+            "quantity": str(quantity),
             "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"SL (PAPI) {side} qty={quantity} @ {price}")
+        logger.info(f"SL placed: {side} {symbol} qty={quantity} @ {price}")
         return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — thử TAKE_PROFIT_MARKET, fallback TAKE_PROFIT, fallback Algo API"""
+        """TP — dùng Algo Conditional Order API"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        # Try 1: TAKE_PROFIT_MARKET
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "TAKE_PROFIT_MARKET",
-                "stopPrice": price,
-                "quantity": quantity,
-                "reduceOnly": "true",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"TP (TAKE_PROFIT_MARKET) {side} qty={quantity} @ {price}")
-            return result
-        except Exception:
-            pass
-        # Try 2: TAKE_PROFIT (limit)
-        try:
-            result = self._post("/fapi/v1/order", {
-                "symbol": symbol, "side": side,
-                "type": "TAKE_PROFIT",
-                "stopPrice": price,
-                "price": price,
-                "quantity": quantity,
-                "reduceOnly": "true",
-                "timeInForce": "GTC",
-                "workingType": "MARK_PRICE"
-            })
-            logger.info(f"TP (TAKE_PROFIT limit) {side} qty={quantity} @ {price}")
-            return result
-        except Exception:
-            pass
-        # Try 3: Portfolio Margin API endpoint
-        result = self._post_url("https://papi.binance.com/papi/v1/um/order", {
+        result = self._post("/fapi/v1/algoOrder", {
             "symbol": symbol, "side": side,
+            "algotype": "CONDITIONAL",
             "type": "TAKE_PROFIT_MARKET",
-            "stopPrice": price,
-            "quantity": quantity,
+            "triggerPrice": str(price),
+            "quantity": str(quantity),
             "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"TP (PAPI) {side} qty={quantity} @ {price}")
+        logger.info(f"TP placed: {side} {symbol} qty={quantity} @ {price}")
         return result
 
     def cancel_all_orders(self, symbol: str):
