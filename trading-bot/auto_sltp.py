@@ -253,7 +253,7 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
 
         # Lấy Algo/Conditional orders (SL/TP mới dùng endpoint này)
         try:
-            algo_orders = exchange._get("/fapi/v1/algo/openOrders", signed=True)
+            algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
             if isinstance(algo_orders, dict):
                 algo_orders = algo_orders.get("orders", [])
         except Exception:
