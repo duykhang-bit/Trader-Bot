@@ -1282,15 +1282,17 @@ def _price_decimals(price: float) -> int:
 
 def _qty_decimals(price: float) -> int:
     """Số chữ số thập phân cho qty"""
-    if price >= 10000: return 3
-    if price >= 1000:  return 2
-    if price >= 10:    return 1
+    if price >= 10000: return 3    # BTC: 0.001
+    if price >= 1000:  return 3    # ETH: 0.001
+    if price >= 100:   return 2    # BNB: 0.01
+    if price >= 10:    return 1    # SOL: 0.1
     return 0
 
 def _min_qty(price: float) -> float:
     """Qty tối thiểu theo giá coin"""
-    if price >= 10000: return 0.001
-    if price >= 1000:  return 0.01
-    if price >= 100:   return 0.1
-    if price >= 1:     return 1.0
+    if price >= 10000: return 0.001   # BTC
+    if price >= 1000:  return 0.01    # ETH
+    if price >= 100:   return 0.01    # BNB
+    if price >= 10:    return 0.1     # SOL, XRP nếu giá >$10
+    if price >= 1:     return 1.0     # altcoins ~$1-$10
     return 10.0
