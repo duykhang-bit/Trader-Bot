@@ -72,6 +72,20 @@ class BinanceFutures:
             logger.error(f"POST {endpoint} failed: {e}")
             raise
 
+    def _post_url(self, url: str, params: dict = None):
+        """POST to absolute URL (for Portfolio Margin papi.binance.com)"""
+        params = params or {}
+        params = self._sign(params)
+        try:
+            resp = self.session.post(url, params=params, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"POST {url} failed ({resp.status_code}): {resp.text[:300]}")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"POST {url} failed: {e}")
+            raise
+
     def _delete(self, endpoint: str, params: dict = None):
         params = params or {}
         params = self._sign(params)
@@ -221,17 +235,16 @@ class BinanceFutures:
             return result
         except Exception:
             pass
-        # Try 3: Algo/Conditional order API (Portfolio Margin)
-        result = self._post("/fapi/v1/algo/order", {
+        # Try 3: Portfolio Margin API endpoint
+        result = self._post_url("https://papi.binance.com/papi/v1/um/order", {
             "symbol": symbol, "side": side,
-            "positionSide": "BOTH",
             "type": "STOP_MARKET",
             "stopPrice": price,
             "quantity": quantity,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"SL (Algo) {side} qty={quantity} @ {price}")
+        logger.info(f"SL (PAPI) {side} qty={quantity} @ {price}")
         return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
@@ -269,17 +282,16 @@ class BinanceFutures:
             return result
         except Exception:
             pass
-        # Try 3: Algo/Conditional order API (Portfolio Margin)
-        result = self._post("/fapi/v1/algo/order", {
+        # Try 3: Portfolio Margin API endpoint
+        result = self._post_url("https://papi.binance.com/papi/v1/um/order", {
             "symbol": symbol, "side": side,
-            "positionSide": "BOTH",
             "type": "TAKE_PROFIT_MARKET",
             "stopPrice": price,
             "quantity": quantity,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE"
         })
-        logger.info(f"TP (Algo) {side} qty={quantity} @ {price}")
+        logger.info(f"TP (PAPI) {side} qty={quantity} @ {price}")
         return result
 
     def cancel_all_orders(self, symbol: str):
