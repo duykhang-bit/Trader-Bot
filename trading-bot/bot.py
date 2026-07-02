@@ -375,6 +375,54 @@ def price_updater(exchange):
             with lock:
                 state["prices"].update(new_prices)
                 state["balance"] = exchange.get_account_balance()
+
+                # ── Detect positions closed externally (app/web Binance) ──
+                prev_positions = {p["symbol"] for p in state.get("open_positions", [])
+                                  if abs(float(p.get("positionAmt", 0))) > 0}
+                curr_positions = {p["symbol"] for p in open_pos}
+                closed_externally = prev_positions - curr_positions
+
+                for sym in closed_externally:
+                    # Tìm lệnh OPEN tương ứng trong trade_log
+                    for t in reversed(state.get("trade_log", [])):
+                        if t.get("symbol") == sym and t.get("status") == "OPEN":
+                            # Lấy giá đóng từ price
+                            close_price = state["prices"].get(sym, t.get("entry", 0))
+                            entry = t.get("entry", 0)
+                            side = t.get("side", "LONG")
+                            qty = t.get("qty", 0)
+                            if entry > 0:
+                                pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                                pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+                            else:
+                                pnl_pct = 0
+                                pnl_usd = 0
+                            t.update({
+                                "status": "CLOSED",
+                                "close": close_price,
+                                "pnl_usdt": round(pnl_usd, 2),
+                                "pnl_pct": round(pnl_pct, 2),
+                                "note": "closed_external"
+                            })
+                            logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
+                            from trade_history import save_history
+                            save_history(state["trade_log"])
+                            # Notify
+                            try:
+                                notifier_inst = state.get("_notifier")
+                                if notifier_inst:
+                                    icon = "✅" if pnl_usd >= 0 else "❌"
+                                    notifier_inst.telegram.send(
+                                        f"🔒 <b>LỆNH ĐÓNG (từ Binance app)</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 {sym} {side}\n"
+                                        f"💵 PnL: <b>{icon} ${pnl_usd:+.2f}</b> ({pnl_pct:+.1f}%)\n"
+                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                            except Exception:
+                                pass
+                            break
+
                 state["open_positions"] = open_pos
 
             # ── Max loss check: đóng lệnh nếu lỗ > MAX_LOSS_PER_POSITION ──
