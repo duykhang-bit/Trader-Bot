@@ -325,6 +325,56 @@ def price_updater(exchange):
                 state["balance"] = exchange.get_account_balance()
                 state["open_positions"] = open_pos
 
+            # ── Max loss check: đóng lệnh nếu lỗ > MAX_LOSS_PER_POSITION ──
+            max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 10.0)
+            for p in open_pos:
+                pnl = p.get("_pnl", 0)
+                if pnl < -max_loss:
+                    sym = p["symbol"]
+                    amt = float(p.get("positionAmt", 0))
+                    close_side = "SELL" if amt > 0 else "BUY"
+                    qty = abs(amt)
+                    if qty == int(qty):
+                        qty = int(qty)
+                    try:
+                        # Chia batch nếu qty > 100k
+                        remaining = qty
+                        while remaining > 0:
+                            batch = min(remaining, 100000)
+                            if batch == int(batch):
+                                batch = int(batch)
+                            exchange.place_market_order(sym, close_side, batch)
+                            remaining -= batch
+                        exchange.cancel_all_orders(sym)
+                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} (exceeded -${max_loss})")
+
+                        # Notify
+                        from notifier import Notifier, NOTIFICATION_CONFIG
+                        try:
+                            notifier_inst = state.get("_notifier")
+                            if notifier_inst:
+                                notifier_inst.telegram.send(
+                                    f"🚨 <b>MAX LOSS HIT — AUTO CLOSE</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 {sym}\n"
+                                    f"💵 PnL: <b>${pnl:.2f}</b> (exceeded -${max_loss})\n"
+                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                )
+                        except Exception:
+                            pass
+
+                        # Update trade log
+                        with lock:
+                            for t in reversed(state.get("trade_log", [])):
+                                if t.get("symbol") == sym and t.get("status") == "OPEN":
+                                    t.update({"status": "CLOSED", "close": p.get("_mark", 0),
+                                              "pnl_usdt": round(pnl, 2), "pnl_pct": round(p.get("_pct", 0), 2)})
+                                    break
+                        from trade_history import save_history
+                        save_history(state["trade_log"])
+                    except Exception as e:
+                        logger.error(f"[MAX LOSS] Close failed {sym}: {e}")
+
         except Exception as e:
             consecutive_errors += 1
             wait = min(30, 5 * consecutive_errors)

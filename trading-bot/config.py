@@ -62,6 +62,7 @@ MAX_OPEN_POSITIONS = 3
 MAX_ORDER_USDT     = 15.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
+MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
 
 # --- Strategy ---
 MIN_SCORE           = 70.0
