@@ -403,7 +403,13 @@ def calc_qty(balance, entry, sl):
     # Hard cap: margin không vượt MAX_ORDER_USDT
     if qty * entry / config.LEVERAGE > config.MAX_ORDER_USDT:
         qty = config.MAX_ORDER_USDT * config.LEVERAGE / entry
-    return max(round(qty, 3), 0.001)
+    # Round theo giá coin (stepSize)
+    if entry >= 10000:    qty = round(qty, 3)   # BTC
+    elif entry >= 100:    qty = round(qty, 1)   # SOL, BNB
+    elif entry >= 1:      qty = round(qty, 1)   # mid-cap
+    elif entry >= 0.01:   qty = int(qty)        # cheap coins
+    else:                 qty = int(qty)
+    return max(qty, 0.1 if entry >= 1 else 1)
 
 def trade_engine(exchange, notifier):
     # Startup noti
