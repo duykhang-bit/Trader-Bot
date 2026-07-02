@@ -676,12 +676,17 @@ def scan_engine(exchange, notifier):
                 except: pass
 
                 if best.signal == "LONG":
-                    sl = price * (1 - 0.01)   # SL 1% dưới entry
-                    tp = price * (1 + 0.015)  # TP 1.5% trên entry
+                    # SL: dưới swing low (ATR * 1.2) — đủ room cho noise
+                    sl_dist = max(atr * 1.2, price * 0.012)  # ít nhất 1.2%
+                    sl_dist = min(sl_dist, price * 0.03)      # tối đa 3%
+                    sl = price - sl_dist
+                    tp = price + sl_dist * 1.5  # RR 1:1.5
                     side = "BUY"
                 else:
-                    sl = price * (1 + 0.01)   # SL 1% trên entry
-                    tp = price * (1 - 0.015)  # TP 1.5% dưới entry
+                    sl_dist = max(atr * 1.2, price * 0.012)
+                    sl_dist = min(sl_dist, price * 0.03)
+                    sl = price + sl_dist
+                    tp = price - sl_dist * 1.5  # RR 1:1.5
                     side = "SELL"
 
                 qty = calc_qty(bal, price, sl)
