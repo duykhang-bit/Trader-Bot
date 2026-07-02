@@ -18,12 +18,13 @@ FIXED_COINS = [
     "SOLUSDT",
 ]
 
-# --- Binance API (REAL ACCOUNT) ---
-API_KEY    = "4nvrEO0C9JJaRLsvbQP4Foq6ZZqSrY3GFgxiBBBqWTllKm2UwNYqdgkGY093SX2J"
-API_SECRET = "FwTPwL0tgVlfDDQpZIdjaUZyyJ28OaD5RxSfMeqCwztIAuRm2bMFc04RwOoY7lSc"
+# --- Binance API ---
+import os
+API_KEY    = os.environ.get("BINANCE_API_KEY", "")
+API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 
 USE_TESTNET   = False
-LIVE_BASE_URL = "https://fapi.binance.com"     # Live Futures
+LIVE_BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://fapi.binance.com")
 
 # --- Timeframe ---
 SYMBOL       = "BTCUSDT"
@@ -73,7 +74,7 @@ LOG_LEVEL = "INFO"
 LOG_FILE  = "logs/bot.log"
 
 # --- Web Dashboard ---
-WEB_DASHBOARD_PORT = 5555   # Mở http://localhost:5555 để xem
+WEB_DASHBOARD_PORT = int(os.environ.get("PORT", 5555))
 
 # ============================================================
 # LIQUIDATION STRATEGY CONFIG

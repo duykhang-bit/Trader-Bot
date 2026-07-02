@@ -2,6 +2,7 @@
 # NOTIFICATION MODULE — Telegram với CONFIRM trước khi vào lệnh
 # ============================================================
 import logging
+import os
 import requests
 import time
 from datetime import datetime
@@ -14,8 +15,8 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_CONFIG = {
     "telegram": {
         "enabled": True,
-        "bot_token": "8260921432:AAFgBGQwpu_DnT3_mBE-pAAzJFUUM8YXXPg",
-        "chat_id": "1158898649",
+        "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        "chat_id": os.environ.get("TELEGRAM_CHAT_ID", ""),
     }
 }
 
