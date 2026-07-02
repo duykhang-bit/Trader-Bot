@@ -1060,7 +1060,15 @@ class TelegramCommandHandler:
             price = entry_info["entry_price"]
             qty = (max_usdt * lev) / price
             qty = round(qty, _qty_decimals(price))
-            qty = max(qty, _min_qty(price))
+            min_q = _min_qty(price)
+            if qty < min_q:
+                qty = min_q
+                # Check nếu margin vượt balance thì báo lỗi
+                actual_margin = qty * price / lev
+                bal = exchange.get_account_balance()
+                if actual_margin > bal:
+                    self.send(f"❌ Không đủ balance. {symbol} cần tối thiểu ${actual_margin:.2f} margin (min qty={min_q})")
+                    return
 
             # Set leverage
             try:
@@ -1289,10 +1297,10 @@ def _qty_decimals(price: float) -> int:
     return 0
 
 def _min_qty(price: float) -> float:
-    """Qty tối thiểu theo giá coin"""
+    """Qty tối thiểu theo giá coin (Binance Futures rules)"""
     if price >= 10000: return 0.001   # BTC
-    if price >= 1000:  return 0.01    # ETH
+    if price >= 1000:  return 0.001   # ETH
     if price >= 100:   return 0.01    # BNB
-    if price >= 10:    return 0.1     # SOL, XRP nếu giá >$10
-    if price >= 1:     return 1.0     # altcoins ~$1-$10
+    if price >= 10:    return 0.1     # SOL
+    if price >= 1:     return 1.0     # XRP, altcoins ~$1-$10
     return 10.0
