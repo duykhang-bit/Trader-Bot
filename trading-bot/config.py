@@ -56,7 +56,7 @@ ATR_TP_MULTIPLIER = 4.0
 
 # --- Risk Management ---
 RISK_PER_TRADE     = 0.01
-STOP_LOSS_PCT      = 0.02
+STOP_LOSS_PCT      = 0.015
 MAX_OPEN_POSITIONS = 3
 MAX_ORDER_USDT     = 5.0
 TRAILING_STOP      = True
@@ -64,7 +64,7 @@ TRAILING_STOP_PCT  = 0.015
 MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
 
 # --- Strategy ---
-MIN_SCORE           = 35.0
+MIN_SCORE           = 50.0
 COOLDOWN_AFTER_LOSS = 300
 
 # --- Bot Settings ---
