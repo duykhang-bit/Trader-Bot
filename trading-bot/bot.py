@@ -1239,15 +1239,5 @@ if __name__ == "__main__":
         for g in state.get("grids", {}).values():
             try: g.stop()
             except: pass
-        # Đóng position nếu đang mở
-        with lock:
-            sym = state["symbol"]
-            pos = state["position"]
-            qty = state["qty"]
-        if pos and sym and qty:
-            try:
-                close_side = "SELL" if pos == "LONG" else "BUY"
-                exchange.place_market_order(sym, close_side, qty)
-                print(f"✅ Đã đóng lệnh {sym}")
-            except Exception as e:
-                print(f"⚠️ Không đóng được lệnh: {e}")
+        # KHÔNG đóng position khi dừng bot — lệnh vẫn giữ trên Binance
+        print("💡 Lệnh đang mở vẫn giữ trên Binance (SL/TP đã đặt sẵn)")
