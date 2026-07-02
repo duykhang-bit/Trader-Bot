@@ -507,9 +507,25 @@ def place_smart_order(exchange, symbol: str, side: str, qty: float,
                 "timeInForce": "GTC",
             })
             logger.info(f"[SmartEntry] LIMIT: {side} {symbol} @ {entry_price}")
-            # SL/TP sẽ đặt sau khi LIMIT fill (không pre-place)
+
+            # Lưu vào pending để monitor thread đặt SL/TP khi fill
+            order_id = result.get("orderId", "")
+            if order_id:
+                try:
+                    import bot as _bot
+                    with _bot.lock:
+                        _bot.state.setdefault("pending_smart_orders", {})[str(order_id)] = {
+                            "symbol": symbol,
+                            "side": side,
+                            "qty": qty,
+                            "sl": sl,
+                            "tp": tp,
+                        }
+                except Exception:
+                    pass
+
             return {"filled": False, "price": entry_price, "type": "LIMIT",
-                    "sl": sl, "tp": tp}
+                    "sl": sl, "tp": tp, "order_id": order_id}
         except Exception as e:
             logger.warning(f"[SmartEntry] LIMIT failed → MARKET: {e}")
 

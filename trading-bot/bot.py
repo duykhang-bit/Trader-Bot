@@ -53,6 +53,7 @@ state = {
     # --- Liquidation strategy state ---
     "split_positions": {},  # {symbol: SplitPosition} — các lệnh split đang chờ/mở
     "liq_data":       {},   # {symbol: total_liq_usd} — để hiển thị dashboard
+    "pending_smart_orders": {},  # {order_id: {symbol, side, qty, sl, tp}} — limit orders chờ fill
 }
 lock = threading.Lock()
 
@@ -835,6 +836,85 @@ def _cancel_split(sym, sp, exchange, notifier, side_close, reason):
 
 
 # ============================================================
+# THREAD 6: Limit Order Monitor
+# Theo dõi pending limit orders, khi fill → đặt SL/TP
+# ============================================================
+def limit_order_monitor(exchange, notifier):
+    """
+    Mỗi 5s check pending limit orders trong state.
+    Khi order fill → tự đặt SL/TP.
+    """
+    # {order_id: {"symbol", "side", "qty", "sl", "tp"}}
+    while state["running"]:
+        try:
+            with lock:
+                pending = dict(state.get("pending_smart_orders", {}))
+
+            if not pending:
+                time.sleep(5)
+                continue
+
+            for order_id, info in list(pending.items()):
+                try:
+                    # Check order status
+                    result = exchange._get("/fapi/v1/order", {
+                        "symbol": info["symbol"],
+                        "orderId": int(order_id),
+                    }, signed=True)
+
+                    status = result.get("status", "")
+
+                    if status == "FILLED":
+                        # Order filled → đặt SL/TP
+                        sym = info["symbol"]
+                        side = info["side"]
+                        qty = info["qty"]
+                        sl = info["sl"]
+                        tp = info["tp"]
+                        close_side = "SELL" if side == "LONG" else "BUY"
+
+                        logger.info(f"[LimitMonitor] {sym} LIMIT filled! Placing SL/TP...")
+
+                        time.sleep(1)
+                        try:
+                            exchange.place_stop_loss_order(sym, close_side, qty, sl)
+                            logger.info(f"[LimitMonitor] SL placed: {sym} @ {sl}")
+                        except Exception as e:
+                            logger.error(f"[LimitMonitor] SL failed {sym}: {e}")
+
+                        try:
+                            exchange.place_take_profit_order(sym, close_side, qty, tp)
+                            logger.info(f"[LimitMonitor] TP placed: {sym} @ {tp}")
+                        except Exception as e:
+                            logger.error(f"[LimitMonitor] TP failed {sym}: {e}")
+
+                        # Notify
+                        notifier.telegram.send(
+                            f"✅ <b>LIMIT FILLED + SL/TP SET</b>\n"
+                            f"📊 {sym} {side}\n"
+                            f"🛑 SL: ${sl:,.2f}\n"
+                            f"🎯 TP: ${tp:,.2f}"
+                        )
+
+                        # Remove from pending
+                        with lock:
+                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
+
+                    elif status in ("CANCELED", "EXPIRED", "REJECTED"):
+                        logger.info(f"[LimitMonitor] {info['symbol']} order {status}, removing")
+                        with lock:
+                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
+
+                except Exception as e:
+                    logger.debug(f"[LimitMonitor] Check order {order_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"[LimitMonitor] Error: {e}")
+
+        time.sleep(5)
+
+
+# ============================================================
 # THREAD 3: Grid Bot engine
 # ============================================================
 def grid_engine(exchange, notifier):
@@ -988,6 +1068,10 @@ if __name__ == "__main__":
     # Liq strategy thread
     t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
     t5.start()
+
+    # Limit order monitor thread
+    t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
+    t7.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
