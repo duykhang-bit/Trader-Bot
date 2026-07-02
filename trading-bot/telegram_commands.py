@@ -1055,7 +1055,8 @@ class TelegramCommandHandler:
                 pass
 
             # Đặt lệnh thông minh
-            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config)
+            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config,
+                                        bot_state=self.state, bot_lock=self.lock)
 
             rr = abs(entry_info["tp"] - price) / abs(price - entry_info["sl"]) if abs(price - entry_info["sl"]) > 0 else 0
             notional = qty * price

@@ -678,7 +678,8 @@ def api_place_order():
         if tp > 0:
             entry_info["tp"] = tp
 
-        result = place_smart_order(_exchange, symbol, side, qty, entry_info, _config)
+        result = place_smart_order(_exchange, symbol, side, qty, entry_info, _config,
+                                    bot_state=_state, bot_lock=_lock)
 
         with _lock:
             _state["trade_log"].append({

@@ -478,7 +478,7 @@ def _find_confluence(levels: dict, side: str, price: float) -> Tuple[float, int,
 # PLACE ORDER
 # ════════════════════════════════════════════════════════════
 def place_smart_order(exchange, symbol: str, side: str, qty: float,
-                       entry_info: dict, config) -> dict:
+                       entry_info: dict, config, bot_state=None, bot_lock=None) -> dict:
     """
     Đặt lệnh thông minh:
     - Confluence >= 2 + improvement >= 0.03%: LIMIT order
@@ -510,19 +510,16 @@ def place_smart_order(exchange, symbol: str, side: str, qty: float,
 
             # Lưu vào pending để monitor thread đặt SL/TP khi fill
             order_id = result.get("orderId", "")
-            if order_id:
-                try:
-                    import bot as _bot
-                    with _bot.lock:
-                        _bot.state.setdefault("pending_smart_orders", {})[str(order_id)] = {
-                            "symbol": symbol,
-                            "side": side,
-                            "qty": qty,
-                            "sl": sl,
-                            "tp": tp,
-                        }
-                except Exception:
-                    pass
+            if order_id and bot_state is not None and bot_lock is not None:
+                with bot_lock:
+                    bot_state.setdefault("pending_smart_orders", {})[str(order_id)] = {
+                        "symbol": symbol,
+                        "side": side,
+                        "qty": qty,
+                        "sl": sl,
+                        "tp": tp,
+                    }
+                logger.info(f"[SmartEntry] Saved pending order {order_id} for SL/TP monitor")
 
             return {"filled": False, "price": entry_price, "type": "LIMIT",
                     "sl": sl, "tp": tp, "order_id": order_id}
