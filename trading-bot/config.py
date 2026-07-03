@@ -30,7 +30,7 @@ LIVE_BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://fapi.binance.com")
 SYMBOL       = "BTCUSDT"
 INTERVAL     = "15m"
 HTF_INTERVAL = "1h"
-LEVERAGE     = 5
+LEVERAGE     = 20
 
 # --- RSI ---
 RSI_PERIOD     = 14
@@ -59,7 +59,7 @@ ATR_TP_MULTIPLIER = 4.0
 RISK_PER_TRADE     = 0.01
 STOP_LOSS_PCT      = 0.02
 MAX_OPEN_POSITIONS = 6
-MAX_ORDER_USDT     = 5.0
+MAX_ORDER_USDT     = 20.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
 MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
