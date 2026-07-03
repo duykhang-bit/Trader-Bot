@@ -1222,6 +1222,17 @@ class TelegramCommandHandler:
             for update in updates:
                 self.last_update_id = update["update_id"]
 
+                # Dedup: skip nếu đã xử lý update này
+                uid = update["update_id"]
+                if hasattr(self, '_processed_ids') and uid in self._processed_ids:
+                    continue
+                if not hasattr(self, '_processed_ids'):
+                    self._processed_ids = set()
+                self._processed_ids.add(uid)
+                # Giữ max 100 IDs
+                if len(self._processed_ids) > 100:
+                    self._processed_ids = set(list(self._processed_ids)[-50:])
+
                 # ── Xử lý callback (bấm nút inline keyboard) ──
                 cb = update.get("callback_query")
                 if cb:
