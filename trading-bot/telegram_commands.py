@@ -176,8 +176,8 @@ class TelegramCommandHandler:
             if len(parts) < 2 or not parts[1].isdigit():
                 return f"❌ Dùng: /leverage 10\nHiện tại: {self.config.LEVERAGE}x"
             lev = int(parts[1])
-            if lev < 1 or lev > 20:
-                return "❌ Leverage phải từ 1-20"
+            if lev < 1 or lev > 100:
+                return "❌ Leverage phải từ 1-100"
             self.config.LEVERAGE = lev
             return f"✅ Đã đổi leverage thành <b>{lev}x</b>"
 
