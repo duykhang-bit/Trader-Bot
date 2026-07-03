@@ -1028,88 +1028,97 @@ def _cancel_split(sym, sp, exchange, notifier, side_close, reason):
 
 
 # ============================================================
-# THREAD 6: Limit Order Monitor
+# THREAD 6: Limit Order Monitor + Auto SL/TP cho positions mới
 # Theo dõi pending limit orders, khi fill → đặt SL/TP
+# CŨNG: mỗi 30s check positions chưa có SL/TP → tự đặt
 # ============================================================
 def limit_order_monitor(exchange, notifier):
     """
-    Mỗi 5s check pending limit orders trong state.
-    Khi order fill → tự đặt SL/TP.
+    2 nhiệm vụ:
+    A. Mỗi 5s check pending limit orders trong state → khi fill đặt SL/TP
+    B. Mỗi 30s check positions chưa có SL/TP → tự đặt (backup cho case restart)
     """
-    # {order_id: {"symbol", "side", "qty", "sl", "tp"}}
+    import time as _time
+    last_auto_check = 0
+
     while state["running"]:
         try:
+            # ── A. Check pending orders (mỗi 5s) ──
             with lock:
                 pending = dict(state.get("pending_smart_orders", {}))
 
-            if not pending:
-                time.sleep(5)
-                continue
+            if pending:
+                for order_id, info in list(pending.items()):
+                    try:
+                        result = exchange._get("/fapi/v1/order", {
+                            "symbol": info["symbol"],
+                            "orderId": int(order_id),
+                        }, signed=True)
 
-            for order_id, info in list(pending.items()):
+                        status = result.get("status", "")
+
+                        if status == "FILLED":
+                            sym = info["symbol"]
+                            side = info["side"]
+                            qty = info["qty"]
+                            sl = info["sl"]
+                            tp = info["tp"]
+                            close_side = "SELL" if side == "LONG" else "BUY"
+
+                            logger.info(f"[LimitMonitor] {sym} LIMIT filled! Placing SL/TP...")
+                            time.sleep(1)
+                            try:
+                                exchange.place_stop_loss_order(sym, close_side, qty, sl)
+                                logger.info(f"[LimitMonitor] SL placed: {sym} @ {sl}")
+                            except Exception as e:
+                                logger.error(f"[LimitMonitor] SL failed {sym}: {e}")
+                            try:
+                                exchange.place_take_profit_order(sym, close_side, qty, tp)
+                                logger.info(f"[LimitMonitor] TP placed: {sym} @ {tp}")
+                            except Exception as e:
+                                logger.error(f"[LimitMonitor] TP failed {sym}: {e}")
+
+                            fill_price = float(result.get("avgPrice", 0) or result.get("price", 0) or 0)
+                            def _pd(p):
+                                if p >= 10000: return 1
+                                if p >= 1000: return 2
+                                if p >= 10: return 2
+                                if p >= 1: return 4
+                                return 5
+                            notifier.telegram.send(
+                                f"🔔 <b>LIMIT ORDER FILLED!</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📊 {sym} <b>{side}</b>\n"
+                                f"💵 Fill Price: <b>${fill_price:,.{_pd(fill_price) if fill_price > 0 else 2}f}</b>\n"
+                                f"📦 Qty: {qty}\n"
+                                f"🛑 SL set: <b>${sl:,.{_pd(sl)}f}</b>\n"
+                                f"🎯 TP set: <b>${tp:,.{_pd(tp)}f}</b>\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            with lock:
+                                state.get("pending_smart_orders", {}).pop(str(order_id), None)
+
+                        elif status in ("CANCELED", "EXPIRED", "REJECTED"):
+                            logger.info(f"[LimitMonitor] {info['symbol']} order {status}, removing")
+                            with lock:
+                                state.get("pending_smart_orders", {}).pop(str(order_id), None)
+
+                    except Exception as e:
+                        logger.debug(f"[LimitMonitor] Check order {order_id}: {e}")
+
+            # ── B. Auto SL/TP cho positions mới (mỗi 30s) ──
+            if _time.time() - last_auto_check > 30:
+                last_auto_check = _time.time()
                 try:
-                    # Check order status
-                    result = exchange._get("/fapi/v1/order", {
-                        "symbol": info["symbol"],
-                        "orderId": int(order_id),
-                    }, signed=True)
-
-                    status = result.get("status", "")
-
-                    if status == "FILLED":
-                        # Order filled → đặt SL/TP
-                        sym = info["symbol"]
-                        side = info["side"]
-                        qty = info["qty"]
-                        sl = info["sl"]
-                        tp = info["tp"]
-                        close_side = "SELL" if side == "LONG" else "BUY"
-
-                        logger.info(f"[LimitMonitor] {sym} LIMIT filled! Placing SL/TP...")
-
-                        time.sleep(1)
-                        try:
-                            exchange.place_stop_loss_order(sym, close_side, qty, sl)
-                            logger.info(f"[LimitMonitor] SL placed: {sym} @ {sl}")
-                        except Exception as e:
-                            logger.error(f"[LimitMonitor] SL failed {sym}: {e}")
-
-                        try:
-                            exchange.place_take_profit_order(sym, close_side, qty, tp)
-                            logger.info(f"[LimitMonitor] TP placed: {sym} @ {tp}")
-                        except Exception as e:
-                            logger.error(f"[LimitMonitor] TP failed {sym}: {e}")
-
-                        # Notify
-                        fill_price = float(result.get("avgPrice", 0) or result.get("price", 0) or 0)
-                        def _pd(p):
-                            if p >= 10000: return 1
-                            if p >= 1000: return 2
-                            if p >= 10: return 2
-                            if p >= 1: return 4
-                            return 5
-                        notifier.telegram.send(
-                            f"🔔 <b>LIMIT ORDER FILLED!</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 {sym} <b>{side}</b>\n"
-                            f"💵 Fill Price: <b>${fill_price:,.{_pd(fill_price) if fill_price > 0 else 2}f}</b>\n"
-                            f"📦 Qty: {qty}\n"
-                            f"🛑 SL set: <b>${sl:,.{_pd(sl)}f}</b>\n"
-                            f"🎯 TP set: <b>${tp:,.{_pd(tp)}f}</b>\n"
-                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                        )
-
-                        # Remove from pending
-                        with lock:
-                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
-
-                    elif status in ("CANCELED", "EXPIRED", "REJECTED"):
-                        logger.info(f"[LimitMonitor] {info['symbol']} order {status}, removing")
-                        with lock:
-                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
-
+                    from auto_sltp import get_positions_without_sltp, auto_set_sltp
+                    liq_tracker = state.get("liq_tracker")
+                    unprotected = get_positions_without_sltp(exchange)
+                    for pos in unprotected:
+                        logger.info(f"[AutoSLTP] Detected unprotected: {pos['symbol']} {pos['side']}")
+                        auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                                     pos["entry"], pos["qty"], liq_tracker)
                 except Exception as e:
-                    logger.debug(f"[LimitMonitor] Check order {order_id}: {e}")
+                    logger.debug(f"[AutoSLTP] Check error: {e}")
 
         except Exception as e:
             logger.error(f"[LimitMonitor] Error: {e}")
