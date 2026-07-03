@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_CONFIG = {
     "telegram": {
         "enabled": True,
-        "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        "chat_id": os.environ.get("TELEGRAM_CHAT_ID", ""),
+        "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", "8260921432:AAFgBGQwpu_DnT3_mBE-pAAzJFUUM8YXXPg"),
+        "chat_id": os.environ.get("TELEGRAM_CHAT_ID", "1158898649"),
     }
 }
 
