@@ -1209,13 +1209,7 @@ class TelegramCommandHandler:
             pass
 
         self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh",
-                 markup={"keyboard": [
-                     [{"text": "📊 Status"}, {"text": "💼 Balance"}],
-                     [{"text": "📌 Position"}, {"text": "📋 Orders"}],
-                     [{"text": "🟢 LONG"}, {"text": "🔴 SHORT"}],
-                     [{"text": "🛡️ Set SL/TP"}, {"text": "📈 Stats"}],
-                     [{"text": "🕐 History"}, {"text": "❌ Close Position"}],
-                 ], "resize_keyboard": True})
+                 markup={"remove_keyboard": True})
 
         while self.running and self.state.get("running", True):
             updates = self.get_updates()
