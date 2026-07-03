@@ -6,6 +6,22 @@ import requests as _req
 import pandas as pd
 from datetime import datetime
 
+# ── SINGLE INSTANCE LOCK — chỉ cho phép 1 bot chạy ──
+_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
+def _check_single_instance():
+    import fcntl
+    global _lock_fp
+    _lock_fp = open(_LOCK_FILE, 'w')
+    try:
+        fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fp.write(str(os.getpid()))
+        _lock_fp.flush()
+    except IOError:
+        print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
+        sys.exit(0)
+
+_check_single_instance()
+
 # Print server IP on startup (for Binance whitelist)
 try:
     _my_ip = _req.get("https://ifconfig.me", timeout=5).text.strip()
