@@ -668,10 +668,12 @@ def scan_engine(exchange, notifier):
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
 
             if best:
-                # Không vào lệnh trùng symbol đang mở
+                # Không vào lệnh trùng symbol đã có position trên Binance
                 with lock:
-                    current_sym = state.get("symbol")
-                if best.symbol == current_sym:
+                    open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                                 if abs(float(p.get("positionAmt", 0))) > 0}
+                if best.symbol in open_syms:
+                    logger.info(f"Skip {best.symbol}: already has open position")
                     time.sleep(config.LOOP_INTERVAL_SECONDS)
                     continue
 
