@@ -69,7 +69,7 @@ MIN_SCORE           = 50.0
 COOLDOWN_AFTER_LOSS = 300
 
 # --- Bot Settings ---
-LOOP_INTERVAL_SECONDS = 120
+LOOP_INTERVAL_SECONDS = 60
 LOG_LEVEL = "INFO"
 LOG_FILE  = "logs/bot.log"
 
@@ -132,3 +132,5 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 
 #https://railway.com/project/bfd60fcc-b141-4ac3-91ce-b086b7ef0ea1
 #https://web-production-0847b.up.railway.app/
+#pkill -9 -f "Python.*bot.py"; sleep 2; cd /Users/leduykhang/Documents/Trading/trading-bot/trading-bot && python3 bot.py
+

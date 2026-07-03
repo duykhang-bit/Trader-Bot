@@ -1118,6 +1118,99 @@ def limit_order_monitor(exchange, notifier):
 
 
 # ============================================================
+# THREAD 6b: Pending Order Review — mỗi 15 phút kiểm tra lệnh pending
+# Nếu xu hướng đã đổi → hủy lệnh không còn hợp lý
+# ============================================================
+def pending_order_reviewer(exchange, notifier):
+    """
+    Mỗi 15 phút:
+    1. Lấy tất cả pending limit orders
+    2. Kiểm tra xu hướng hiện tại (EMA, RSI)
+    3. Nếu lệnh LONG nhưng xu hướng BEARISH → hủy
+    4. Nếu lệnh SHORT nhưng xu hướng BULLISH → hủy
+    5. Nếu giá đã đi xa quá (>3%) khỏi entry → hủy
+    """
+    from indicators import calculate_rsi, calculate_ema
+    from scanner import _klines_to_df
+
+    # Đợi 5 phút sau khi bot start mới bắt đầu review
+    time.sleep(300)
+
+    while state["running"]:
+        try:
+            # Lấy pending orders
+            all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+            limit_orders = [o for o in all_orders if o.get("type") == "LIMIT"
+                           and not o.get("reduceOnly", False)]
+
+            if not limit_orders:
+                time.sleep(900)  # 15 phút
+                continue
+
+            cancelled = []
+            for order in limit_orders:
+                sym = order.get("symbol", "")
+                side = order.get("side", "")  # BUY = LONG, SELL = SHORT
+                order_price = float(order.get("price", 0))
+                order_id = order.get("orderId", "")
+
+                try:
+                    # Lấy giá hiện tại
+                    current_price = exchange.get_ticker_price(sym)
+
+                    # Check 1: giá đã đi xa quá 3% khỏi entry → hủy
+                    dist_pct = abs(current_price - order_price) / order_price * 100
+                    if dist_pct > 3:
+                        exchange.cancel_all_orders(sym)
+                        cancelled.append(f"{sym} (giá xa {dist_pct:.1f}%)")
+                        logger.info(f"[PendingReview] Cancelled {sym}: price moved {dist_pct:.1f}% from order")
+                        continue
+
+                    # Lấy klines 15m để check xu hướng
+                    klines = exchange.get_klines(sym, "15m", limit=50)
+                    df = _klines_to_df(klines)
+                    close = df["close"]
+
+                    rsi = calculate_rsi(close, 14).iloc[-1]
+                    ema9 = calculate_ema(close, 9).iloc[-1]
+                    ema21 = calculate_ema(close, 21).iloc[-1]
+
+                    # Check 2: xu hướng ngược với lệnh → hủy
+                    if side == "BUY":  # LONG order
+                        # Hủy nếu: RSI > 70 (overbought) HOẶC EMA9 < EMA21 (bearish)
+                        if rsi > 70 or (ema9 < ema21 and current_price < ema21):
+                            exchange.cancel_all_orders(sym)
+                            cancelled.append(f"{sym} LONG (xu hướng bearish, RSI={rsi:.0f})")
+                            logger.info(f"[PendingReview] Cancelled LONG {sym}: bearish (RSI={rsi:.0f}, EMA9<EMA21)")
+                            continue
+                    else:  # SELL = SHORT order
+                        # Hủy nếu: RSI < 30 (oversold) HOẶC EMA9 > EMA21 (bullish)
+                        if rsi < 30 or (ema9 > ema21 and current_price > ema21):
+                            exchange.cancel_all_orders(sym)
+                            cancelled.append(f"{sym} SHORT (xu hướng bullish, RSI={rsi:.0f})")
+                            logger.info(f"[PendingReview] Cancelled SHORT {sym}: bullish (RSI={rsi:.0f}, EMA9>EMA21)")
+                            continue
+
+                except Exception as e:
+                    logger.debug(f"[PendingReview] Skip {sym}: {e}")
+
+            # Notify nếu có lệnh bị hủy
+            if cancelled:
+                notifier.telegram.send(
+                    f"🔄 <b>PENDING ORDER REVIEW</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"❌ Đã hủy {len(cancelled)} lệnh không còn hợp lý:\n" +
+                    "\n".join(f"• {c}" for c in cancelled) +
+                    f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
+
+        except Exception as e:
+            logger.error(f"[PendingReview] Error: {e}")
+
+        time.sleep(900)  # 15 phút
+
+
+# ============================================================
 # THREAD 3: Grid Bot engine
 # ============================================================
 def grid_engine(exchange, notifier):
@@ -1279,6 +1372,10 @@ if __name__ == "__main__":
     # Limit order monitor thread
     t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
     t7.start()
+
+    # Pending order reviewer thread (mỗi 15 phút check + hủy lệnh không hợp lý)
+    t8 = threading.Thread(target=pending_order_reviewer, args=(exchange, notifier), daemon=True)
+    t8.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
