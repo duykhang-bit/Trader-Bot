@@ -176,10 +176,23 @@ class TelegramCommandHandler:
             if len(parts) < 2 or not parts[1].isdigit():
                 return f"❌ Dùng: /leverage 10\nHiện tại: {self.config.LEVERAGE}x"
             lev = int(parts[1])
-            if lev < 1 or lev > 100:
-                return "❌ Leverage phải từ 1-100"
+            if lev < 1 or lev > 20:
+                return "❌ Leverage phải từ 1-20"
             self.config.LEVERAGE = lev
             return f"✅ Đã đổi leverage thành <b>{lev}x</b>"
+
+        # /usdt 5
+        elif cmd == "/usdt":
+            if len(parts) < 2:
+                return f"❌ Dùng: /usdt 5\nHiện tại: ${self.config.MAX_ORDER_USDT}/lệnh"
+            try:
+                val = float(parts[1])
+                if val < 1 or val > 1000:
+                    return "❌ USDT phải từ 1 - 1000"
+                self.config.MAX_ORDER_USDT = val
+                return f"✅ Đã đổi margin thành <b>${val}/lệnh</b>\n💰 Notional: ${val * self.config.LEVERAGE}/lệnh ({self.config.LEVERAGE}x)"
+            except ValueError:
+                return "❌ Nhập số, ví dụ: /usdt 5"
 
         # /risk 1
         elif cmd == "/risk":
@@ -231,6 +244,60 @@ class TelegramCommandHandler:
                     return "ℹ️ Không có lệnh nào đang mở"
             except Exception as e:
                 return f"❌ Lỗi: {e}"
+
+        # /settp — Hiển thị positions chưa có SL/TP, bấm nút để auto set
+        elif cmd == "/settp":
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            from auto_sltp import get_positions_without_sltp, suggest_sltp
+            unprotected = get_positions_without_sltp(exchange)
+            if not unprotected:
+                return "✅ Tất cả positions đã có SL/TP"
+
+            liq_tracker = self.state.get("liq_tracker")
+            lines = ["⚠️ <b>POSITIONS CHƯA CÓ SL/TP:</b>\n"]
+            for pos in unprotected:
+                sym = pos["symbol"]
+                side = pos["side"]
+                entry = pos["entry"]
+                qty = pos["qty"]
+                pnl = pos["pnl"]
+                missing = []
+                if not pos["has_sl"]: missing.append("SL")
+                if not pos["has_tp"]: missing.append("TP")
+
+                # Suggest SL/TP
+                suggestion = suggest_sltp(exchange, sym, side, entry, liq_tracker)
+
+                icon = "🟢" if side == "LONG" else "🔴"
+                pnl_icon = "📈" if pnl >= 0 else "📉"
+                lines.append(
+                    f"{icon} <b>{sym.replace('USDT','')} {side}</b>\n"
+                    f"   Entry: ${entry:.4f} | {pnl_icon} PnL: ${pnl:+.2f}\n"
+                    f"   ❌ Thiếu: {', '.join(missing)}\n"
+                    f"   💡 Đề xuất: SL=${suggestion['sl']} (-{suggestion['sl_pct']}%)"
+                    f" | TP=${suggestion['tp']} (+{suggestion['tp_pct']}%)\n"
+                    f"   📐 RR: 1:{suggestion['rr']} | {suggestion['method']}\n"
+                )
+
+            lines.append("\n👇 Bấm nút bên dưới để auto set SL/TP:")
+            msg = "\n".join(lines)
+
+            # Tạo inline buttons cho từng position
+            buttons = []
+            for pos in unprotected:
+                sym = pos["symbol"]
+                buttons.append([{
+                    "text": f"🛡️ Set SL/TP — {sym.replace('USDT','')}",
+                    "callback_data": f"settp_{sym}"
+                }])
+            # Nút set tất cả
+            if len(unprotected) > 1:
+                buttons.append([{"text": "🛡️ Set ALL SL/TP", "callback_data": "settp_ALL"}])
+
+            self.send(msg, markup={"inline_keyboard": buttons})
+            return None  # Đã gửi message riêng
 
         # /grid BTCUSDT 78000 82000 20 100
         elif cmd == "/grid":
@@ -300,8 +367,10 @@ class TelegramCommandHandler:
 /dashboard        — 📺 Dashboard đầy đủ (như terminal)
 /pnl              — Bảng lãi/lỗ tất cả lệnh
 /leverage 10      — Đổi đòn bẩy (1-20x)
+/usdt 5           — Đổi margin mỗi lệnh ($1-$1000)
 /risk 2           — Đổi risk % mỗi lệnh
 /closeall         — Đóng TẤT CẢ lệnh ngay
+/settp            — 🛡️ Auto set SL/TP cho lệnh chưa có
 /trade BTC        — Đánh giá LONG/SHORT coin
 /grid BTCUSDT 78000 82000 20 100  — Bật grid bot
 /stopgrid         — Dừng grid bot
@@ -351,9 +420,61 @@ class TelegramCommandHandler:
                     t     = o.get("type", "")
                     side  = o.get("side", "")
                     sym   = o.get("symbol", "").replace("USDT", "")
-                    price = float(o.get("stopPrice") or o.get("price") or 0)
-                    lines.append(f"• {sym} {t} {side} @ <b>${price:,.4f}</b>")
-                return "\n".join(lines)
+                    # stopPrice hoặc price — check cả 2, bỏ qua "0" và ""
+                    stop_p = float(o.get("stopPrice", 0) or 0)
+                    limit_p = float(o.get("price", 0) or 0)
+                    price = stop_p if stop_p > 0 else limit_p
+                    lines.append(f"• {sym} {t} {side} @ <b>${price:,.{_price_decimals(price)}f}</b>")
+                lines.append("")
+                lines.append("Gõ /cancelall để hủy tất cả")
+                lines.append("Hoặc /cancel BTCUSDT để hủy 1 coin")
+
+                # Inline buttons cancel từng coin
+                symbols_with_orders = list(set(o.get("symbol", "") for o in all_orders))
+                buttons = []
+                row = []
+                for sym in symbols_with_orders:
+                    name = sym.replace("USDT", "")
+                    row.append({"text": f"❌ Cancel {name}", "callback_data": f"cancelorders_{sym}"})
+                    if len(row) == 2:
+                        buttons.append(row)
+                        row = []
+                if row:
+                    buttons.append(row)
+                buttons.append([{"text": "🗑 Cancel ALL", "callback_data": "cancelorders_ALL"}])
+
+                self.send("\n".join(lines), markup={"inline_keyboard": buttons})
+                return None
+            except Exception as e:
+                return f"❌ Lỗi: {e}"
+
+        # /cancel BTCUSDT — hủy tất cả orders cho 1 coin
+        elif cmd == "/cancel":
+            if len(parts) < 2:
+                return "❌ Dùng: /cancel BTC hoặc /cancel BTCUSDT"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            try:
+                exchange.cancel_all_orders(symbol)
+                return f"✅ Đã hủy tất cả orders cho <b>{symbol}</b>"
+            except Exception as e:
+                return f"❌ Lỗi: {e}"
+
+        # /cancelall — hủy tất cả orders tất cả coin
+        elif cmd == "/cancelall":
+            exchange = self._get_exchange()
+            if not exchange:
+                return "❌ Không kết nối được exchange"
+            try:
+                all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                symbols = list(set(o.get("symbol", "") for o in all_orders))
+                for sym in symbols:
+                    exchange.cancel_all_orders(sym)
+                return f"✅ Đã hủy tất cả {len(all_orders)} orders ({len(symbols)} coins)"
             except Exception as e:
                 return f"❌ Lỗi: {e}"
 
@@ -943,10 +1064,10 @@ class TelegramCommandHandler:
 
             side = "LONG " if amt > 0 else "SHORT"
 
-            # Tính % PnL theo chiều lệnh (có tính leverage)
+            # Tính % PnL theo chiều lệnh (có tính leverage) — giống Binance ROE%
             if entry > 0:
                 raw_pct = (mark - entry) / entry * 100
-                pnl_pct = raw_pct if amt > 0 else -raw_pct
+                pnl_pct = (raw_pct if amt > 0 else -raw_pct) * lev
             else:
                 pnl_pct = 0.0
 
@@ -994,7 +1115,15 @@ class TelegramCommandHandler:
             price = entry_info["entry_price"]
             qty = (max_usdt * lev) / price
             qty = round(qty, _qty_decimals(price))
-            qty = max(qty, _min_qty(price))
+            min_q = _min_qty(price)
+            if qty < min_q:
+                qty = min_q
+                # Check nếu margin vượt balance thì báo lỗi
+                actual_margin = qty * price / lev
+                bal = exchange.get_account_balance()
+                if actual_margin > bal:
+                    self.send(f"❌ Không đủ balance. {symbol} cần tối thiểu ${actual_margin:.2f} margin (min qty={min_q})")
+                    return
 
             # Set leverage
             try:
@@ -1003,7 +1132,8 @@ class TelegramCommandHandler:
                 pass
 
             # Đặt lệnh thông minh
-            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config)
+            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config,
+                                        bot_state=self.state, bot_lock=self.lock)
 
             rr = abs(entry_info["tp"] - price) / abs(price - entry_info["sl"]) if abs(price - entry_info["sl"]) > 0 else 0
             notional = qty * price
@@ -1072,7 +1202,14 @@ class TelegramCommandHandler:
         except Exception:
             pass
 
-        self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh")
+        self.send("🎮 <b>Bot sẵn sàng nhận lệnh!</b>\nGõ /help để xem danh sách lệnh",
+                 markup={"keyboard": [
+                     [{"text": "📊 Status"}, {"text": "💼 Balance"}],
+                     [{"text": "📌 Position"}, {"text": "📋 Orders"}],
+                     [{"text": "🟢 LONG"}, {"text": "🔴 SHORT"}],
+                     [{"text": "🛡️ Set SL/TP"}, {"text": "📈 Stats"}],
+                     [{"text": "🕐 History"}, {"text": "❌ Close Position"}],
+                 ], "resize_keyboard": True})
 
         while self.running and self.state.get("running", True):
             updates = self.get_updates()
@@ -1121,6 +1258,52 @@ class TelegramCommandHandler:
                             )
                             t.start()
 
+                    elif data.startswith("cancelorders_"):
+                        # Format: cancelorders_BTCUSDT or cancelorders_ALL
+                        target = data.replace("cancelorders_", "")
+                        exchange = self._get_exchange()
+                        if exchange:
+                            if target == "ALL":
+                                try:
+                                    all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                                    symbols = list(set(o.get("symbol", "") for o in all_orders))
+                                    for s in symbols:
+                                        exchange.cancel_all_orders(s)
+                                    self.send(f"✅ Đã hủy tất cả {len(all_orders)} orders")
+                                except Exception as e:
+                                    self.send(f"❌ Lỗi: {e}")
+                            else:
+                                try:
+                                    exchange.cancel_all_orders(target)
+                                    self.send(f"✅ Đã hủy orders cho <b>{target}</b>")
+                                except Exception as e:
+                                    self.send(f"❌ Lỗi: {e}")
+
+                    elif data.startswith("settp_"):
+                        # Format: settp_BTCUSDT or settp_ALL
+                        target = data.replace("settp_", "")
+                        exchange = self._get_exchange()
+                        if exchange:
+                            from auto_sltp import get_positions_without_sltp, auto_set_sltp
+                            liq_tracker = self.state.get("liq_tracker")
+                            unprotected = get_positions_without_sltp(exchange)
+
+                            if target == "ALL":
+                                results = []
+                                for pos in unprotected:
+                                    r = auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                                                     pos["entry"], pos["qty"], liq_tracker)
+                                    results.append(r["msg"])
+                                self.send("\n\n".join(results) if results else "✅ Không có gì cần set")
+                            else:
+                                pos = next((p for p in unprotected if p["symbol"] == target), None)
+                                if pos:
+                                    r = auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                                                     pos["entry"], pos["qty"], liq_tracker)
+                                    self.send(r["msg"])
+                                else:
+                                    self.send(f"ℹ️ {target} đã có SL/TP hoặc không có position")
+
                     elif data == "cancel_trade":
                         self.send("❌ <b>Đã hủy.</b>")
 
@@ -1146,6 +1329,7 @@ class TelegramCommandHandler:
                     "🕐 history": "/history",
                     "❌ close position": "/closeall",
                     "📺 dashboard": "/dashboard",
+                    "🛡️ set sl/tp": "/settp",
                 }
                 text_lower = text.strip().lower()
                 if text_lower in button_map:
@@ -1194,15 +1378,17 @@ def _price_decimals(price: float) -> int:
 
 def _qty_decimals(price: float) -> int:
     """Số chữ số thập phân cho qty"""
-    if price >= 10000: return 3
-    if price >= 1000:  return 2
-    if price >= 10:    return 1
+    if price >= 10000: return 3    # BTC: 0.001
+    if price >= 1000:  return 3    # ETH: 0.001
+    if price >= 100:   return 2    # BNB: 0.01
+    if price >= 10:    return 1    # SOL: 0.1
     return 0
 
 def _min_qty(price: float) -> float:
-    """Qty tối thiểu theo giá coin"""
-    if price >= 10000: return 0.001
-    if price >= 1000:  return 0.01
-    if price >= 100:   return 0.1
-    if price >= 1:     return 1.0
+    """Qty tối thiểu theo giá coin (Binance Futures rules)"""
+    if price >= 10000: return 0.001   # BTC
+    if price >= 1000:  return 0.001   # ETH
+    if price >= 100:   return 0.01    # BNB
+    if price >= 10:    return 0.1     # SOL
+    if price >= 1:     return 1.0     # XRP, altcoins ~$1-$10
     return 10.0
