@@ -1103,16 +1103,6 @@ class TelegramCommandHandler:
                 self.send("❌ Không kết nối được exchange")
                 return
 
-            # Check nếu coin đã có position → không nhồi lệnh
-            try:
-                all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
-                open_syms = {p["symbol"] for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0}
-                if symbol in open_syms:
-                    self.send(f"⚠️ <b>{symbol}</b> đã có vị thế đang mở. Không nhồi lệnh.")
-                    return
-            except Exception:
-                pass
-
             from smart_entry import find_optimal_entry, place_smart_order
 
             # Tìm entry tối ưu từ 1m/5m chart
