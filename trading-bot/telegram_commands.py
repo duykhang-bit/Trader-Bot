@@ -762,11 +762,14 @@ class TelegramCommandHandler:
                 logger.info(f"[Telegram] Fetching 15m klines for {symbol}...")
                 klines_15m = exchange.get_klines(symbol, "15m", limit=100)
             except Exception as e:
-                self.send(
-                    f"❌ <b>{symbol} không tồn tại</b> trên Binance Futures.\n"
-                    f"Kiểm tra lại tên coin. Ví dụ: /trade BTC, /trade SOL\n"
-                    f"Lỗi: {e}"
-                )
+                err_str = str(e)
+                if "451" in err_str or "429" in err_str or "418" in err_str:
+                    self.send(f"⚠️ Binance đang giới hạn truy cập. Đợi 1-2 phút rồi thử lại.")
+                else:
+                    self.send(
+                        f"❌ <b>{symbol} không tồn tại</b> trên Binance Futures.\n"
+                        f"Kiểm tra lại tên coin. Ví dụ: /trade BTC, /trade SOL"
+                    )
                 return
 
             if not klines_15m or len(klines_15m) == 0:
@@ -1039,6 +1042,9 @@ class TelegramCommandHandler:
             all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
             open_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0]
         except Exception as e:
+            err_str = str(e)
+            if "451" in err_str or "429" in err_str or "418" in err_str:
+                return "⚠️ Binance đang giới hạn truy cập. Đợi 1-2 phút rồi thử lại."
             return f"❌ Lỗi lấy positions: {e}"
 
         if not open_pos:
