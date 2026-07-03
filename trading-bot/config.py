@@ -20,8 +20,8 @@ FIXED_COINS = [
 
 # --- Binance API ---
 import os
-API_KEY    = os.environ.get("BINANCE_API_KEY", "")
-API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+API_KEY    = os.environ.get("BINANCE_API_KEY", "4nvrEO0C9JJaRLsvbQP4Foq6ZZqSrY3GFgxiBBBqWTllKm2UwNYqdgkGY093SX2J")
+API_SECRET = os.environ.get("BINANCE_API_SECRET", "FwTPwL0tgVlfDDQpZIdjaUZyyJ28OaD5RxSfMeqCwztIAuRm2bMFc04RwOoY7lSc")
 
 USE_TESTNET   = False
 LIVE_BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://fapi.binance.com")
@@ -69,7 +69,7 @@ MIN_SCORE           = 50.0
 COOLDOWN_AFTER_LOSS = 300
 
 # --- Bot Settings ---
-LOOP_INTERVAL_SECONDS = 60
+LOOP_INTERVAL_SECONDS = 120
 LOG_LEVEL = "INFO"
 LOG_FILE  = "logs/bot.log"
 
@@ -130,3 +130,5 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 #Run bot 
 #cd /Users/leduykhang/Documents/Trading/trading-bot/trading-bot python3 bot.py
 
+#https://railway.com/project/bfd60fcc-b141-4ac3-91ce-b086b7ef0ea1
+#https://web-production-0847b.up.railway.app/
