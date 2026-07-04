@@ -1177,6 +1177,29 @@ def limit_order_monitor(exchange, notifier):
 
 
 # ============================================================
+# THREAD 9: Memory cleanup mỗi 2 giờ
+# ============================================================
+def memory_cleanup():
+    """Mỗi 2 giờ: garbage collect + giới hạn trade_log + clear caches"""
+    import gc
+    while state["running"]:
+        time.sleep(7200)  # 2 giờ
+        try:
+            gc.collect()
+            with lock:
+                tlog = state.get("trade_log", [])
+                if len(tlog) > 100:
+                    state["trade_log"] = tlog[-100:]
+                if len(state.get("candidates", [])) > 20:
+                    state["candidates"] = state["candidates"][:20]
+            if hasattr(scan_market, '_last_candidates'):
+                scan_market._last_candidates = scan_market._last_candidates[:10]
+            logger.info("[Cleanup] Memory freed, gc collected")
+        except Exception:
+            pass
+
+
+# ============================================================
 # THREAD 6b: Pending Order Review — mỗi 15 phút kiểm tra lệnh pending
 # Nếu xu hướng đã đổi → hủy lệnh không còn hợp lý
 # ============================================================
@@ -1435,6 +1458,10 @@ if __name__ == "__main__":
     # Pending order reviewer thread (mỗi 15 phút check + hủy lệnh không hợp lý)
     t8 = threading.Thread(target=pending_order_reviewer, args=(exchange, notifier), daemon=True)
     t8.start()
+
+    # Memory cleanup thread (mỗi 2 giờ)
+    t9 = threading.Thread(target=memory_cleanup, daemon=True)
+    t9.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
