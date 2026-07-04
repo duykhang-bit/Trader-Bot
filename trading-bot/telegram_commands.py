@@ -12,6 +12,7 @@
 #   /risk 1               — đổi risk % mỗi lệnh
 # ============================================================
 import logging
+import os
 import requests
 import threading
 import time
@@ -31,6 +32,36 @@ class TelegramCommandHandler:
         self.config = config
         self.last_update_id = 0
         self.running = True
+
+        # Load watchlist từ file (nếu có)
+        self._load_watchlist()
+
+    def _save_watchlist(self):
+        """Lưu watchlist vào file để giữ khi restart"""
+        import json
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
+        try:
+            with open(path, "w") as f:
+                json.dump(list(self.watchlist), f)
+        except Exception:
+            pass
+
+    def _load_watchlist(self):
+        """Load watchlist từ file khi bot start"""
+        import json
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
+        try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    saved = json.load(f)
+                if saved:
+                    # Merge: giữ coin từ config + thêm coin saved
+                    for coin in saved:
+                        if coin not in self.watchlist:
+                            self.watchlist.append(coin)
+                    logger.info(f"Loaded watchlist from file: {self.watchlist}")
+        except Exception:
+            pass
 
     def send(self, text: str, markup=None):
         payload = {
@@ -80,6 +111,7 @@ class TelegramCommandHandler:
             if coin in self.watchlist:
                 return f"⚠️ {coin} đã có trong watchlist rồi"
             self.watchlist.append(coin)
+            self._save_watchlist()
             return f"✅ Đã thêm <b>{coin}</b> vào watchlist\n📋 Tổng: {len(self.watchlist)} coins"
 
         # /removecoin PEPEUSDT
@@ -92,6 +124,7 @@ class TelegramCommandHandler:
             if coin not in self.watchlist:
                 return f"⚠️ {coin} không có trong watchlist"
             self.watchlist.remove(coin)
+            self._save_watchlist()
             return f"✅ Đã xóa <b>{coin}</b> khỏi watchlist\n📋 Còn lại: {len(self.watchlist)} coins"
 
         # /list
