@@ -547,22 +547,10 @@ def price_updater(exchange):
 # THREAD 2: Trade engine mỗi 60 giây
 # ============================================================
 def calc_qty(balance, entry, sl):
-    risk = balance * config.RISK_PER_TRADE
-    dist = abs(entry - sl)
-    if dist == 0: return 0.1
-    qty_by_risk = risk / dist
-
-    # MAX_ORDER_USDT = margin tối đa → notional = margin × leverage
+    # Luôn dùng MAX_ORDER_USDT làm margin mỗi lệnh
     max_notional = config.MAX_ORDER_USDT * config.LEVERAGE
-    qty_by_cap   = max_notional / entry
+    qty = max_notional / entry
 
-    qty = min(qty_by_risk, qty_by_cap)
-    # Đảm bảo notional tối thiểu $5
-    if qty * entry < 5.0:
-        qty = 5.0 / entry
-    # Hard cap: margin không vượt MAX_ORDER_USDT
-    if qty * entry / config.LEVERAGE > config.MAX_ORDER_USDT:
-        qty = config.MAX_ORDER_USDT * config.LEVERAGE / entry
     # Round theo giá coin (stepSize)
     if entry >= 10000:    qty = round(qty, 3)   # BTC
     elif entry >= 100:    qty = round(qty, 1)   # SOL, BNB
