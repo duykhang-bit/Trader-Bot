@@ -1276,6 +1276,15 @@ class TelegramCommandHandler:
         """Chạy ngầm, lắng nghe lệnh từ Telegram"""
         logger.info("Telegram command handler started")
 
+        # Xóa webhook (nếu có) — đảm bảo getUpdates hoạt động
+        try:
+            requests.get(
+                f"https://api.telegram.org/bot{self.token}/deleteWebhook",
+                timeout=5
+            )
+        except Exception:
+            pass
+
         # Bỏ qua tất cả updates cũ khi bot mới start
         try:
             resp = requests.get(
