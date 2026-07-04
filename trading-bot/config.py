@@ -59,7 +59,7 @@ ATR_TP_MULTIPLIER = 4.0
 RISK_PER_TRADE     = 0.01
 STOP_LOSS_PCT      = 0.02
 MAX_OPEN_POSITIONS = 6
-MAX_ORDER_USDT     = 20.0
+MAX_ORDER_USDT     = 30.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
 MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
@@ -132,5 +132,11 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 
 #https://railway.com/project/bfd60fcc-b141-4ac3-91ce-b086b7ef0ea1
 #https://web-production-0847b.up.railway.app/
-#pkill -9 -f "Python.*bot.py"; sleep 2; cd /Users/leduykhang/Documents/Trading/trading-bot/trading-bot && python3 bot.py
+#pkill -9 -f "Python.*bot.py"; sleep 2; cd /Users/leduykhang/Documents/Trading/trading-bot/trading-bot && caffeinate -s nohup python3 bot.py > /tmp/bot.log 2>&1 &
+
+#nohup python3 bot.py > /tmp/bot.log 2>&1 &
+#echo "Bot started!"
+
+  #http://159.65.136.39:5555
+
 
