@@ -89,7 +89,13 @@ class TelegramCommandHandler:
                 params={"offset": self.last_update_id + 1, "timeout": 10},
                 timeout=15
             )
-            return resp.json().get("result", [])
+            results = resp.json().get("result", [])
+            # Auto-clear: nếu quá nhiều updates pending → skip hết, lấy mới nhất
+            if len(results) > 20:
+                self.last_update_id = results[-1]["update_id"]
+                logger.warning(f"Telegram: skipped {len(results)} stale updates")
+                return []
+            return results
         except Exception:
             return []
 
