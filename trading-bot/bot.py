@@ -2,6 +2,9 @@
 # MULTI-COIN TRADING BOT — Dashboard + Auto Trade
 # ============================================================
 import time, logging, os, sys, threading
+
+# Đảm bảo thư mục chứa bot.py luôn có trong sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests as _req
 import pandas as pd
 from datetime import datetime
@@ -9,16 +12,29 @@ from datetime import datetime
 # ── SINGLE INSTANCE LOCK — chỉ cho phép 1 bot chạy ──
 _LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
 def _check_single_instance():
-    import fcntl
     global _lock_fp
-    _lock_fp = open(_LOCK_FILE, 'w')
-    try:
-        fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_fp.write(str(os.getpid()))
-        _lock_fp.flush()
-    except IOError:
-        print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
-        sys.exit(0)
+    if sys.platform == "win32":
+        # Windows: dùng msvcrt thay fcntl
+        import msvcrt
+        _lock_fp = open(_LOCK_FILE, 'w')
+        try:
+            msvcrt.locking(_lock_fp.fileno(), msvcrt.LK_NBLCK, 1)
+            _lock_fp.write(str(os.getpid()))
+            _lock_fp.flush()
+        except OSError:
+            print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
+            sys.exit(0)
+    else:
+        # Linux/macOS: dùng fcntl
+        import fcntl
+        _lock_fp = open(_LOCK_FILE, 'w')
+        try:
+            fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_fp.write(str(os.getpid()))
+            _lock_fp.flush()
+        except IOError:
+            print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
+            sys.exit(0)
 
 _check_single_instance()
 
@@ -85,9 +101,22 @@ lock = threading.Lock()
 # ============================================================
 # DASHBOARD
 # ============================================================
-def clear(): os.system("clear")
+# Bật ANSI escape codes trên Windows
+if os.name == "nt":
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+
+_dashboard_initialized = False
+
+def clear():
+    os.system("cls" if os.name == "nt" else "clear")
 
 def print_dashboard():
+    import io
+    _buf = io.StringIO()
+    _real_stdout = sys.stdout
+    sys.stdout = _buf
     with lock: s = dict(state); tlog = list(state["trade_log"]); grids = dict(state.get("grids", {}))
     W = 58
     def row(t=""): return f"║  {t:<{W-4}}║"
@@ -299,6 +328,12 @@ def print_dashboard():
 
     print("╚" + "═"*W + "╝")
     print("  ⌨️  Ctrl+C để dừng  |  Telegram: /help")
+
+    # Restore stdout trước, clear sau, rồi mới write — đúng thứ tự
+    sys.stdout = _real_stdout
+    output = _buf.getvalue()
+    clear()
+    sys.stdout.write(output)
     sys.stdout.flush()
 
 # ============================================================
@@ -312,7 +347,7 @@ def dashboard_updater():
             print_dashboard()
         except Exception:
             pass
-        time.sleep(1)
+        time.sleep(28800)  # 8 tiếng
 
 # ============================================================
 # THREAD 1a: Giá realtime qua WebSocket (cập nhật mỗi 100ms)
@@ -1472,6 +1507,7 @@ if __name__ == "__main__":
         while True: time.sleep(1)
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received")
+        state["_clean_exit"] = True
     except SystemExit as e:
         logger.error(f"SystemExit received: {e}")
     except Exception as e:
@@ -1511,3 +1547,8 @@ if __name__ == "__main__":
             except: pass
         # KHÔNG đóng position khi dừng bot — lệnh vẫn giữ trên Binance
         print("💡 Lệnh đang mở vẫn giữ trên Binance (SL/TP đã đặt sẵn)")
+
+        # Nếu tắt chủ động (Telegram /stop hoặc Ctrl+C) → exit 0 → run_bot.bat không restart
+        if state.get("_clean_exit") or isinstance(locals().get("e_main"), KeyboardInterrupt):
+            sys.exit(0)
+        # Nếu crash → exit 1 → run_bot.bat tự restart

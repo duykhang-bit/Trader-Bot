@@ -207,10 +207,57 @@ class TelegramCommandHandler:
             except ValueError:
                 return "❌ Nhập số, ví dụ: /risk 2"
 
+        # /score 50 — đổi MIN_SCORE
+        elif cmd == "/score":
+            if len(parts) < 2:
+                return f"❌ Dùng: /score 50\nHiện tại: {self.config.MIN_SCORE:.0f}%"
+            try:
+                val = float(parts[1])
+                if val < 10 or val > 100:
+                    return "❌ Score phải từ 10 - 100"
+                self.config.MIN_SCORE = val
+                return (f"✅ Đã đổi MIN_SCORE thành <b>{val:.0f}%</b>\n"
+                        f"💡 Bot sẽ chỉ vào lệnh khi coin đạt ≥ {val:.0f}% score")
+            except ValueError:
+                return "❌ Nhập số, ví dụ: /score 50"
+
+        # /export — xuất báo cáo HTML gửi qua Telegram
+        elif cmd == "/export":
+            self.send("⏳ Đang tạo báo cáo...")
+            try:
+                from report_generator import generate_and_send
+                with self.lock:
+                    tlog     = list(self.state.get("trade_log", []))
+                    bal      = self.state.get("balance", 0)
+                    open_pos = list(self.state.get("open_positions", []))
+                    splits   = dict(self.state.get("split_positions", {}))
+
+                filepath = generate_and_send(
+                    trade_log       = tlog,
+                    balance         = bal,
+                    open_positions  = open_pos,
+                    split_positions = splits,
+                    bot_token       = self.token,
+                    chat_id         = self.chat_id,
+                )
+                all_closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]
+                total_pnl  = sum(t.get("pnl_usdt", 0) for t in all_closed)
+                wins       = sum(1 for t in all_closed if t.get("pnl_usdt", 0) > 0)
+                wr         = wins / len(all_closed) * 100 if all_closed else 0
+                return (f"📊 <b>Báo cáo đã xuất!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 Tổng lệnh : <b>{len(all_closed)}</b>\n"
+                        f"🎯 Win rate  : <b>{wr:.1f}%</b>\n"
+                        f"💵 Tổng PnL  : <b>${total_pnl:+.2f}</b>\n"
+                        f"💼 Balance   : <b>${bal:,.2f}</b>")
+            except Exception as e:
+                return f"❌ Lỗi xuất báo cáo: {e}"
+
         # /stop
         elif cmd == "/stop":
             with self.lock:
                 self.state["running"] = False
+                self.state["_clean_exit"] = True  # đánh dấu thoát chủ động
             return "⛔ Bot đang dừng..."
 
         # /closeall — đóng tất cả lệnh nhưng không dừng bot
@@ -369,11 +416,13 @@ class TelegramCommandHandler:
 /leverage 10      — Đổi đòn bẩy (1-20x)
 /usdt 5           — Đổi margin mỗi lệnh ($1-$1000)
 /risk 2           — Đổi risk % mỗi lệnh
+/score 50         — Đổi MIN_SCORE vào lệnh (10-100%)
 /closeall         — Đóng TẤT CẢ lệnh ngay
 /settp            — 🛡️ Auto set SL/TP cho lệnh chưa có
 /trade BTC        — Đánh giá LONG/SHORT coin
 /grid BTCUSDT 78000 82000 20 100  — Bật grid bot
 /stopgrid         — Dừng grid bot
+/export           — 📤 Xuất báo cáo HTML trading
 /stop             — Dừng toàn bộ bot
 /ping             — Kiểm tra bot sống
 /help             — Xem lệnh này"""
@@ -1209,6 +1258,7 @@ class TelegramCommandHandler:
                      [{"text": "🟢 LONG"}, {"text": "🔴 SHORT"}],
                      [{"text": "🛡️ Set SL/TP"}, {"text": "📈 Stats"}],
                      [{"text": "🕐 History"}, {"text": "❌ Close Position"}],
+                     [{"text": "⚙️ Score"}, {"text": "📤 Export"}],
                  ], "resize_keyboard": True})
 
         while self.running and self.state.get("running", True):
@@ -1330,6 +1380,8 @@ class TelegramCommandHandler:
                     "❌ close position": "/closeall",
                     "📺 dashboard": "/dashboard",
                     "🛡️ set sl/tp": "/settp",
+                    "⚙️ score": "/score",
+                    "📤 export": "/export",
                 }
                 text_lower = text.strip().lower()
                 if text_lower in button_map:
