@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Report - 2026-07-04</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        padding: 20px;
+        line-height: 1.6;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    .header {
+        text-align: center;
+        padding: 20px;
+        background: linear-gradient(135deg, #16213e, #0f3460);
+        border-radius: 12px;
+        margin-bottom: 20px;
+    }
+    .header h1 { color: #00d4ff; font-size: 24px; }
+    .header .date { color: #888; margin-top: 5px; }
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+    .stat-card {
+        background: #16213e;
+        border-radius: 10px;
+        padding: 15px;
+        text-align: center;
+        border: 1px solid #0f3460;
+    }
+    .stat-card .value { font-size: 22px; font-weight: bold; margin: 5px 0; }
+    .stat-card .label { font-size: 12px; color: #888; text-transform: uppercase; }
+    .section {
+        background: #16213e;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #0f3460;
+    }
+    .section h2 {
+        color: #00d4ff;
+        margin-bottom: 15px;
+        font-size: 16px;
+        border-bottom: 1px solid #0f3460;
+        padding-bottom: 8px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    th {
+        background: #0f3460;
+        padding: 8px;
+        text-align: left;
+        color: #00d4ff;
+    }
+    td {
+        padding: 6px 8px;
+        border-bottom: 1px solid #0f3460;
+    }
+    tr:hover { background: #1a2744; }
+    .profit { color: #00c853; }
+    .loss { color: #ff1744; }
+    .footer {
+        text-align: center;
+        color: #555;
+        font-size: 11px;
+        margin-top: 20px;
+    }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+    <h1>&#128202; TRADING REPORT</h1>
+    <div class="date">2026-07-04 &bull; Generated at 08:24:00</div>
+</div>
+
+<!-- TODAY STATS -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">Balance</div>
+        <div class="value">$96.42</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Today PnL</div>
+        <div class="value" style="color:#00c853">$+0.00</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Total PnL</div>
+        <div class="value" style="color:#00c853">$+3.70</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Unrealized</div>
+        <div class="value" style="color:#00c853">$+5.47</div>
+    </div>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">Today Trades</div>
+        <div class="value">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Today Win Rate</div>
+        <div class="value">0%</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Total Trades</div>
+        <div class="value">3</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Total Win Rate</div>
+        <div class="value">100%</div>
+    </div>
+</div>
+
+<!-- TODAY TRADES -->
+<div class="section">
+    <h2>&#128197; Today's Trades (2026-07-04)</h2>
+    <p style='color:#888'>No trades today</p>
+</div>
+
+<!-- ALL TIME TRADES (recent 20) -->
+<div class="section">
+    <h2>&#128203; All Time (Recent 20 Trades)</h2>
+    
+    <table>
+        <tr><th>#</th><th>Coin</th><th>Side</th><th>Entry</th><th>Close</th><th>PnL</th><th>%</th><th>Time</th></tr>
+        
+        <tr>
+            <td>1</td>
+            <td><b>HAEDAL</b></td>
+            <td>LONG</td>
+            <td>$0.0192</td>
+            <td>$0.0202</td>
+            <td style="color:#00c853"><b>$+1.28</b></td>
+            <td style="color:#00c853">+4.99%</td>
+            <td>2026-07-02 20:15</td>
+        </tr>
+        <tr>
+            <td>2</td>
+            <td><b>TLM</b></td>
+            <td>LONG</td>
+            <td>$0.0015</td>
+            <td>$0.0016</td>
+            <td style="color:#00c853"><b>$+0.75</b></td>
+            <td style="color:#00c853">+3.00%</td>
+            <td>2026-07-02 19:34</td>
+        </tr>
+        <tr>
+            <td>3</td>
+            <td><b>ETH</b></td>
+            <td>SHORT</td>
+            <td>$1655.5000</td>
+            <td>$1652.1600</td>
+            <td style="color:#00c853"><b>$+1.67</b></td>
+            <td style="color:#00c853">+0.20%</td>
+            <td>2026-07-02 19:34</td>
+        </tr>
+    </table>
+    <p style="margin-top:10px; color:#888">
+        &#10004; 3W &nbsp; &#10008; 0L &nbsp; WR: 100% &nbsp;
+        Total: <span style="color:#00c853"><b>$+3.70</b></span>
+    </p>
+</div>
+
+<!-- BEST / WORST -->
+<div class="section">
+    <h2>&#127942; Best & Worst</h2>
+    <table>
+        <tr><th></th><th>Coin</th><th>Side</th><th>PnL</th><th>%</th><th>Time</th></tr>
+        
+        <tr>
+            <td>&#127942; Best</td>
+            <td><b>ETH</b></td>
+            <td>SHORT</td>
+            <td class="profit"><b>$+1.67</b></td>
+            <td class="profit">+0.20%</td>
+            <td>2026-07-02 19:34</td>
+        </tr>
+        
+        <tr>
+            <td>&#128128; Worst</td>
+            <td><b>TLM</b></td>
+            <td>LONG</td>
+            <td class="loss"><b>$+0.75</b></td>
+            <td class="loss">+3.00%</td>
+            <td>2026-07-02 19:34</td>
+        </tr>
+    </table>
+</div>
+
+<div class="footer">
+    Multi-Coin Trading Bot &bull; Liquidation Strategy &bull; Report auto-generated
+</div>
+
+</div>
+</body>
+</html>

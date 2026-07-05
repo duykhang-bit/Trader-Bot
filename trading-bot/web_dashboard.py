@@ -649,6 +649,10 @@ def api_add_coin():
         from scanner import WATCHLIST
         if symbol not in WATCHLIST:
             WATCHLIST.append(symbol)
+        # Cập nhật config.FIXED_COINS trong memory để scan_market dùng ngay
+        import config as _cfg
+        if hasattr(_cfg, "FIXED_COINS") and symbol not in _cfg.FIXED_COINS:
+            _cfg.FIXED_COINS.append(symbol)
     except Exception:
         pass
 
@@ -676,6 +680,10 @@ def api_remove_coin():
         from scanner import WATCHLIST
         if symbol in WATCHLIST:
             WATCHLIST.remove(symbol)
+        # Cập nhật config.FIXED_COINS trong memory để scan_market dùng ngay
+        import config as _cfg
+        if hasattr(_cfg, "FIXED_COINS") and symbol in _cfg.FIXED_COINS:
+            _cfg.FIXED_COINS.remove(symbol)
     except Exception:
         pass
 

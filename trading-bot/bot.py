@@ -485,19 +485,18 @@ def price_updater(exchange):
 
                 state["open_positions"] = open_pos
 
-            # ── Max loss check: đóng lệnh nếu lỗ > MAX_LOSS_PER_POSITION ──
-            max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 10.0)
+            # ── Max loss check: đóng lệnh nếu lỗ > $20 (bất kể có SL trên Binance hay không) ──
+            max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
             for p in open_pos:
                 pnl = p.get("_pnl", 0)
+                sym = p["symbol"]
                 if pnl < -max_loss:
-                    sym = p["symbol"]
                     amt = float(p.get("positionAmt", 0))
                     close_side = "SELL" if amt > 0 else "BUY"
                     qty = abs(amt)
                     if qty == int(qty):
                         qty = int(qty)
                     try:
-                        # Chia batch nếu qty > 100k
                         remaining = qty
                         while remaining > 0:
                             batch = min(remaining, 100000)
@@ -506,24 +505,19 @@ def price_updater(exchange):
                             exchange.place_market_order(sym, close_side, batch)
                             remaining -= batch
                         exchange.cancel_all_orders(sym)
-                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} (exceeded -${max_loss})")
-
-                        # Notify
-                        from notifier import Notifier, NOTIFICATION_CONFIG
+                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} (no SL on Binance, exceeded -${max_loss})")
                         try:
                             notifier_inst = state.get("_notifier")
                             if notifier_inst:
                                 notifier_inst.telegram.send(
-                                    f"🚨 <b>MAX LOSS HIT — AUTO CLOSE</b>\n"
+                                    f"🚨 <b>MAX LOSS SAFETY NET</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 {sym}\n"
+                                    f"📊 {sym} (không có SL trên Binance)\n"
                                     f"💵 PnL: <b>${pnl:.2f}</b> (exceeded -${max_loss})\n"
                                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                 )
                         except Exception:
                             pass
-
-                        # Update trade log
                         with lock:
                             for t in reversed(state.get("trade_log", [])):
                                 if t.get("symbol") == sym and t.get("status") == "OPEN":
@@ -630,23 +624,11 @@ def monitor_engine(exchange, notifier):
             cp = exchange.get_mark_price(sym)
             with lock: state["prices"][sym] = cp
 
-            hit = None
-            if pos == "LONG":
-                if cp <= sl: hit = "❌ SL HIT"
-                elif cp >= tp: hit = "✅ TP HIT"
-            else:
-                if cp >= sl: hit = "❌ SL HIT"
-                elif cp <= tp: hit = "✅ TP HIT"
+            # SL/TP đã được đặt trên Binance → KHÔNG tự đóng lệnh ở đây
+            # Chỉ cập nhật trailing stop để điều chỉnh SL order trên Binance nếu cần
 
-            # Hard stop: lỗ quá MAX_LOSS_PCT thì đóng ngay
-            if not hit:
-                max_loss_pct = getattr(config, "MAX_LOSS_PCT", 0.30)
-                loss_pct = (entry - cp) / entry if pos == "LONG" else (cp - entry) / entry
-                if loss_pct >= max_loss_pct:
-                    hit = f"🚨 MAX LOSS {loss_pct*100:.1f}% HIT"
-
-            # Trailing stop
-            if not hit and config.TRAILING_STOP:
+            # Trailing stop — chỉ update state nội bộ, không đóng market
+            if config.TRAILING_STOP:
                 with lock:
                     trail = state.get("trail_ext", entry)
                 if pos == "LONG" and cp > trail:
@@ -663,39 +645,6 @@ def monitor_engine(exchange, notifier):
                             state["sl"] = new_sl
                             state["trail_ext"] = cp
                             logger.info(f"Trailing SL → ${new_sl:.4f}")
-
-            if hit:
-                close_side = "SELL" if pos == "LONG" else "BUY"
-                try: exchange.place_market_order(sym, close_side, qty)
-                except Exception as e: logger.error(f"Close failed: {e}")
-
-                pnl_pct = (cp-entry)/entry*100 if pos=="LONG" else (entry-cp)/entry*100
-                pnl_usd = qty * abs(cp - entry) * (1 if pnl_pct > 0 else -1)
-
-                notifier.telegram.send(
-                    f"{hit} <b>{sym}</b>\n"
-                    f"📌 {pos}  Entry: ${entry:.4f} → Close: ${cp:.4f}\n"
-                    f"💵 PnL: <b>${pnl_usd:+.2f}</b> ({pnl_pct:+.2f}%)\n"
-                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                )
-
-                with lock:
-                    for t in reversed(state["trade_log"]):
-                        if t["symbol"]==sym and t["status"]=="OPEN":
-                            t.update({"status":"CLOSED","close":cp,
-                                      "pnl_pct":round(pnl_pct,2),
-                                      "pnl_usdt":round(pnl_usd,2)})
-                            break
-                    state["position"] = None
-                    state["symbol"]   = None
-                    state["entry"]    = 0.0
-                    state["sl"]       = 0.0
-                    state["tp"]       = 0.0
-                    state["qty"]      = 0.0
-                    if pnl_usd < 0:
-                        state["last_loss_time"] = time.time()
-                from trade_history import save_history
-                save_history(state["trade_log"])
 
         except Exception as e:
             logger.error(f"Monitor engine: {e}", exc_info=True)
@@ -754,6 +703,53 @@ def scan_engine(exchange, notifier):
                 except Exception:
                     pass
 
+                # ── Liquidation filter: chỉ vào lệnh khi giá gần vùng liq mạnh ──
+                # LONG: giá đang gần vùng liq SHORT lớn phía dưới (đáy thanh khoản → bắt đáy)
+                # SHORT: giá đang gần vùng liq LONG lớn phía trên (đỉnh thanh khoản → short)
+                # Nếu liq_tracker chưa có data → bỏ qua filter, vào lệnh bình thường
+                liq_tracker_inst = state.get("liq_tracker")
+                if liq_tracker_inst and liq_tracker_inst.is_connected():
+                    try:
+                        cur_price_quick = exchange.get_ticker_price(best.symbol)
+
+                        if best.signal == "LONG":
+                            # Tìm vùng liq SHORT lớn nhất phía dưới (đáy thanh khoản)
+                            liq_bottom = liq_tracker_inst.get_strongest_liq_below(
+                                best.symbol, cur_price_quick, min_usd=100_000)
+                            # Giá phải đang trong vòng 3% phía trên vùng liq đó
+                            # → tức là giá vừa chạm/vượt qua vùng liq → bắt đáy hợp lý
+                            if liq_bottom:
+                                dist_pct = (cur_price_quick - liq_bottom) / cur_price_quick * 100
+                                if dist_pct <= 3.0:
+                                    logger.info(f"[LiqFilter] {best.symbol} LONG ✅ gần đáy liq ${liq_bottom:.4f} ({dist_pct:.1f}%)")
+                                else:
+                                    logger.info(f"[LiqFilter] {best.symbol} LONG ❌ xa đáy liq ${liq_bottom:.4f} ({dist_pct:.1f}% > 3%)")
+                                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                                    continue
+                            else:
+                                # Không có vùng liq phía dưới → vẫn vào nhưng log warning
+                                logger.info(f"[LiqFilter] {best.symbol} LONG ⚠️ không có liq bottom data, vào ATR")
+
+                        else:  # SHORT
+                            # Tìm vùng liq LONG lớn nhất phía trên (đỉnh thanh khoản)
+                            liq_top = liq_tracker_inst.get_strongest_liq_above(
+                                best.symbol, cur_price_quick, min_usd=100_000)
+                            # Giá phải đang trong vòng 3% phía dưới vùng liq đó
+                            # → tức là giá vừa chạm/vượt qua vùng liq → short hợp lý
+                            if liq_top:
+                                dist_pct = (liq_top - cur_price_quick) / cur_price_quick * 100
+                                if dist_pct <= 3.0:
+                                    logger.info(f"[LiqFilter] {best.symbol} SHORT ✅ gần đỉnh liq ${liq_top:.4f} ({dist_pct:.1f}%)")
+                                else:
+                                    logger.info(f"[LiqFilter] {best.symbol} SHORT ❌ xa đỉnh liq ${liq_top:.4f} ({dist_pct:.1f}% > 3%)")
+                                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                                    continue
+                            else:
+                                logger.info(f"[LiqFilter] {best.symbol} SHORT ⚠️ không có liq top data, vào ATR")
+
+                    except Exception as e:
+                        logger.debug(f"[LiqFilter] {best.symbol} skip filter: {e}")
+
                 klines = exchange.get_klines(best.symbol, config.INTERVAL, limit=200)
                 df = _klines_to_df(klines)
                 price = df["close"].iloc[-1]
@@ -763,54 +759,116 @@ def scan_engine(exchange, notifier):
                 try: exchange.set_leverage(best.symbol, config.LEVERAGE)
                 except: pass
 
-                # SL/TP theo ATR (giữ nguyên như cũ)
+                # ── SL/TP: ưu tiên dùng liquidation zones, fallback ATR ──
+                liq_tracker = state.get("liq_tracker")
+
                 if best.signal == "LONG":
-                    sl = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    tp = price + (price - sl) * 3   # RR 1:3
                     side = "BUY"
-                else:
-                    sl = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    tp = price - (sl - price) * 3   # RR 1:3
+                    # SL: đặt dưới vùng liq SHORT gần nhất phía dưới (tránh bị quét)
+                    # Nếu không có liq data → dùng ATR×1.5
+                    sl_atr = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                    if liq_tracker:
+                        liq_below = liq_tracker.get_nearest_liq_below(best.symbol, price, min_usd=50_000)
+                        if liq_below and liq_below < price * 0.995:
+                            # SL đặt ngay dưới vùng liq 0.3% để tránh bị quét trước
+                            sl = liq_below * 0.997
+                            # Không để SL quá xa (max 4%)
+                            if sl < price * 0.96:
+                                sl = sl_atr
+                        else:
+                            sl = sl_atr
+                    else:
+                        sl = sl_atr
+
+                    # TP: vùng liq LONG lớn nhất phía trên (nơi giá sẽ pump tới)
+                    tp_atr = price + (price - sl) * 3
+                    if liq_tracker:
+                        liq_above = liq_tracker.get_nearest_liq_above(best.symbol, price, min_usd=100_000)
+                        if liq_above and liq_above > price * 1.005:
+                            tp = liq_above * 0.998  # TP ngay dưới vùng liq 0.2%
+                            # Đảm bảo RR tối thiểu 1:1.5
+                            if tp < price + (price - sl) * 1.5:
+                                tp = tp_atr
+                        else:
+                            tp = tp_atr
+                    else:
+                        tp = tp_atr
+
+                else:  # SHORT
                     side = "SELL"
+                    # SL: đặt trên vùng liq LONG gần nhất phía trên
+                    sl_atr = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                    if liq_tracker:
+                        liq_above = liq_tracker.get_nearest_liq_above(best.symbol, price, min_usd=50_000)
+                        if liq_above and liq_above > price * 1.005:
+                            sl = liq_above * 1.003  # SL trên vùng liq 0.3%
+                            if sl > price * 1.04:
+                                sl = sl_atr
+                        else:
+                            sl = sl_atr
+                    else:
+                        sl = sl_atr
+
+                    # TP: vùng liq SHORT lớn nhất phía dưới
+                    tp_atr = price - (sl - price) * 3
+                    if liq_tracker:
+                        liq_below = liq_tracker.get_nearest_liq_below(best.symbol, price, min_usd=100_000)
+                        if liq_below and liq_below < price * 0.995:
+                            tp = liq_below * 1.002  # TP ngay trên vùng liq 0.2%
+                            if tp > price - (sl - price) * 1.5:
+                                tp = tp_atr
+                        else:
+                            tp = tp_atr
+                    else:
+                        tp = tp_atr
+
+                # Log dùng liq hay ATR
+                sl_src = "LIQ" if (liq_tracker and state.get("liq_tracker")) else "ATR"
+                logger.info(f"[ScanEngine] {best.symbol} {best.signal} SL={sl:.4f} TP={tp:.4f} src={sl_src}")
 
                 qty = calc_qty(bal, price, sl, symbol=best.symbol, exchange=exchange)
                 min_notional = 5.0
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)
 
-                # Smart Entry: tìm điểm vào + SL/TP tốt nhất từ chart
-                from smart_entry import find_optimal_entry, place_smart_order
-                entry_info = find_optimal_entry(exchange, best.symbol, best.signal, config)
-                # Dùng SL/TP từ chart phân tích (swing low/high, ATR 15m/5m)
-                sl = entry_info["sl"]
-                tp = entry_info["tp"]
+                # Vào lệnh MARKET thẳng
+                exchange.place_market_order(best.symbol, side, qty)
 
-                result = place_smart_order(exchange, best.symbol, best.signal, qty, entry_info, config,
-                                           bot_state=state, bot_lock=lock)
-                actual_price = result.get("price", price)
+                # Đặt SL/TP trên Binance ngay sau khi vào lệnh
+                close_side = "SELL" if side == "BUY" else "BUY"
+                time.sleep(1)
+                try:
+                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                    logger.info(f"SL placed: {best.symbol} @ {sl:.4f}")
+                except Exception as e:
+                    logger.error(f"SL place failed {best.symbol}: {e}")
+                try:
+                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                    logger.info(f"TP placed: {best.symbol} @ {tp:.4f}")
+                except Exception as e:
+                    logger.error(f"TP place failed {best.symbol}: {e}")
 
                 with lock:
                     state["position"]  = best.signal
                     state["symbol"]    = best.symbol
-                    state["entry"]     = actual_price
+                    state["entry"]     = price
                     state["sl"]        = sl
                     state["tp"]        = tp
                     state["qty"]       = qty
-                    state["trail_ext"] = actual_price
+                    state["trail_ext"] = price
                     state["trade_log"].append({
                         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": best.symbol, "side": best.signal,
-                        "entry": actual_price, "sl": sl, "tp": tp,
+                        "entry": price, "sl": sl, "tp": tp,
                         "qty": qty, "status": "OPEN",
-                        "note": f"scan_{result.get('type','MARKET').lower()}"
+                        "note": "scan_market"
                     })
 
                 icon = "🟢" if best.signal=="LONG" else "🔴"
                 margin = qty * price / config.LEVERAGE
-                order_type = "LIMIT (chờ khớp)" if result.get("type") == "LIMIT" else "MARKET"
                 notifier.telegram.send(
-                    f"{icon} <b>{best.signal} {best.symbol}</b> [{order_type}]\n"
-                    f"💰 Entry  : <b>${actual_price:.4f}</b>\n"
+                    f"{icon} <b>{best.signal} {best.symbol}</b> [MARKET]\n"
+                    f"💰 Entry  : <b>${price:.4f}</b>\n"
                     f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(price-sl)/price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-price)/price*100:.2f}%)\n"
                     f"📦 Size   : {qty} (~<b>${qty*price:,.2f}</b> notional)\n"
@@ -1032,51 +1090,12 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                     logger.info(f"[LiqEngine] {sym} price reversed, cancel split setup")
                     _cancel_split(sym, sp, exchange, notifier, side_close, "Giá đảo chiều trước khi Order2 khớp")
 
-            # ── Cả 2 lệnh đã khớp → monitor SL/TP hit ────────
+            # ── Cả 2 lệnh đã khớp → Binance tự xử lý SL/TP, bot chỉ sync state ──
             elif sp.filled1 and sp.filled2:
-                # SL check
-                sl_hit = (
-                    (sp.direction == "LONG"  and price <= sp.sl) or
-                    (sp.direction == "SHORT" and price >= sp.sl)
-                )
-                tp_hit = (
-                    (sp.direction == "LONG"  and price >= sp.tp) or
-                    (sp.direction == "SHORT" and price <= sp.tp)
-                )
-                if sl_hit or tp_hit:
-                    tag = "❌ SL HIT" if sl_hit else "✅ TP HIT"
-                    total_qty = sp.qty1 + sp.qty2
-                    avg_entry = (sp.entry1 * sp.qty1 + sp.entry2 * sp.qty2) / total_qty
-                    pnl_pct = (
-                        (price - avg_entry) / avg_entry * 100
-                        if sp.direction == "LONG"
-                        else (avg_entry - price) / avg_entry * 100
-                    )
-                    pnl_usd = total_qty * abs(price - avg_entry) * (1 if pnl_pct > 0 else -1)
-
-                    try:
-                        exchange.cancel_all_orders(sym)
-                        exchange.place_market_order(sym, side_close, total_qty)
-                    except Exception as e:
-                        logger.error(f"[LiqEngine] Close failed {sym}: {e}")
-
-                    notifier.telegram.send(
-                        f"{tag} <b>{sp.direction} {sym}</b>\n"
-                        f"📌 AvgEntry: ${avg_entry:.4f} → Close: ${price:.4f}\n"
-                        f"💵 PnL: <b>${pnl_usd:+.2f}</b> ({pnl_pct:+.2f}%)\n"
-                        f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
-                    )
-                    # Update trade log + xoá split position
-                    with lock:
-                        for t in reversed(state["trade_log"]):
-                            if t["symbol"] == sym and t["status"] == "OPEN":
-                                t.update({"status": "CLOSED", "close": price,
-                                          "pnl_pct": round(pnl_pct, 2),
-                                          "pnl_usdt": round(pnl_usd, 2)})
-                        state["split_positions"].pop(sym, None)
-                    from trade_history import save_history
-                    save_history(state["trade_log"])
-                    logger.info(f"[LiqEngine] {tag} {sym} pnl={pnl_usd:+.2f}")
+                # SL/TP đã được đặt trên Binance sau khi order2 fill
+                # Không tự đóng lệnh ở đây — để Binance xử lý
+                # Khi Binance đóng, price_updater sẽ detect và sync trade log
+                pass
 
             # ── Setup quá cũ → huỷ ──
             if not sp.filled1 and time.time() - sp.open_time > timeout_hours * 3600:

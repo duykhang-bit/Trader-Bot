@@ -58,6 +58,20 @@ class SplitPosition:
     open_time:    float = field(default_factory=time.time)
 
 
+def _price_decimals(price: float) -> int:
+    """Tính số chữ số thập phân cần thiết cho giá.
+    VD: 0.010550 → 6, 1.234 → 3, 45000 → 0
+    """
+    if price >= 1000:   return 1
+    if price >= 100:    return 2
+    if price >= 10:     return 3
+    if price >= 1:      return 4
+    if price >= 0.1:    return 5
+    if price >= 0.01:   return 6
+    if price >= 0.001:  return 7
+    return 8
+
+
 class LiqStrategy:
     """
     Phân tích liquidation data → sinh setup 2 lệnh.
@@ -149,6 +163,12 @@ class LiqStrategy:
         if sl_dist <= 0:
             sl_dist = setup.entry1 * 0.02  # fallback 2%
 
+        # Guard: sl_dist phải tối thiểu 1.5% của entry để tránh qty phóng quá lớn
+        # (quan trọng với coin giá nhỏ như $0.01 — sl_dist dễ bị rất nhỏ)
+        min_sl_dist = setup.entry1 * 0.015
+        if sl_dist < min_sl_dist:
+            sl_dist = min_sl_dist
+
         # Tổng qty theo risk
         total_qty = total_risk / sl_dist
 
@@ -230,6 +250,11 @@ class LiqStrategy:
             logger.debug(f"{sym} SHORT RR={reward/risk:.2f} < 1.5, skip")
             return None
 
+        # Guard: SL phải cách entry1 ít nhất 1.5% (tránh SL sát quá bị hit ngay)
+        min_sl_dist = entry1 * 0.015
+        if abs(sl - entry1) < min_sl_dist:
+            sl = entry1 * (1 + 0.02)  # force SL 2% trên entry1
+
         # Confidence score
         confidence = self._calc_confidence(
             liq1_usd, liq2_usd, tp_liq_usd,
@@ -238,13 +263,14 @@ class LiqStrategy:
         if confidence < 40:
             return None
 
+        dec = _price_decimals(entry1)
         return LiqSetup(
             symbol     = sym,
             direction  = "SHORT",
-            entry1     = round(entry1, 4),
-            entry2     = round(entry2, 4),
-            sl         = round(sl, 4),
-            tp         = round(tp_price, 4),
+            entry1     = round(entry1, dec),
+            entry2     = round(entry2, dec),
+            sl         = round(sl, dec),
+            tp         = round(tp_price, dec),
             liq1_usd   = liq1_usd,
             liq2_usd   = liq2_usd,
             tp_liq_usd = tp_liq_usd,
@@ -313,17 +339,23 @@ class LiqStrategy:
             logger.debug(f"{sym} LONG RR={reward/risk:.2f} < 1.5, skip")
             return None
 
+        # Guard: SL phải cách entry1 ít nhất 1.5% (tránh SL sát quá bị hit ngay)
+        min_sl_dist = entry1 * 0.015
+        if abs(entry1 - sl) < min_sl_dist:
+            sl = entry1 * (1 - 0.02)  # force SL 2% dưới entry1
+
         confidence = self._calc_confidence(liq1_usd, liq2_usd, tp_liq_usd, reward / risk)
         if confidence < 40:
             return None
 
+        dec = _price_decimals(entry1)
         return LiqSetup(
             symbol     = sym,
             direction  = "LONG",
-            entry1     = round(entry1, 4),
-            entry2     = round(entry2, 4),
-            sl         = round(sl, 4),
-            tp         = round(tp_price, 4),
+            entry1     = round(entry1, dec),
+            entry2     = round(entry2, dec),
+            sl         = round(sl, dec),
+            tp         = round(tp_price, dec),
             liq1_usd   = liq1_usd,
             liq2_usd   = liq2_usd,
             tp_liq_usd = tp_liq_usd,

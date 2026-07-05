@@ -62,7 +62,8 @@ MAX_OPEN_POSITIONS = 6
 MAX_ORDER_USDT     = 30.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
-MAX_LOSS_PER_POSITION = 10.0   # Lỗ tối đa $10/lệnh → tự đóng ngay
+MAX_LOSS_PER_POSITION = 20.0   # Lỗ tối đa $20/lệnh → tự đóng ngay (tăng lên để không kích hoạt trước SL Binance)
+MAX_LOSS_PCT_PER_POSITION = 0.20  # Lỗ tối đa 20% margin → tự đóng (backup check theo %)
 
 # --- Strategy ---
 MIN_SCORE           = 50.0
@@ -138,5 +139,10 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 #echo "Bot started!"
 
   #http://159.65.136.39:5555
-
+#ssh root@159.65.136.39
+#cd /root/Trader-Bot && git pull && pkill -9 -f bot.py; sleep 2; nohup /root/start_bot.sh > /tmp/bot.log 2>&1 &
+#ATR×1.5, RR 1:3) —
+# phân tích theo chart telegram
+#ssh root@159.65.136.39
+#cd /root/Trader-Bot && git pull && pkill -9 -f bot.py; sleep 2; nohup /root/start_bot.sh > /tmp/bot.log 2>&1 &
 

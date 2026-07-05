@@ -136,16 +136,24 @@ class BinanceFutures:
             info = self._get("/fapi/v1/exchangeInfo")
             for s in info.get("symbols", []):
                 if s["symbol"] == symbol:
+                    step = 1.0
+                    max_q = 10000.0
+                    decimals = 0
                     for f in s.get("filters", []):
+                        # LOT_SIZE: stepSize cho tất cả order types
                         if f["filterType"] == "LOT_SIZE":
                             step = float(f.get("stepSize", 1))
                             max_q = float(f.get("maxQty", 10000))
-                            # Tính số decimal từ stepSize
                             if step >= 1:
                                 decimals = 0
                             else:
                                 decimals = len(str(step).rstrip('0').split('.')[-1])
-                            return step, max_q, decimals
+                        # MARKET_LOT_SIZE: giới hạn riêng cho market order — ưu tiên hơn
+                        elif f["filterType"] == "MARKET_LOT_SIZE":
+                            market_max = float(f.get("maxQty", 0))
+                            if market_max > 0:
+                                max_q = min(max_q, market_max)
+                    return step, max_q, decimals
         except Exception:
             pass
         return 1.0, 10000.0, 0  # fallback

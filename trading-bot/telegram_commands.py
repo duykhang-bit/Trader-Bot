@@ -985,23 +985,65 @@ class TelegramCommandHandler:
 
             logger.info(f"[Telegram] Signal={signal} score L={long_score} S={short_score} for {symbol}")
 
-            # ── Tính Entry / SL / TP ─────────────────────────────────
+            # ── Tính Entry / SL / TP — ưu tiên liquidation zones ────
             atr_val = cur_atr
             sl_mult = getattr(self.config, "ATR_SL_MULTIPLIER", 2.0)
             tp_mult = getattr(self.config, "ATR_TP_MULTIPLIER", 4.0)
+            liq_tracker = self.state.get("liq_tracker") if self.state else None
+
+            def _calc_sl_tp_with_liq(sig, px, atr):
+                """Tính SL/TP dựa trên liquidation zones, fallback ATR."""
+                dec = _price_decimals(px)
+                if sig == "LONG":
+                    sl_atr = round(px - atr * sl_mult, dec)
+                    tp_atr = round(px + atr * tp_mult, dec)
+                    if liq_tracker:
+                        # SL: dưới vùng liq SHORT gần nhất phía dưới
+                        liq_below = liq_tracker.get_nearest_liq_below(symbol, px, min_usd=50_000)
+                        if liq_below and px * 0.96 < liq_below < px * 0.998:
+                            _sl = round(liq_below * 0.997, dec)
+                        else:
+                            _sl = sl_atr
+                        # TP: vùng liq LONG lớn nhất phía trên
+                        liq_above = liq_tracker.get_nearest_liq_above(symbol, px, min_usd=100_000)
+                        if liq_above and liq_above > px * 1.005:
+                            _tp = round(liq_above * 0.998, dec)
+                            # Đảm bảo RR tối thiểu 1:1.5
+                            if _tp < px + abs(px - _sl) * 1.5:
+                                _tp = tp_atr
+                        else:
+                            _tp = tp_atr
+                    else:
+                        _sl, _tp = sl_atr, tp_atr
+                else:  # SHORT
+                    sl_atr = round(px + atr * sl_mult, dec)
+                    tp_atr = round(px - atr * tp_mult, dec)
+                    if liq_tracker:
+                        liq_above = liq_tracker.get_nearest_liq_above(symbol, px, min_usd=50_000)
+                        if liq_above and px * 1.002 < liq_above < px * 1.04:
+                            _sl = round(liq_above * 1.003, dec)
+                        else:
+                            _sl = sl_atr
+                        liq_below = liq_tracker.get_nearest_liq_below(symbol, px, min_usd=100_000)
+                        if liq_below and liq_below < px * 0.995:
+                            _tp = round(liq_below * 1.002, dec)
+                            if _tp > px - abs(_sl - px) * 1.5:
+                                _tp = tp_atr
+                        else:
+                            _tp = tp_atr
+                    else:
+                        _sl, _tp = sl_atr, tp_atr
+                return _sl, _tp
 
             if signal == "LONG":
                 entry = price
-                sl    = round(price - atr_val * sl_mult, _price_decimals(price))
-                tp    = round(price + atr_val * tp_mult, _price_decimals(price))
+                sl, tp = _calc_sl_tp_with_liq("LONG", price, atr_val)
             elif signal == "SHORT":
                 entry = price
-                sl    = round(price + atr_val * sl_mult, _price_decimals(price))
-                tp    = round(price - atr_val * tp_mult, _price_decimals(price))
+                sl, tp = _calc_sl_tp_with_liq("SHORT", price, atr_val)
             else:
                 entry = price
-                sl    = round(price - atr_val * sl_mult, _price_decimals(price))
-                tp    = round(price + atr_val * tp_mult, _price_decimals(price))
+                sl, tp = _calc_sl_tp_with_liq("LONG", price, atr_val)
 
             risk_dist   = abs(entry - sl)
             reward_dist = abs(tp - entry)
@@ -1072,11 +1114,9 @@ class TelegramCommandHandler:
             # ── Inline keyboard — luôn cho chọn cả LONG và SHORT ──
             # Tính SL/TP cho hướng ngược lại
             if signal == "LONG":
-                sl_reverse = round(price + atr_val * sl_mult, _price_decimals(price))
-                tp_reverse = round(price - atr_val * tp_mult, _price_decimals(price))
+                sl_reverse, tp_reverse = _calc_sl_tp_with_liq("SHORT", price, atr_val)
             else:
-                sl_reverse = round(price - atr_val * sl_mult, _price_decimals(price))
-                tp_reverse = round(price + atr_val * tp_mult, _price_decimals(price))
+                sl_reverse, tp_reverse = _calc_sl_tp_with_liq("LONG", price, atr_val)
 
             # Truncate prices cho callback_data (max 64 bytes)
             def _cb_price(p):
