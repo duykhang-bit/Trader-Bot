@@ -727,6 +727,17 @@ def scan_engine(exchange, notifier):
                     time.sleep(config.LOOP_INTERVAL_SECONDS)
                     continue
 
+                # Không vào lệnh trùng symbol đã có pending order (LIMIT chờ khớp)
+                try:
+                    pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                    pending_syms = {o["symbol"] for o in pending_orders if not o.get("reduceOnly", False)}
+                    if best.symbol in pending_syms:
+                        logger.info(f"Skip {best.symbol}: already has pending order")
+                        time.sleep(config.LOOP_INTERVAL_SECONDS)
+                        continue
+                except Exception:
+                    pass
+
                 try: exchange.set_leverage(best.symbol, config.LEVERAGE)
                 except: pass
 
