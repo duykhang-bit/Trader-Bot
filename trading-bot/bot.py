@@ -1296,6 +1296,66 @@ def position_advisor(exchange, notifier):
             logger.error(f"[PositionAdvisor] Error: {e}")
 
         time.sleep(1800)  # 30 phút
+
+
+# ============================================================
+# THREAD 11: Orphan Order Cleanup — mỗi 20 phút xóa SL/TP mồ côi
+# ============================================================
+def orphan_order_cleanup(exchange, notifier):
+    """Nếu coin có SL/TP order nhưng KHÔNG có position → hủy"""
+    time.sleep(600)
+
+    while state["running"]:
+        try:
+            all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+            open_syms = {p["symbol"] for p in all_pos
+                        if abs(float(p.get("positionAmt", 0))) > 0}
+            cancelled = []
+
+            # Algo orders
+            try:
+                algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
+                if isinstance(algo_orders, list):
+                    for o in algo_orders:
+                        sym = o.get("symbol", "")
+                        if sym and sym not in open_syms:
+                            try:
+                                exchange._delete("/fapi/v1/algoOrder", {"algoId": o.get("algoId", "")})
+                                cancelled.append(f"{sym} (algo)")
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            # Regular reduceOnly orders
+            try:
+                all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                for o in all_orders:
+                    sym = o.get("symbol", "")
+                    if sym and sym not in open_syms and o.get("reduceOnly", False):
+                        try:
+                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
+                            cancelled.append(f"{sym} ({o.get('type', '')})")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            if cancelled:
+                notifier.telegram.send(
+                    f"🧹 <b>DỌN LỆNH MỒ CÔI</b>\n"
+                    f"Đã hủy {len(cancelled)} lệnh TP/SL không còn position:\n" +
+                    "\n".join(f"• {c}" for c in cancelled) +
+                    f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
+                logger.info(f"[OrphanCleanup] Cancelled {len(cancelled)} orphan orders")
+
+        except Exception as e:
+            logger.error(f"[OrphanCleanup] Error: {e}")
+
+        time.sleep(1200)  # 20 phút
+
+
 def memory_cleanup():
     """Mỗi 2 giờ: garbage collect + giới hạn trade_log + clear caches"""
     import gc
@@ -1583,6 +1643,10 @@ if __name__ == "__main__":
     # Position advisor thread (mỗi 30 phút phân tích + gửi lời khuyên)
     t10 = threading.Thread(target=position_advisor, args=(exchange, notifier), daemon=True)
     t10.start()
+
+    # Orphan order cleanup thread (mỗi 20 phút xóa SL/TP mồ côi)
+    t11 = threading.Thread(target=orphan_order_cleanup, args=(exchange, notifier), daemon=True)
+    t11.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
