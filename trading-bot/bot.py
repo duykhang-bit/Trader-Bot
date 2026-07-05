@@ -739,56 +739,68 @@ def scan_engine(exchange, notifier):
                 except Exception:
                     pass
 
+                klines = exchange.get_klines(best.symbol, config.INTERVAL, limit=200)
+                df = _klines_to_df(klines)
+                price = df["close"].iloc[-1]
+                atr = calculate_atr(df["high"], df["low"], df["close"]).iloc[-1]
+                bal = exchange.get_account_balance()
+
                 try: exchange.set_leverage(best.symbol, config.LEVERAGE)
                 except: pass
 
-                # Smart Entry: phân tích 1m/5m tìm entry tối ưu (giống Telegram)
-                from smart_entry import find_optimal_entry, place_smart_order
-                entry_info = find_optimal_entry(exchange, best.symbol, best.signal, config)
+                if best.signal == "LONG":
+                    sl = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                    tp = price + (price - sl) * 3   # RR 1:3
+                    side = "BUY"
+                else:
+                    sl = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                    tp = price - (sl - price) * 3   # RR 1:3
+                    side = "SELL"
 
-                bal = exchange.get_account_balance()
-                price = entry_info["entry_price"]
-                qty = calc_qty(bal, price, entry_info["sl"])
-
-                # Đảm bảo notional tối thiểu $5
+                qty = calc_qty(bal, price, sl)
                 min_notional = 5.0
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)
+                exchange.place_market_order(best.symbol, side, qty)
 
-                # Đặt lệnh thông minh (LIMIT nếu tốt hơn, MARKET nếu không)
-                result = place_smart_order(exchange, best.symbol, best.signal, qty, entry_info, config,
-                                           bot_state=state, bot_lock=lock)
-
-                sl = entry_info["sl"]
-                tp = entry_info["tp"]
+                # Đặt SL/TP trên Binance ngay sau khi vào lệnh
+                close_side = "SELL" if side == "BUY" else "BUY"
+                time.sleep(1)
+                try:
+                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                    logger.info(f"SL placed: {best.symbol} @ {sl:.4f}")
+                except Exception as e:
+                    logger.error(f"SL place failed {best.symbol}: {e}")
+                try:
+                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                    logger.info(f"TP placed: {best.symbol} @ {tp:.4f}")
+                except Exception as e:
+                    logger.error(f"TP place failed {best.symbol}: {e}")
 
                 with lock:
                     state["position"]  = best.signal
                     state["symbol"]    = best.symbol
-                    state["entry"]     = result.get("price", price)
+                    state["entry"]     = price
                     state["sl"]        = sl
                     state["tp"]        = tp
                     state["qty"]       = qty
-                    state["trail_ext"] = result.get("price", price)
+                    state["trail_ext"] = price
                     state["trade_log"].append({
                         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": best.symbol, "side": best.signal,
-                        "entry": result.get("price", price), "sl": sl, "tp": tp,
-                        "qty": qty, "status": "OPEN",
-                        "note": f"scan_{result.get('type', 'MARKET').lower()}"
+                        "entry": price, "sl": sl, "tp": tp,
+                        "qty": qty, "status": "OPEN"
                     })
 
                 icon = "🟢" if best.signal=="LONG" else "🔴"
                 margin = qty * price / config.LEVERAGE
-                order_type = "LIMIT (chờ khớp)" if result.get("type") == "LIMIT" else "MARKET"
                 notifier.telegram.send(
-                    f"{icon} <b>{best.signal} {best.symbol}</b> [{order_type}]\n"
-                    f"💰 Entry  : <b>${result.get('price', price):.4f}</b>\n"
+                    f"{icon} <b>{best.signal} {best.symbol}</b>\n"
+                    f"💰 Entry  : <b>${price:.4f}</b>\n"
                     f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(price-sl)/price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-price)/price*100:.2f}%)\n"
                     f"📦 Size   : {qty} (~<b>${qty*price:,.2f}</b> notional)\n"
                     f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
-                    f"🧠 Method : {entry_info.get('method', 'market')}\n"
                     f"⭐ Score  : {best.score}đ | {best.reason}\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
