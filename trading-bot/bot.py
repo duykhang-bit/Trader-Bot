@@ -574,6 +574,10 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
 
     qty = min(qty, max_qty)
 
+    # Hard cap: margin không vượt MAX_ORDER_USDT
+    max_margin_qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry
+    qty = min(qty, max_margin_qty)
+
     # Round theo stepSize
     if step >= 1:
         qty = int(qty // step) * int(step)
