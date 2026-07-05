@@ -831,57 +831,126 @@ def scan_engine(exchange, notifier):
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)
 
-                # ── Entry: LIMIT tại vùng liq, fallback MARKET nếu không có liq ──
-                # LONG: đặt LIMIT buy tại vùng liq SHORT phía dưới (chờ giá dump xuống)
-                # SHORT: đặt LIMIT sell tại vùng liq LONG phía trên (chờ giá pump lên)
                 close_side = "SELL" if side == "BUY" else "BUY"
-                entry_price = price  # default
+                entry_price = price
                 order_type_used = "MARKET"
+                skip_reason = None
 
+                # ── 5 bộ lọc nâng cao theo gợi ý ChatGPT ──────────────────────
                 if liq_tracker_inst and liq_tracker_inst.is_connected():
                     if best.signal == "LONG":
-                        liq_entry = liq_tracker_inst.get_strongest_liq_below(
-                            best.symbol, price, min_usd=100_000)
-                        # Chỉ dùng LIMIT nếu vùng liq cách giá 0.3%-4%
-                        if liq_entry and price * 0.96 < liq_entry < price * 0.997:
-                            entry_price = round(liq_entry * 1.001, 6)  # vào ngay trên vùng liq 0.1%
-                            try:
-                                exchange.set_leverage(best.symbol, config.LEVERAGE)
-                                exchange.place_limit_order(best.symbol, "BUY", qty, entry_price)
-                                order_type_used = "LIMIT"
-                                logger.info(f"[ScanEngine] LIMIT BUY {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
-                            except Exception as e:
-                                logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
-                                exchange.place_market_order(best.symbol, side, qty)
-                                entry_price = price
-                                order_type_used = "MARKET"
+                        liq_entry = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=100_000)
+                        liq_resist = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=150_000)
+                    else:
+                        liq_entry = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=100_000)
+                        liq_resist = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=150_000)
+
+                    # ── Filter 3: Không MARKET nếu giá ngay sát kháng cự ──
+                    if liq_resist:
+                        dist_resist = abs(price - liq_resist) / price
+                        if dist_resist < 0.008:  # giá cách kháng cự < 0.8%
+                            skip_reason = f"Giá sát kháng cự liq ({dist_resist*100:.1f}% < 0.8%)"
+
+                    if not skip_reason and liq_entry:
+                        dist_pct = abs(price - liq_entry) / price
+
+                        # ── Filter 1: Khoảng cách theo ATR ──
+                        atr_limit = atr * 0.4
+                        dist_abs  = abs(price - liq_entry)
+                        use_limit = dist_abs <= atr_limit and dist_pct <= 0.04
+
+                        # ── Filter 2: Sweep check — giá đã chạm vùng liq chưa ──
+                        # Nếu dist_pct < 0.003 tức giá vừa sweep xong → MARKET luôn
+                        if dist_pct < 0.003:
+                            use_limit = False  # vào MARKET ngay vì đã sweep
+
+                        # ── Filter 4: Momentum check (MACD histogram) ──
+                        try:
+                            from indicators import calculate_macd
+                            macd_line, signal_line, histogram = calculate_macd(df["close"])
+                            hist_val = histogram.iloc[-1]
+                            momentum_ok = hist_val > 0 if best.signal == "LONG" else hist_val < 0
+                        except Exception:
+                            momentum_ok = True  # fallback pass nếu lỗi
+
+                        if not momentum_ok:
+                            skip_reason = f"Momentum ngược chiều (MACD hist={hist_val:.4f})"
+
+                        # ── Filter 5: RR check sau khi kéo entry về liq ──
+                        if not skip_reason and use_limit:
+                            if best.signal == "LONG":
+                                _ep = liq_entry * 1.001
+                            else:
+                                _ep = liq_entry * 0.999
+                            _risk   = abs(_ep - sl)
+                            _reward = abs(tp - _ep)
+                            _rr     = _reward / _risk if _risk > 0 else 0
+                            if _rr < 1.5:
+                                use_limit = False  # RR không đủ → MARKET hoặc bỏ
+                                logger.info(f"[ScanEngine] RR={_rr:.1f} < 1.5 with LIMIT, fallback MARKET")
+
+                        # ── Score-based priority ──
+                        # Score >= 80 → LIMIT bắt buộc
+                        # Score 65-79 → LIMIT nếu có liq
+                        # Score 50-64 → chỉ MARKET nếu momentum mạnh
+                        if not skip_reason:
+                            if best.score >= 80:
+                                # Bắt buộc LIMIT, không market bừa
+                                if not use_limit:
+                                    skip_reason = f"Score>=80 nhưng không có liq phù hợp để LIMIT"
+                            elif best.score >= 65:
+                                pass  # LIMIT nếu có, MARKET nếu không
+                            else:
+                                # Score 50-64: chỉ MARKET nếu momentum mạnh
+                                if not momentum_ok:
+                                    skip_reason = f"Score {best.score}<65 và momentum yếu"
+
+                    elif not skip_reason:
+                        # Không có liq data
+                        if best.score >= 80:
+                            pass  # score cao → MARKET được
+                        elif best.score >= 65:
+                            pass  # MARKET được
                         else:
-                            exchange.place_market_order(best.symbol, side, qty)
-                            order_type_used = "MARKET"
-                    else:  # SHORT
-                        liq_entry = liq_tracker_inst.get_strongest_liq_above(
-                            best.symbol, price, min_usd=100_000)
-                        if liq_entry and price * 1.003 < liq_entry < price * 1.04:
-                            entry_price = round(liq_entry * 0.999, 6)  # vào ngay dưới vùng liq 0.1%
-                            try:
-                                exchange.set_leverage(best.symbol, config.LEVERAGE)
-                                exchange.place_limit_order(best.symbol, "SELL", qty, entry_price)
-                                order_type_used = "LIMIT"
-                                logger.info(f"[ScanEngine] LIMIT SELL {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
-                            except Exception as e:
-                                logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
-                                exchange.place_market_order(best.symbol, side, qty)
-                                entry_price = price
-                                order_type_used = "MARKET"
-                        else:
-                            exchange.place_market_order(best.symbol, side, qty)
-                            order_type_used = "MARKET"
+                            skip_reason = f"Score {best.score}<65 và không có liq data"
                 else:
-                    # Không có liq data → MARKET
+                    momentum_ok = True
+                    liq_entry = None
+                    use_limit = False
+
+                # ── Bỏ lệnh nếu có skip_reason ──
+                if skip_reason:
+                    logger.info(f"[ScanEngine] SKIP {best.symbol}: {skip_reason}")
+                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                    continue
+
+                # ── Đặt lệnh ──
+                try:
+                    exchange.set_leverage(best.symbol, config.LEVERAGE)
+                except Exception:
+                    pass
+
+                if liq_tracker_inst and liq_tracker_inst.is_connected() and liq_entry and use_limit:
+                    if best.signal == "LONG":
+                        entry_price = round(liq_entry * 1.001, 6)
+                        order_side = "BUY"
+                    else:
+                        entry_price = round(liq_entry * 0.999, 6)
+                        order_side = "SELL"
+                    try:
+                        exchange.place_limit_order(best.symbol, order_side, qty, entry_price)
+                        order_type_used = "LIMIT"
+                        logger.info(f"[ScanEngine] LIMIT {order_side} {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
+                    except Exception as e:
+                        logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
+                        exchange.place_market_order(best.symbol, side, qty)
+                        entry_price = price
+                        order_type_used = "MARKET"
+                else:
                     exchange.place_market_order(best.symbol, side, qty)
                     order_type_used = "MARKET"
 
-                # Đặt SL/TP sau khi vào lệnh
+                # ── Đặt SL/TP ──
                 time.sleep(1)
                 try:
                     exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
@@ -913,23 +982,25 @@ def scan_engine(exchange, notifier):
                 icon = "🟢" if best.signal=="LONG" else "🔴"
                 margin = qty * entry_price / config.LEVERAGE
                 order_tag = "⏳ LIMIT (chờ khớp)" if order_type_used == "LIMIT" else "⚡ MARKET"
+                rr_actual = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
                 liq_info = ""
                 if liq_tracker_inst and liq_tracker_inst.is_connected():
                     if best.signal == "LONG":
                         lb = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=100_000)
                         la = liq_tracker_inst.get_nearest_liq_above(best.symbol, price, min_usd=100_000)
-                        if lb: liq_info += f"\n💧 Liq đáy : <b>${lb:.4f}</b> (SL đặt dưới đây)"
-                        if la: liq_info += f"\n🎯 Liq đỉnh: <b>${la:.4f}</b> (TP hướng tới)"
+                        if lb: liq_info += f"\n💧 Liq đáy : <b>${lb:.4f}</b>"
+                        if la: liq_info += f"\n🎯 Liq đỉnh: <b>${la:.4f}</b>"
                     else:
                         la = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=100_000)
                         lb = liq_tracker_inst.get_nearest_liq_below(best.symbol, price, min_usd=100_000)
-                        if la: liq_info += f"\n💧 Liq đỉnh: <b>${la:.4f}</b> (SL đặt trên đây)"
-                        if lb: liq_info += f"\n🎯 Liq đáy : <b>${lb:.4f}</b> (TP hướng tới)"
+                        if la: liq_info += f"\n💧 Liq đỉnh: <b>${la:.4f}</b>"
+                        if lb: liq_info += f"\n🎯 Liq đáy : <b>${lb:.4f}</b>"
                 notifier.telegram.send(
                     f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
                     f"💰 Entry  : <b>${entry_price:.4f}</b>  (giá TT: ${price:.4f})\n"
                     f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
+                    f"📐 RR     : <b>1:{rr_actual:.1f}</b>\n"
                     f"📦 Size   : {qty} (~<b>${qty*entry_price:,.2f}</b> notional)\n"
                     f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
                     f"⭐ Score  : {best.score}đ | {best.reason}"
