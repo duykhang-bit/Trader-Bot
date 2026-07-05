@@ -551,14 +551,15 @@ def calc_qty(balance, entry, sl):
     max_notional = config.MAX_ORDER_USDT * config.LEVERAGE
     qty = max_notional / entry
 
-    # Cap max qty (Binance limit cho hầu hết coin)
+    # Cap max qty (Binance limit)
     if entry >= 10000:    max_qty = 100
     elif entry >= 1000:   max_qty = 1000
     elif entry >= 100:    max_qty = 10000
     elif entry >= 10:     max_qty = 100000
     elif entry >= 1:      max_qty = 500000
-    elif entry >= 0.01:   max_qty = 5000000
-    else:                 max_qty = 50000000
+    elif entry >= 0.1:    max_qty = 50000
+    elif entry >= 0.01:   max_qty = 20000
+    else:                 max_qty = 10000
     qty = min(qty, max_qty)
 
     # Round theo giá coin (stepSize)
