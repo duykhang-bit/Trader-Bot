@@ -763,12 +763,12 @@ def scan_engine(exchange, notifier):
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)
 
-                # Smart Entry: tìm điểm vào tốt nhất (LIMIT nếu tốt hơn, MARKET nếu không)
-                # Chỉ dùng entry_price từ smart_entry, SL/TP vẫn dùng ATR ở trên
+                # Smart Entry: tìm điểm vào + SL/TP tốt nhất từ chart
                 from smart_entry import find_optimal_entry, place_smart_order
                 entry_info = find_optimal_entry(exchange, best.symbol, best.signal, config)
-                entry_info["sl"] = sl  # Override SL/TP bằng ATR
-                entry_info["tp"] = tp
+                # Dùng SL/TP từ chart phân tích (swing low/high, ATR 15m/5m)
+                sl = entry_info["sl"]
+                tp = entry_info["tp"]
 
                 result = place_smart_order(exchange, best.symbol, best.signal, qty, entry_info, config,
                                            bot_state=state, bot_lock=lock)
