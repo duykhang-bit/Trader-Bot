@@ -1281,7 +1281,7 @@ class TelegramCommandHandler:
                 levels_msg = "\n🔬 Levels: " + " | ".join(lvl_parts[:5])
 
             self.send(
-                f"🚀 <b>ĐÃ VÀO LỆNH {signal} — {symbol}</b>\n"
+                f"👆 <b>MANUAL | ĐÃ VÀO LỆNH {signal} — {symbol}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💵 Entry   : <b>${price:,.4f}</b>\n"
                 f"📊 Current : ${entry_info['current_price']:,.4f}\n"

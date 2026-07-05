@@ -866,14 +866,27 @@ def scan_engine(exchange, notifier):
 
                 icon = "🟢" if best.signal=="LONG" else "🔴"
                 margin = qty * price / config.LEVERAGE
+                liq_info = ""
+                if liq_tracker_inst and liq_tracker_inst.is_connected():
+                    if best.signal == "LONG":
+                        lb = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=100_000)
+                        la = liq_tracker_inst.get_nearest_liq_above(best.symbol, price, min_usd=100_000)
+                        if lb: liq_info += f"\n💧 Liq đáy : <b>${lb:.4f}</b> (SL đặt dưới đây)"
+                        if la: liq_info += f"\n🎯 Liq đỉnh: <b>${la:.4f}</b> (TP hướng tới)"
+                    else:
+                        la = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=100_000)
+                        lb = liq_tracker_inst.get_nearest_liq_below(best.symbol, price, min_usd=100_000)
+                        if la: liq_info += f"\n💧 Liq đỉnh: <b>${la:.4f}</b> (SL đặt trên đây)"
+                        if lb: liq_info += f"\n🎯 Liq đáy : <b>${lb:.4f}</b> (TP hướng tới)"
                 notifier.telegram.send(
-                    f"{icon} <b>{best.signal} {best.symbol}</b> [MARKET]\n"
+                    f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [MARKET]\n"
                     f"💰 Entry  : <b>${price:.4f}</b>\n"
                     f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(price-sl)/price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-price)/price*100:.2f}%)\n"
                     f"📦 Size   : {qty} (~<b>${qty*price:,.2f}</b> notional)\n"
                     f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
-                    f"⭐ Score  : {best.score}đ | {best.reason}\n"
+                    f"⭐ Score  : {best.score}đ | {best.reason}"
+                    f"{liq_info}\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
 
