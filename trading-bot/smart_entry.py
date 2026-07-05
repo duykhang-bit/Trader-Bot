@@ -101,22 +101,38 @@ def find_optimal_entry(exchange, symbol: str, side: str, config) -> dict:
             sl = min(entry_price - atr_15m * 1.5, swing_low - atr_5m * 0.5)
             sl = round(sl, _price_dec(price))
 
+            # Enforce min SL 1.5%
+            if abs(entry_price - sl) < entry_price * 0.015:
+                sl = entry_price * (1 - 0.015)
+
             # TP: RR 1:2.5 hoặc resistance gần nhất
             risk = entry_price - sl
             tp = entry_price + risk * 2.5
             swing_high = df_15m["high"].rolling(20).max().iloc[-1]
             tp = min(tp, swing_high)
             tp = round(tp, _price_dec(price))
+
+            # Enforce min TP 2%
+            if abs(tp - entry_price) < entry_price * 0.02:
+                tp = entry_price * (1 + 0.02)
         else:
             swing_high = df_15m["high"].rolling(20).max().iloc[-1]
             sl = max(entry_price + atr_15m * 1.5, swing_high + atr_5m * 0.5)
             sl = round(sl, _price_dec(price))
+
+            # Enforce min SL 1.5%
+            if abs(sl - entry_price) < entry_price * 0.015:
+                sl = entry_price * (1 + 0.015)
 
             risk = sl - entry_price
             tp = entry_price - risk * 2.5
             swing_low = df_15m["low"].rolling(20).min().iloc[-1]
             tp = max(tp, swing_low)
             tp = round(tp, _price_dec(price))
+
+            # Enforce min TP 2%
+            if abs(entry_price - tp) < entry_price * 0.02:
+                tp = entry_price * (1 - 0.02)
 
         entry_price = round(entry_price, _price_dec(price))
         improvement = abs(price - entry_price) / price * 100

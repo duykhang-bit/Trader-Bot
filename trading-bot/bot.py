@@ -552,23 +552,24 @@ def calc_qty(balance, entry, sl):
     qty = max_notional / entry
 
     # Cap max qty (Binance limit cho hầu hết coin)
-    max_qty = 10000000  # 10 triệu
-    if entry >= 10000:    max_qty = 100       # BTC
-    elif entry >= 1000:   max_qty = 1000      # ETH
-    elif entry >= 100:    max_qty = 10000     # BNB, SOL
-    elif entry >= 1:      max_qty = 100000    # XRP
-    elif entry >= 0.01:   max_qty = 1000000   # altcoins
-    else:                 max_qty = 10000000  # very cheap
-
+    if entry >= 10000:    max_qty = 100
+    elif entry >= 1000:   max_qty = 1000
+    elif entry >= 100:    max_qty = 10000
+    elif entry >= 10:     max_qty = 100000
+    elif entry >= 1:      max_qty = 500000
+    elif entry >= 0.01:   max_qty = 5000000
+    else:                 max_qty = 50000000
     qty = min(qty, max_qty)
 
     # Round theo giá coin (stepSize)
     if entry >= 10000:    qty = round(qty, 3)   # BTC
+    elif entry >= 1000:   qty = round(qty, 3)   # ETH
     elif entry >= 100:    qty = round(qty, 1)   # SOL, BNB
-    elif entry >= 1:      qty = round(qty, 1)   # mid-cap
+    elif entry >= 10:     qty = round(qty, 1)   # mid-cap
+    elif entry >= 1:      qty = int(qty)        # LAB, XRP — integer only
     elif entry >= 0.01:   qty = int(qty)        # cheap coins
     else:                 qty = int(qty)
-    return max(qty, 0.1 if entry >= 1 else 1)
+    return max(qty, 0.1 if entry >= 100 else 1)
 
 def trade_engine(exchange, notifier):
     # Startup noti — retry nếu bị rate limit
