@@ -1164,8 +1164,138 @@ def limit_order_monitor(exchange, notifier):
 
 
 # ============================================================
-# THREAD 9: Memory cleanup mỗi 2 giờ
+# THREAD 10: Position Advisory — mỗi 30 phút phân tích vị thế đang mở
+# Gửi lời khuyên qua Telegram: giữ/đóng dựa trên xu hướng hiện tại
 # ============================================================
+def position_advisor(exchange, notifier):
+    """
+    Mỗi 30 phút:
+    1. Lấy tất cả positions đang mở
+    2. Phân tích xu hướng hiện tại (RSI, EMA, MTF)
+    3. Gửi Telegram: coin nào nên giữ, coin nào nên đóng
+    """
+    from indicators import calculate_rsi, calculate_ema, calculate_atr
+    from scanner import _klines_to_df
+
+    # Đợi 5 phút sau khi bot start
+    time.sleep(300)
+
+    while state["running"]:
+        try:
+            with lock:
+                open_pos = [p for p in state.get("open_positions", [])
+                           if abs(float(p.get("positionAmt", 0))) > 0]
+
+            if not open_pos:
+                time.sleep(1800)  # 30 phút
+                continue
+
+            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (30 phút)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+            for p in open_pos:
+                sym = p["symbol"]
+                amt = float(p.get("positionAmt", 0))
+                entry = float(p.get("entryPrice", 0))
+                side = "LONG" if amt > 0 else "SHORT"
+                pnl = float(p.get("unRealizedProfit", 0))
+
+                try:
+                    # Lấy data
+                    klines_15m = exchange.get_klines(sym, "15m", limit=50)
+                    klines_1h = exchange.get_klines(sym, "1h", limit=50)
+                    df_15m = _klines_to_df(klines_15m)
+                    df_1h = _klines_to_df(klines_1h)
+
+                    close_15m = df_15m["close"]
+                    close_1h = df_1h["close"]
+                    price = close_15m.iloc[-1]
+
+                    # Indicators
+                    rsi_15m = calculate_rsi(close_15m, 14).iloc[-1]
+                    rsi_1h = calculate_rsi(close_1h, 14).iloc[-1]
+                    ema9 = calculate_ema(close_15m, 9).iloc[-1]
+                    ema21 = calculate_ema(close_15m, 21).iloc[-1]
+                    ema50 = calculate_ema(close_1h, 50).iloc[-1]
+
+                    # Phân tích xu hướng
+                    bullish_signals = 0
+                    bearish_signals = 0
+                    reasons = []
+
+                    # EMA trend
+                    if ema9 > ema21:
+                        bullish_signals += 1
+                        reasons.append("EMA9>21 ↑")
+                    else:
+                        bearish_signals += 1
+                        reasons.append("EMA9<21 ↓")
+
+                    # Price vs EMA50
+                    if price > ema50:
+                        bullish_signals += 1
+                        reasons.append("Trên EMA50")
+                    else:
+                        bearish_signals += 1
+                        reasons.append("Dưới EMA50")
+
+                    # RSI
+                    if rsi_15m > 60:
+                        bullish_signals += 1
+                        reasons.append(f"RSI={rsi_15m:.0f}↑")
+                    elif rsi_15m < 40:
+                        bearish_signals += 1
+                        reasons.append(f"RSI={rsi_15m:.0f}↓")
+                    else:
+                        reasons.append(f"RSI={rsi_15m:.0f}")
+
+                    # RSI 1h
+                    if rsi_1h > 65:
+                        bullish_signals += 1
+                    elif rsi_1h < 35:
+                        bearish_signals += 1
+
+                    # Quyết định
+                    pnl_pct = (price - entry) / entry * 100 if side == "LONG" else (entry - price) / entry * 100
+                    icon = "🟢" if side == "LONG" else "🔴"
+                    pnl_icon = "📈" if pnl >= 0 else "📉"
+
+                    if side == "LONG":
+                        if bearish_signals >= 3:
+                            verdict = "⚠️ NÊN ĐÓNG — xu hướng đảo chiều"
+                        elif bearish_signals >= 2 and pnl > 0:
+                            verdict = "💡 Chốt lời — tín hiệu yếu đi"
+                        elif bullish_signals >= 3:
+                            verdict = "✅ GIỮ — xu hướng tốt"
+                        else:
+                            verdict = "🔄 THEO DÕI — chưa rõ xu hướng"
+                    else:  # SHORT
+                        if bullish_signals >= 3:
+                            verdict = "⚠️ NÊN ĐÓNG — xu hướng đảo chiều"
+                        elif bullish_signals >= 2 and pnl > 0:
+                            verdict = "💡 Chốt lời — tín hiệu yếu đi"
+                        elif bearish_signals >= 3:
+                            verdict = "✅ GIỮ — xu hướng tốt"
+                        else:
+                            verdict = "🔄 THEO DÕI — chưa rõ xu hướng"
+
+                    name = sym.replace("USDT", "")
+                    advice_lines.append(
+                        f"{icon} <b>{name} {side}</b> | {pnl_icon} ${pnl:+.2f} ({pnl_pct:+.1f}%)\n"
+                        f"   {' | '.join(reasons)}\n"
+                        f"   👉 <b>{verdict}</b>\n"
+                    )
+
+                except Exception as e:
+                    name = sym.replace("USDT", "")
+                    advice_lines.append(f"❓ {name}: không phân tích được\n")
+
+            advice_lines.append(f"\n⏰ {datetime.now().strftime('%H:%M:%S')}")
+            notifier.telegram.send("\n".join(advice_lines))
+
+        except Exception as e:
+            logger.error(f"[PositionAdvisor] Error: {e}")
+
+        time.sleep(1800)  # 30 phút
 def memory_cleanup():
     """Mỗi 2 giờ: garbage collect + giới hạn trade_log + clear caches"""
     import gc
@@ -1449,6 +1579,10 @@ if __name__ == "__main__":
     # Memory cleanup thread (mỗi 2 giờ)
     t9 = threading.Thread(target=memory_cleanup, daemon=True)
     t9.start()
+
+    # Position advisor thread (mỗi 30 phút phân tích + gửi lời khuyên)
+    t10 = threading.Thread(target=position_advisor, args=(exchange, notifier), daemon=True)
+    t10.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
