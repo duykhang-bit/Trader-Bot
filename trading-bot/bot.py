@@ -546,31 +546,41 @@ def price_updater(exchange):
 # ============================================================
 # THREAD 2: Trade engine mỗi 60 giây
 # ============================================================
-def calc_qty(balance, entry, sl):
+def calc_qty(balance, entry, sl, symbol="", exchange=None):
     # Luôn dùng MAX_ORDER_USDT làm margin mỗi lệnh
     max_notional = config.MAX_ORDER_USDT * config.LEVERAGE
     qty = max_notional / entry
 
-    # Cap max qty (Binance limit)
-    if entry >= 10000:    max_qty = 100
-    elif entry >= 1000:   max_qty = 1000
-    elif entry >= 100:    max_qty = 10000
-    elif entry >= 10:     max_qty = 100000
-    elif entry >= 1:      max_qty = 500000
-    elif entry >= 0.1:    max_qty = 50000
-    elif entry >= 0.01:   max_qty = 20000
-    else:                 max_qty = 10000
+    # Lấy stepSize + maxQty từ Binance API nếu có
+    step = 1.0
+    max_qty = None
+    decimals = 0
+    if exchange and symbol:
+        try:
+            step, max_qty, decimals = exchange.get_qty_precision(symbol)
+        except Exception:
+            pass
+
+    # Fallback cap nếu không lấy được từ API
+    if max_qty is None:
+        if entry >= 10000:    max_qty = 100
+        elif entry >= 1000:   max_qty = 1000
+        elif entry >= 100:    max_qty = 10000
+        elif entry >= 10:     max_qty = 100000
+        elif entry >= 1:      max_qty = 500000
+        elif entry >= 0.1:    max_qty = 50000
+        elif entry >= 0.01:   max_qty = 20000
+        else:                 max_qty = 10000
+
     qty = min(qty, max_qty)
 
-    # Round theo giá coin (stepSize)
-    if entry >= 10000:    qty = round(qty, 3)   # BTC
-    elif entry >= 1000:   qty = round(qty, 3)   # ETH
-    elif entry >= 100:    qty = round(qty, 1)   # SOL, BNB
-    elif entry >= 10:     qty = round(qty, 1)   # mid-cap
-    elif entry >= 1:      qty = int(qty)        # LAB, XRP — integer only
-    elif entry >= 0.01:   qty = int(qty)        # cheap coins
-    else:                 qty = int(qty)
-    return max(qty, 0.1 if entry >= 100 else 1)
+    # Round theo stepSize
+    if step >= 1:
+        qty = int(qty // step) * int(step)
+    else:
+        qty = round(int(qty / step) * step, decimals)
+
+    return max(qty, step)
 
 def trade_engine(exchange, notifier):
     # Startup noti — retry nếu bị rate limit
@@ -759,7 +769,7 @@ def scan_engine(exchange, notifier):
                     tp = price - (sl - price) * 3   # RR 1:3
                     side = "SELL"
 
-                qty = calc_qty(bal, price, sl)
+                qty = calc_qty(bal, price, sl, symbol=best.symbol, exchange=exchange)
                 min_notional = 5.0
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)

@@ -130,6 +130,26 @@ class BinanceFutures:
 
     # ---- Account ----
 
+    def get_qty_precision(self, symbol: str) -> tuple:
+        """Lấy stepSize và maxQty từ Binance API cho từng coin"""
+        try:
+            info = self._get("/fapi/v1/exchangeInfo")
+            for s in info.get("symbols", []):
+                if s["symbol"] == symbol:
+                    for f in s.get("filters", []):
+                        if f["filterType"] == "LOT_SIZE":
+                            step = float(f.get("stepSize", 1))
+                            max_q = float(f.get("maxQty", 10000))
+                            # Tính số decimal từ stepSize
+                            if step >= 1:
+                                decimals = 0
+                            else:
+                                decimals = len(str(step).rstrip('0').split('.')[-1])
+                            return step, max_q, decimals
+        except Exception:
+            pass
+        return 1.0, 10000.0, 0  # fallback
+
     def get_account_balance(self) -> float:
         """Lấy số dư USDT available"""
         data = self._get("/fapi/v2/balance", signed=True)
