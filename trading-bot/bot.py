@@ -831,11 +831,57 @@ def scan_engine(exchange, notifier):
                 if qty * price < min_notional:
                     qty = round(min_notional / price + 0.001, 3)
 
-                # Vào lệnh MARKET thẳng
-                exchange.place_market_order(best.symbol, side, qty)
-
-                # Đặt SL/TP trên Binance ngay sau khi vào lệnh
+                # ── Entry: LIMIT tại vùng liq, fallback MARKET nếu không có liq ──
+                # LONG: đặt LIMIT buy tại vùng liq SHORT phía dưới (chờ giá dump xuống)
+                # SHORT: đặt LIMIT sell tại vùng liq LONG phía trên (chờ giá pump lên)
                 close_side = "SELL" if side == "BUY" else "BUY"
+                entry_price = price  # default
+                order_type_used = "MARKET"
+
+                if liq_tracker_inst and liq_tracker_inst.is_connected():
+                    if best.signal == "LONG":
+                        liq_entry = liq_tracker_inst.get_strongest_liq_below(
+                            best.symbol, price, min_usd=100_000)
+                        # Chỉ dùng LIMIT nếu vùng liq cách giá 0.3%-4%
+                        if liq_entry and price * 0.96 < liq_entry < price * 0.997:
+                            entry_price = round(liq_entry * 1.001, 6)  # vào ngay trên vùng liq 0.1%
+                            try:
+                                exchange.set_leverage(best.symbol, config.LEVERAGE)
+                                exchange.place_limit_order(best.symbol, "BUY", qty, entry_price)
+                                order_type_used = "LIMIT"
+                                logger.info(f"[ScanEngine] LIMIT BUY {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
+                            except Exception as e:
+                                logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
+                                exchange.place_market_order(best.symbol, side, qty)
+                                entry_price = price
+                                order_type_used = "MARKET"
+                        else:
+                            exchange.place_market_order(best.symbol, side, qty)
+                            order_type_used = "MARKET"
+                    else:  # SHORT
+                        liq_entry = liq_tracker_inst.get_strongest_liq_above(
+                            best.symbol, price, min_usd=100_000)
+                        if liq_entry and price * 1.003 < liq_entry < price * 1.04:
+                            entry_price = round(liq_entry * 0.999, 6)  # vào ngay dưới vùng liq 0.1%
+                            try:
+                                exchange.set_leverage(best.symbol, config.LEVERAGE)
+                                exchange.place_limit_order(best.symbol, "SELL", qty, entry_price)
+                                order_type_used = "LIMIT"
+                                logger.info(f"[ScanEngine] LIMIT SELL {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
+                            except Exception as e:
+                                logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
+                                exchange.place_market_order(best.symbol, side, qty)
+                                entry_price = price
+                                order_type_used = "MARKET"
+                        else:
+                            exchange.place_market_order(best.symbol, side, qty)
+                            order_type_used = "MARKET"
+                else:
+                    # Không có liq data → MARKET
+                    exchange.place_market_order(best.symbol, side, qty)
+                    order_type_used = "MARKET"
+
+                # Đặt SL/TP sau khi vào lệnh
                 time.sleep(1)
                 try:
                     exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
@@ -851,21 +897,22 @@ def scan_engine(exchange, notifier):
                 with lock:
                     state["position"]  = best.signal
                     state["symbol"]    = best.symbol
-                    state["entry"]     = price
+                    state["entry"]     = entry_price
                     state["sl"]        = sl
                     state["tp"]        = tp
                     state["qty"]       = qty
-                    state["trail_ext"] = price
+                    state["trail_ext"] = entry_price
                     state["trade_log"].append({
                         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": best.symbol, "side": best.signal,
-                        "entry": price, "sl": sl, "tp": tp,
+                        "entry": entry_price, "sl": sl, "tp": tp,
                         "qty": qty, "status": "OPEN",
-                        "note": "scan_market"
+                        "note": f"scan_{order_type_used.lower()}"
                     })
 
                 icon = "🟢" if best.signal=="LONG" else "🔴"
-                margin = qty * price / config.LEVERAGE
+                margin = qty * entry_price / config.LEVERAGE
+                order_tag = "⏳ LIMIT (chờ khớp)" if order_type_used == "LIMIT" else "⚡ MARKET"
                 liq_info = ""
                 if liq_tracker_inst and liq_tracker_inst.is_connected():
                     if best.signal == "LONG":
@@ -879,11 +926,11 @@ def scan_engine(exchange, notifier):
                         if la: liq_info += f"\n💧 Liq đỉnh: <b>${la:.4f}</b> (SL đặt trên đây)"
                         if lb: liq_info += f"\n🎯 Liq đáy : <b>${lb:.4f}</b> (TP hướng tới)"
                 notifier.telegram.send(
-                    f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [MARKET]\n"
-                    f"💰 Entry  : <b>${price:.4f}</b>\n"
-                    f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(price-sl)/price*100:.2f}%)\n"
-                    f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-price)/price*100:.2f}%)\n"
-                    f"📦 Size   : {qty} (~<b>${qty*price:,.2f}</b> notional)\n"
+                    f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
+                    f"💰 Entry  : <b>${entry_price:.4f}</b>  (giá TT: ${price:.4f})\n"
+                    f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
+                    f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
+                    f"📦 Size   : {qty} (~<b>${qty*entry_price:,.2f}</b> notional)\n"
                     f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
                     f"⭐ Score  : {best.score}đ | {best.reason}"
                     f"{liq_info}\n"

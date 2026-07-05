@@ -238,6 +238,22 @@ class BinanceFutures:
         else:
             return round(price, 6)
 
+    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float) -> dict:
+        """Đặt lệnh LIMIT — chờ giá về mức price mới khớp"""
+        if quantity == int(quantity):
+            quantity = int(quantity)
+        limit_price = self._round_price(price)
+        result = self._post("/fapi/v1/order", {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "quantity": quantity,
+            "price": limit_price,
+            "timeInForce": "GTC"  # Good Till Cancel
+        })
+        logger.info(f"Limit order placed: {side} {quantity} {symbol} @ {limit_price}")
+        return result
+
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
         """SL — dùng Algo Conditional Order API"""
         price = self._round_price(stop_price)
