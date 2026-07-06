@@ -38,13 +38,12 @@ def find_optimal_entry(exchange, symbol: str, side: str, config) -> dict:
         }
     """
     try:
-        klines_1m = exchange.get_klines(symbol, "1m", limit=120)
-        klines_5m = exchange.get_klines(symbol, "5m", limit=100)
+        klines_1m  = exchange.get_klines(symbol, "1m",  limit=120)
         klines_15m = exchange.get_klines(symbol, "15m", limit=100)
 
-        df_1m = _to_df(klines_1m)
-        df_5m = _to_df(klines_5m)
+        df_1m  = _to_df(klines_1m)
         df_15m = _to_df(klines_15m)
+        df_5m  = df_1m  # dùng 1m thay thế 5m cho phân tích micro
 
         price = df_1m["close"].iloc[-1]
 

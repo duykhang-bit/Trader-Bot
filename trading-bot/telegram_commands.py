@@ -1224,77 +1224,161 @@ class TelegramCommandHandler:
         return self.state.get("_notifier")
 
     def _execute_trade_from_callback(self, signal: str, sl: float, tp: float, symbol: str):
-        """Thực thi lệnh sau khi user bấm xác nhận từ /trade — dùng smart entry"""
+        """Thực thi lệnh sau khi user bấm xác nhận từ /trade"""
         try:
             exchange = self._get_exchange()
             if not exchange:
                 self.send("❌ Không kết nối được exchange")
                 return
 
-            from smart_entry import find_optimal_entry, place_smart_order
+            lev      = getattr(self.config, "LEVERAGE", 10)
+            max_usdt = getattr(self.config, "MAX_ORDER_USDT", 15)
 
-            # Tìm entry tối ưu từ 1m/5m chart
-            self.send(f"🔍 Phân tích chart 1m/5m tìm entry tối ưu...")
+            # ── Bước 1: Liq sweep check (giống scan auto) ──
+            self.send(f"🔍 Kiểm tra vùng thanh khoản {symbol}...")
+            liq_inst = self.state.get("liq_tracker") if self.state else None
+            entry_price = None
+            liq_sl = None
+            liq_tp = None
+            order_type = "MARKET"
+
+            if liq_inst and liq_inst.is_connected():
+                cur_price = exchange.get_ticker_price(symbol)
+                # Lấy ATR từ 15m
+                try:
+                    from indicators import calculate_atr
+                    from scanner import _klines_to_df
+                    klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+                    df_15m = _klines_to_df(klines_15m)
+                    atr = calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1]
+                except Exception:
+                    atr = cur_price * 0.01
+
+                if signal == "LONG":
+                    liq_zone = liq_inst.get_strongest_liq_below(symbol, cur_price, min_usd=100_000)
+                    if liq_zone:
+                        dist_pct = (cur_price - liq_zone) / cur_price * 100
+                        if dist_pct <= 2.0:
+                            entry_price = round(liq_zone * 1.001, 8)
+                            liq_sl = round(min(liq_zone * 0.985, liq_zone - atr * 1.5), 8)
+                            liq_tp_zone = liq_inst.get_strongest_liq_above(symbol, cur_price, min_usd=150_000)
+                            liq_tp = round(liq_tp_zone * 0.998, 8) if (liq_tp_zone and liq_tp_zone > cur_price * 1.01) \
+                                     else round(entry_price + (entry_price - liq_sl) * 3, 8)
+                            order_type = "LIMIT"
+                            self.send(f"💧 Liq zone: ${liq_zone:.6f} ({dist_pct:.1f}% từ giá TT) — đặt LIMIT tại đáy liq")
+                        else:
+                            self.send(f"⚠️ Liq zone xa {dist_pct:.1f}% — vào MARKET, SL/TP từ chart")
+                    else:
+                        self.send(f"⚠️ Không có liq data — vào MARKET, SL/TP từ chart")
+                else:  # SHORT
+                    liq_zone = liq_inst.get_strongest_liq_above(symbol, cur_price, min_usd=100_000)
+                    if liq_zone:
+                        dist_pct = (liq_zone - cur_price) / cur_price * 100
+                        if dist_pct <= 2.0:
+                            entry_price = round(liq_zone * 0.999, 8)
+                            liq_sl = round(max(liq_zone * 1.015, liq_zone + atr * 1.5), 8)
+                            liq_tp_zone = liq_inst.get_strongest_liq_below(symbol, cur_price, min_usd=150_000)
+                            liq_tp = round(liq_tp_zone * 1.002, 8) if (liq_tp_zone and liq_tp_zone < cur_price * 0.99) \
+                                     else round(entry_price - (liq_sl - entry_price) * 3, 8)
+                            order_type = "LIMIT"
+                            self.send(f"💧 Liq zone: ${liq_zone:.6f} ({dist_pct:.1f}% từ giá TT) — đặt LIMIT tại đỉnh liq")
+                        else:
+                            self.send(f"⚠️ Liq zone xa {dist_pct:.1f}% — vào MARKET, SL/TP từ chart")
+                    else:
+                        self.send(f"⚠️ Không có liq data — vào MARKET, SL/TP từ chart")
+
+            # ── Bước 2: Smart entry — tinh chỉnh trên 1m + 15m ──
+            self.send(f"📊 Phân tích 1m + 15m tìm entry tốt nhất...")
+            from smart_entry import find_optimal_entry, place_smart_order
             entry_info = find_optimal_entry(exchange, symbol, signal, self.config)
 
-            # Tính qty
-            lev = getattr(self.config, "LEVERAGE", 10)
-            max_usdt = getattr(self.config, "MAX_ORDER_USDT", 15)
-            price = entry_info["entry_price"]
-            qty = (max_usdt * lev) / price
-            qty = round(qty, _qty_decimals(price))
+            # Ưu tiên liq entry nếu có, fallback smart entry
+            if entry_price is not None:
+                # Dùng liq zone làm base, smart entry để tinh chỉnh trong range nhỏ
+                smart_ep = entry_info.get("entry_price", entry_info.get("current_price"))
+                # Nếu smart entry nằm trong 0.5% của liq entry → dùng smart entry
+                if abs(smart_ep - entry_price) / entry_price < 0.005:
+                    entry_price = smart_ep
+                final_sl = liq_sl
+                final_tp = liq_tp
+                final_method = f"LIQ+Smart({entry_info.get('method','chart')})"
+            else:
+                # Không có liq → dùng hoàn toàn smart entry
+                entry_price = entry_info["entry_price"]
+                final_sl    = liq_sl if liq_sl else entry_info["sl"]
+                final_tp    = liq_tp if liq_tp else entry_info["tp"]
+                final_method = entry_info.get("method", "chart")
+
+            # Validate SL/TP
+            if signal == "LONG":
+                if final_sl >= entry_price:
+                    final_sl = entry_price * 0.985
+                if final_tp <= entry_price:
+                    final_tp = entry_price * 1.03
+            else:
+                if final_sl <= entry_price:
+                    final_sl = entry_price * 1.015
+                if final_tp >= entry_price:
+                    final_tp = entry_price * 0.97
+
+            rr = abs(final_tp - entry_price) / abs(entry_price - final_sl) if abs(entry_price - final_sl) > 0 else 0
+
+            # ── Bước 3: Tính qty ──
+            price = entry_price
+            qty   = (max_usdt * lev) / price
+            qty   = round(qty, _qty_decimals(price))
             min_q = _min_qty(price)
             if qty < min_q:
                 qty = min_q
-                # Check nếu margin vượt balance thì báo lỗi
                 actual_margin = qty * price / lev
                 bal = exchange.get_account_balance()
                 if actual_margin > bal:
-                    self.send(f"❌ Không đủ balance. {symbol} cần tối thiểu ${actual_margin:.2f} margin (min qty={min_q})")
+                    self.send(f"❌ Không đủ balance. Cần tối thiểu ${actual_margin:.2f} margin")
                     return
 
-            # Set leverage
-            try:
-                exchange.set_leverage(symbol, lev)
-            except Exception:
-                pass
+            try: exchange.set_leverage(symbol, lev)
+            except Exception: pass
 
-            # Đặt lệnh thông minh
-            result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config,
-                                        bot_state=self.state, bot_lock=self.lock)
+            # ── Bước 4: Đặt lệnh ──
+            close_side = "SELL" if signal == "LONG" else "BUY"
+            order_side  = "BUY"  if signal == "LONG" else "SELL"
 
-            rr = abs(entry_info["tp"] - price) / abs(price - entry_info["sl"]) if abs(price - entry_info["sl"]) > 0 else 0
-            notional = qty * price
-            improvement = entry_info["improvement_pct"]
-
-            if result["type"] == "LIMIT":
-                order_type_msg = f"📋 LIMIT ORDER (chờ khớp)\n💡 Tốt hơn market: <b>{improvement:.2f}%</b>"
+            if order_type == "LIMIT":
+                try:
+                    exchange.place_limit_order(symbol, order_side, qty, entry_price)
+                    placed_type = "LIMIT"
+                except Exception as e:
+                    logger.error(f"LIMIT failed → MARKET: {e}")
+                    exchange.place_market_order(symbol, order_side, qty)
+                    entry_price = exchange.get_ticker_price(symbol)
+                    placed_type = "MARKET"
             else:
-                order_type_msg = f"⚡ MARKET ORDER (khớp ngay)"
+                result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config,
+                                            bot_state=self.state, bot_lock=self.lock)
+                entry_price = result.get("price", price)
+                placed_type = result.get("type", "MARKET")
 
-            # Levels chi tiết
-            levels_msg = ""
-            if entry_info.get("levels"):
-                lvl_parts = []
-                for name, val in entry_info["levels"].items():
-                    lvl_parts.append(f"{name}=${val:,.2f}")
-                levels_msg = "\n🔬 Levels: " + " | ".join(lvl_parts[:5])
+            import time as _time
+            _time.sleep(1)
+            try: exchange.place_stop_loss_order(symbol, close_side, qty, final_sl)
+            except Exception as e: logger.error(f"SL failed: {e}")
+            try: exchange.place_take_profit_order(symbol, close_side, qty, final_tp)
+            except Exception as e: logger.error(f"TP failed: {e}")
 
+            notional = qty * entry_price
+            order_tag = "⏳ LIMIT" if placed_type == "LIMIT" else "⚡ MARKET"
+            icon = "🟢" if signal == "LONG" else "🔴"
             self.send(
-                f"👆 <b>MANUAL | ĐÃ VÀO LỆNH {signal} — {symbol}</b>\n"
+                f"{icon} <b>👆 MANUAL | {signal} {symbol}</b> [{order_tag}]\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💵 Entry   : <b>${price:,.4f}</b>\n"
-                f"📊 Current : ${entry_info['current_price']:,.4f}\n"
-                f"🛑 SL      : <b>${entry_info['sl']:,.4f}</b>  ({abs(price-entry_info['sl'])/price*100:.2f}%)\n"
-                f"🎯 TP      : <b>${entry_info['tp']:,.4f}</b>  ({abs(entry_info['tp']-price)/price*100:.2f}%)\n"
-                f"📐 RR      : <b>1:{rr:.1f}</b>\n"
-                f"📦 Qty     : <b>{qty}</b>  (~${notional:,.2f} USDT)\n"
-                f"⚡ Leverage: <b>{lev}x</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{order_type_msg}\n"
-                f"🧠 Method  : {entry_info['method']}\n"
+                f"💰 Entry  : <b>${entry_price:.6f}</b>\n"
+                f"🛑 SL     : <b>${final_sl:.6f}</b>  ({abs(entry_price-final_sl)/entry_price*100:.2f}%)\n"
+                f"🎯 TP     : <b>${final_tp:.6f}</b>  ({abs(final_tp-entry_price)/entry_price*100:.2f}%)\n"
+                f"📐 RR     : <b>1:{rr:.1f}</b>\n"
+                f"📦 Qty    : <b>{qty}</b>  (~${notional:,.2f} USDT)\n"
+                f"⚡ Lev    : <b>{lev}x</b>\n"
+                f"🧠 Method : {final_method}\n"
                 f"🎯 Confluence: <b>{entry_info.get('confluence_score', 0)}/7</b>"
-                f"{levels_msg}"
             )
 
         except Exception as e:
