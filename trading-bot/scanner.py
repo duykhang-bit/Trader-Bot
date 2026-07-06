@@ -405,22 +405,14 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                                  f"WR={win_rate:.0f}% < 65%")
                     continue
 
-                # Bước 4: Smart entry 1m trigger
-                smart = get_smart_entry_signal(df_15m, df_1m, bias)
-                if smart["signal"] == "WAIT":
-                    logger.debug(f"  ↻  {p_sym} pending retry#{p_info['retry']}: "
-                                 f"1m not triggered yet ({smart['reason'][:40]})")
-                    continue
-
+                # Bước 4: bỏ 1m trigger — 15m + MTF + WR đủ rồi
                 # ── Tất cả pass → tạo CoinScore và add vào candidates ──
                 _pending_watch.pop(p_sym, None)
 
-                base_score   = p_info["score"]
-                quality_bonus = {"A": 10, "B": 5, "C": 0}.get(smart["quality"], 0)
-                wr_bonus      = 5 if win_rate >= 80 else 0
-                final_score   = min(base_score + quality_bonus + wr_bonus, 100)
-                quality_tag   = {"A": "🎯Smart-A", "B": "⚡Smart-B",
-                                 "C": "Smart-C"}.get(smart["quality"], "")
+                base_score    = p_info["score"]
+                wr_bonus      = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
+                final_score   = min(base_score + wr_bonus, 100)
+                quality_tag   = "🎯Smart-A" if win_rate >= 75 else "⚡Smart-B"
                 css_reasons   = (css["long_reasons"] if bias == "LONG"
                                  else css["short_reasons"])
 
@@ -434,7 +426,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                                              df_15m["close"]).iloc[-1]
                                / df_15m["close"].iloc[-1] * 100),
                     reason  = (f"⟳PENDING→LIVE | WR={win_rate:.0f}% | "
-                               f"{quality_tag} {smart['reason']} | "
+                               f"{quality_tag} 15m ready | "
                                + " | ".join(css_reasons[:3]))
                 )
                 candidates.append(final)
@@ -567,53 +559,20 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                         pass
                 continue
 
-            # ── Bước 4: Smart Entry — 1m + 15m timing ───────────────────
-            smart = get_smart_entry_signal(df_15m, df_1m, scored.signal)
+            # ── Bước 4: Smart Entry — dùng 15m score thay vì 1m trigger ──
+            # Lý do bỏ 1m: scanner chạy mỗi 60s, 1m candle đã qua khi check
+            # 15m + MTF + WR ≥ 65% đã đủ để vào lệnh chính xác
+            smart_quality = "A" if win_rate >= 75 else "B"
+            smart_reason  = f"15m ready WR={win_rate:.0f}%"
 
-            if smart["signal"] == "WAIT":
-                is_new_pending = symbol not in _pending_watch
-                _pending_watch[symbol] = {
-                    "signal":   scored.signal,
-                    "score":    final_score,
-                    "bias":     scored.signal,
-                    "win_rate": win_rate,
-                    "ts":       time.time(),
-                    "retry":    0,
-                    "css":      css,
-                }
-                logger.info(
-                    f"  ⏳ SMART WAIT {symbol}: {scored.signal} score={final_score:.0f} "
-                    f"WR={win_rate:.0f}% | 1m: {smart['reason'][:50]} → pending"
-                )
-                # Notify tele — gần vào lệnh nhất (chỉ còn chờ 1m trigger)
-                if notifier and is_new_pending:
-                    icon = "🟢" if scored.signal == "LONG" else "🔴"
-                    try:
-                        notifier.telegram.send(
-                            f"{icon} <b>🎯 GẦN VÀO LỆNH!</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 <b>{symbol}</b> | {scored.signal}\n"
-                            f"⭐ Score: <b>{final_score:.0f}</b> | WR: <b>{win_rate:.0f}%</b>\n"
-                            f"✅ MTF: {mtf['detail']}\n"
-                            f"✅ Tele signal: {css_signal}\n"
-                            f"⏳ Chờ 1m trigger: {smart['reason'][:60]}\n"
-                            f"📋 {' | '.join(css_reasons[:3])}\n"
-                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
-                        )
-                    except Exception:
-                        pass
-                continue
-
-            # ── Tất cả 4 bước pass → vào lệnh ──────────────────────────
             # Xóa khỏi pending nếu có
             _pending_watch.pop(symbol, None)
 
-            # Cộng bonus theo chất lượng smart entry và win rate
-            quality_bonus  = {"A": 10, "B": 5,  "C": 0}.get(smart["quality"], 0)
-            wr_bonus       = 5 if win_rate >= 80 else 0
-            final_score    = min(final_score + quality_bonus + wr_bonus, 100)
-            quality_tag    = {"A": "🎯Smart-A", "B": "⚡Smart-B", "C": "Smart-C"}.get(smart["quality"], "")
-            wr_tag         = f"WR={win_rate:.0f}%"
+            # Cộng bonus theo win rate
+            wr_bonus    = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
+            final_score = min(final_score + wr_bonus, 100)
+            quality_tag = "🎯Smart-A" if smart_quality == "A" else "⚡Smart-B"
+            wr_tag      = f"WR={win_rate:.0f}%"
 
             css_reasons_str = " | ".join(css_reasons[:4]) if css_reasons else ""
 
@@ -624,12 +583,12 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 rsi=scored.rsi,
                 trend=scored.trend,
                 atr_pct=scored.atr_pct,
-                reason=scored.reason + f" | {mtf_tag} {mtf['detail']} | {quality_tag} {smart['reason']} | {wr_tag} {css_reasons_str}"
+                reason=scored.reason + f" | {mtf_tag} {mtf['detail']} | {quality_tag} {smart_reason} | {wr_tag} {css_reasons_str}"
             )
 
             if final.score >= min_score:
                 candidates.append(final)
-                logger.info(f"  ✅ {symbol}: {final.signal} score={final.score} WR={win_rate:.0f}% [{smart['quality']}] | {final.reason[:100]}")
+                logger.info(f"  ✅ {symbol}: {final.signal} score={final.score} WR={win_rate:.0f}% [{smart_quality}] | {final.reason[:100]}")
             else:
                 logger.info(f"  📊 {symbol}: {final.signal} score={final.score} WR={win_rate:.0f}% (below {min_score})")
 
