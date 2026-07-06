@@ -628,13 +628,27 @@ def _get_pending_watch_safe():
 
 @app.route("/api/toggle", methods=["POST"])
 def api_toggle():
-    """Pause/Resume bot trading."""
+    """Pause/Resume bot trading. Nếu đang Paused → restart process thật."""
     with _lock:
         current = _state.get("running", True)
-        _state["running"] = not current
-    new_status = "running" if not current else "paused"
-    logger.info(f"Bot toggled: {new_status}")
-    return jsonify({"ok": True, "msg": f"Bot {new_status}", "running": not current})
+
+    if not current:
+        # Đang paused → restart toàn bộ process
+        import subprocess, sys, os
+        logger.info("Bot restart via web toggle...")
+        # Spawn process mới rồi thoát process hiện tại
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__.replace("web_dashboard.py", "bot.py"))],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ},
+        )
+        return jsonify({"ok": True, "msg": "Bot restarting...", "running": True})
+    else:
+        # Đang chạy → pause
+        with _lock:
+            _state["running"] = False
+        logger.info("Bot paused via web")
+        return jsonify({"ok": True, "msg": "Bot paused", "running": False})
 
 
 def _save_coins_to_config(coins: list):
