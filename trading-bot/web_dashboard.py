@@ -628,27 +628,30 @@ def _get_pending_watch_safe():
 
 @app.route("/api/toggle", methods=["POST"])
 def api_toggle():
-    """Pause/Resume bot trading. Nếu đang Paused → restart process thật."""
+    """Pause/Resume bot trading."""
     with _lock:
         current = _state.get("running", True)
 
     if not current:
-        # Đang paused → restart toàn bộ process
-        import subprocess, sys, os
-        logger.info("Bot restart via web toggle...")
-        # Spawn process mới rồi thoát process hiện tại
-        subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__.replace("web_dashboard.py", "bot.py"))],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            env={**os.environ},
-        )
-        return jsonify({"ok": True, "msg": "Bot restarting...", "running": True})
+        # Đang paused → gọi restart callback (đăng ký từ bot.py)
+        restart_fn = _state.get("_restart_fn")
+        if restart_fn:
+            try:
+                restart_fn()
+                return jsonify({"ok": True, "msg": "Bot restarted ✅", "running": True})
+            except Exception as e:
+                return jsonify({"ok": False, "msg": f"Restart failed: {e}", "running": False})
+        else:
+            # Fallback: chỉ set running=True (thread còn sống)
+            with _lock:
+                _state["running"] = True
+            return jsonify({"ok": True, "msg": "Bot resumed", "running": True})
     else:
         # Đang chạy → pause
         with _lock:
             _state["running"] = False
         logger.info("Bot paused via web")
-        return jsonify({"ok": True, "msg": "Bot paused", "running": False})
+        return jsonify({"ok": True, "msg": "Bot paused ⏸", "running": False})
 
 
 def _save_coins_to_config(coins: list):

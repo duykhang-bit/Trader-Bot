@@ -1799,6 +1799,32 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Web dashboard disabled: {e}")
 
+    def _start_worker_threads():
+        """Khởi động lại tất cả worker threads sau khi resume."""
+        with lock:
+            state["running"] = True
+
+        _t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
+        _t1.start()
+        _t1ws = threading.Thread(target=price_ws_streamer, daemon=True)
+        _t1ws.start()
+        _t2a = threading.Thread(target=monitor_engine, args=(exchange, notifier), daemon=True)
+        _t2a.start()
+        _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
+        _t2b.start()
+        _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
+        _t3.start()
+        _t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
+        _t5.start()
+        _t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
+        _t7.start()
+        logger.info("✅ All worker threads restarted via web Start Bot")
+        notifier.telegram.send("▶️ <b>Bot đã được khởi động lại từ Web Dashboard</b>")
+
+    # Đăng ký restart callback cho web dashboard
+    with lock:
+        state["_restart_fn"] = _start_worker_threads
+
     t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
     t1.start()
 
