@@ -1818,6 +1818,20 @@ if __name__ == "__main__":
         _t5.start()
         _t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
         _t7.start()
+        # Restart Telegram command handler
+        try:
+            from telegram_commands import TelegramCommandHandler
+            from notifier import NOTIFICATION_CONFIG
+            _cmd = TelegramCommandHandler(
+                bot_token=NOTIFICATION_CONFIG["telegram"]["bot_token"],
+                chat_id=NOTIFICATION_CONFIG["telegram"]["chat_id"],
+                state=state, state_lock=lock,
+                watchlist=WATCHLIST, config=config
+            )
+            _t4 = threading.Thread(target=_cmd.run, daemon=True)
+            _t4.start()
+        except Exception as _e:
+            logger.warning(f"Telegram restart failed: {_e}")
         logger.info("✅ All worker threads restarted via web Start Bot")
         notifier.telegram.send("▶️ <b>Bot đã được khởi động lại từ Web Dashboard</b>")
 
@@ -1871,8 +1885,8 @@ if __name__ == "__main__":
     def ai_analyzer_loop():
         import time as _t
         AI_INTERVAL = getattr(config, "AI_ANALYSIS_INTERVAL_HOURS", 4) * 3600
-        # Chờ 60s sau khi bot start để ổn định
-        _t.sleep(60)
+        # Chờ 5s sau khi bot start để ổn định (không block Telegram)
+        _t.sleep(5)
         while state["running"]:
             try:
                 from ai_analyzer import analyze_all
