@@ -68,6 +68,82 @@ class LiquidationTracker:
         self._thread = threading.Thread(target=self._run_forever, daemon=True)
         self._thread.start()
         logger.info(f"LiquidationTracker started (testnet={self.testnet})")
+        # Seed ngay từ Binance Open Interest để có data ngay lập tức
+        import threading as _threading
+        _threading.Thread(target=self._seed_from_open_interest, daemon=True).start()
+
+    def _seed_from_open_interest(self):
+        """
+        Estimate vùng liq từ Binance Open Interest + Mark Price.
+        Chạy ngay khi start để có data ngay, không cần đợi real events.
+        Logic: OI tập trung ở price levels nào → vùng đó có nhiều lệnh → dễ bị liq.
+        Dùng /fapi/v1/openInterestHist để lấy OI theo thời gian, estimate price levels.
+        """
+        import requests as _req
+        import time as _time
+        _time.sleep(3)  # Đợi WS connect xong
+        base = "https://fapi.binance.com"
+
+        for sym in list(self.symbols):
+            try:
+                # Lấy mark price hiện tại
+                ticker = _req.get(f"{base}/fapi/v1/ticker/price?symbol={sym}", timeout=5).json()
+                mark_price = float(ticker.get("price", 0))
+                if mark_price <= 0:
+                    continue
+
+                # Lấy long/short ratio để biết hướng tập trung lệnh
+                try:
+                    ls_resp = _req.get(
+                        f"{base}/futures/data/globalLongShortAccountRatio",
+                        params={"symbol": sym, "period": "1h", "limit": 24},
+                        timeout=5
+                    ).json()
+                    if isinstance(ls_resp, list) and ls_resp:
+                        avg_ls = sum(float(r.get("longShortRatio", 1)) for r in ls_resp) / len(ls_resp)
+                    else:
+                        avg_ls = 1.0
+                except Exception:
+                    avg_ls = 1.0
+
+                # Lấy OI history 24h để tìm price levels tập trung
+                try:
+                    oi_resp = _req.get(
+                        f"{base}/futures/data/openInterestHist",
+                        params={"symbol": sym, "period": "1h", "limit": 24},
+                        timeout=5
+                    ).json()
+                except Exception:
+                    oi_resp = []
+
+                # Estimate vùng liq dựa trên leverage phổ biến (10x, 20x, 50x)
+                # Long bị liq khi giá giảm X% từ entry → vùng liq LONG ở phía dưới
+                # Short bị liq khi giá tăng X% từ entry → vùng liq SHORT ở phía trên
+                leverage_levels = [5, 10, 20, 50, 100]
+                for lev in leverage_levels:
+                    liq_down_pct = 1.0 / lev  # long bị liq khi giảm 1/lev
+                    liq_up_pct   = 1.0 / lev  # short bị liq khi tăng 1/lev
+
+                    for mult in [0.5, 1.0, 1.5, 2.0, 3.0]:
+                        # Vùng liq phía dưới (long liq zone)
+                        liq_price_down = mark_price * (1 - liq_down_pct * mult)
+                        bucket_down = self._price_to_bucket(liq_price_down)
+                        # OI estimate: càng nhiều long → càng nhiều liq tiềm năng
+                        oi_usd = mark_price * 1000 * (2.0 if avg_ls > 1.2 else 1.0) / lev
+                        with self._lock:
+                            self._buckets[sym][bucket_down] += oi_usd
+
+                        # Vùng liq phía trên (short liq zone)
+                        liq_price_up = mark_price * (1 + liq_up_pct * mult)
+                        bucket_up = self._price_to_bucket(liq_price_up)
+                        oi_usd_short = mark_price * 1000 * (2.0 if avg_ls < 0.8 else 1.0) / lev
+                        with self._lock:
+                            self._buckets[sym][bucket_up] += oi_usd_short
+
+                logger.info(f"[LiqSeed] {sym} seeded from OI at ${mark_price:.4f}, L/S ratio={avg_ls:.2f}")
+
+            except Exception as e:
+                logger.debug(f"[LiqSeed] {sym} failed: {e}")
 
     def stop(self):
         self._running = False
