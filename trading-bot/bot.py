@@ -403,13 +403,13 @@ def price_updater(exchange):
     consecutive_errors = 0
     while state["running"]:
         try:
-            # Giá đã được WebSocket cập nhật, chỉ dùng REST cho coins chưa có giá
+            # Fetch giá MỌI coin trong WATCHLIST mỗi lần (không check có sẵn nữa)
             new_prices = {}
             for sym in WATCHLIST:
-                with lock:
-                    if sym not in state["prices"] or state["prices"][sym] == 0:
-                        try: new_prices[sym] = exchange.get_ticker_price(sym)
-                        except: pass
+                try:
+                    new_prices[sym] = exchange.get_ticker_price(sym)
+                except Exception:
+                    pass
             consecutive_errors = 0
 
             # Lấy tất cả positions đang mở từ Binance
@@ -535,7 +535,7 @@ def price_updater(exchange):
             logger.error(f"Price updater: {e} — retry in {wait}s ({consecutive_errors} errors)")
             time.sleep(wait)
             continue
-        time.sleep(10)
+        time.sleep(3)  # update giá mỗi 3s
 
 # ============================================================
 # THREAD 2: Trade engine mỗi 60 giây

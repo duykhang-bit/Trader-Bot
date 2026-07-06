@@ -294,11 +294,17 @@ function renderDashboard(d) {
         // Find candidate for this coin
         const cand = (d.candidates || []).find(c => c.symbol === sym);
         let trendIcon = '&#x26AA;'; // neutral
-        let trendText = 'SCANNING';
+        let trendText = 'HOLD';
         let trendCls = '';
         if (cand) {
             if (cand.signal === 'LONG') { trendIcon = '&#x1F7E2;'; trendText = 'LONG'; trendCls = 'green'; }
             else if (cand.signal === 'SHORT') { trendIcon = '&#x1F534;'; trendText = 'SHORT'; trendCls = 'red'; }
+        }
+        // Check pending watch
+        const pending = (d.pending_watch || {})[sym];
+        if (!cand && pending) {
+            if (pending.signal === 'LONG') { trendIcon = '&#x1F7E1;'; trendText = `PENDING L WR=${pending.win_rate.toFixed(0)}% #${pending.retry}`; trendCls = 'yellow'; }
+            else if (pending.signal === 'SHORT') { trendIcon = '&#x1F7E1;'; trendText = `PENDING S WR=${pending.win_rate.toFixed(0)}% #${pending.retry}`; trendCls = 'yellow'; }
         }
         let pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 2 : 5);
 
@@ -590,7 +596,7 @@ def api_state():
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
                         for c in candidates[:10]] if candidates else [],
-        "split_positions_web": [{
+        "pending_watch": _get_pending_watch_safe(),        "split_positions_web": [{
             "symbol": sym, "direction": sp.direction,
             "entry1": sp.entry1, "entry2": sp.entry2,
             "sl": sp.sl, "tp": sp.tp,
@@ -606,6 +612,16 @@ def _get_ai_bias_safe():
     try:
         from ai_analyzer import load_bias
         return load_bias()
+    except Exception:
+        return {}
+
+
+def _get_pending_watch_safe():
+    try:
+        from scanner import _pending_watch
+        return {sym: {"signal": v["signal"], "win_rate": v.get("win_rate", 0),
+                      "retry": v.get("retry", 0), "score": v.get("score", 0)}
+                for sym, v in _pending_watch.items()}
     except Exception:
         return {}
 
