@@ -375,15 +375,17 @@ function renderDashboard(d) {
         const targets = (d.entry_targets || {})[sym] || {};
         const shortP = targets.short_entry || 0;
         const longP = targets.long_entry || 0;
-        const shortStr = shortP >= 1000 ? fmtUsd(shortP) : '$'+fmt(shortP, shortP>=1?2:5);
-        const longStr = longP >= 1000 ? fmtUsd(longP) : '$'+fmt(longP, longP>=1?2:5);
-        const curStr = p >= 1000 ? fmtUsd(p) : '$'+fmt(p, p>=1?2:5);
+        const hasReal = targets.has_real_data || false;
+        const dataTag = hasReal ? '' : ' <span style="color:#d29922;font-size:9px">(đang thu thập...)</span>';
+        const shortStr = shortP > 0 ? (shortP >= 1000 ? fmtUsd(shortP) : '$'+fmt(shortP, shortP>=1?2:6)) : '⏳';
+        const longStr  = longP  > 0 ? (longP  >= 1000 ? fmtUsd(longP)  : '$'+fmt(longP,  longP >=1?2:6)) : '⏳';
+        const curStr   = p >= 1000 ? fmtUsd(p) : '$'+fmt(p, p>=1?2:5);
         const shortGap = shortP > 0 ? fmt((shortP-p)/p*100,2)+'%' : '-';
-        const longGap = longP > 0 ? fmt((p-longP)/p*100,2)+'%' : '-';
+        const longGap  = longP  > 0 ? fmt((p-longP)/p*100,2)+'%'  : '-';
         html += `<tr>
             <td><b>${name}</b></td>
-            <td style="color:#f85149">${shortStr} <span style="font-size:10px;color:#8b949e">(+${shortGap})</span></td>
-            <td style="color:#3fb950">${longStr} <span style="font-size:10px;color:#8b949e">(-${longGap})</span></td>
+            <td style="color:#f85149">${shortStr}${dataTag} <span style="font-size:10px;color:#8b949e">(+${shortGap})</span></td>
+            <td style="color:#3fb950">${longStr}${dataTag} <span style="font-size:10px;color:#8b949e">(-${longGap})</span></td>
             <td>${curStr}</td>
             <td style="font-size:10px;color:#8b949e">SHORT: ${shortGap} | LONG: ${longGap}</td>
         </tr>`;
@@ -529,9 +531,8 @@ def api_state():
         "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
         "time":t.get("time","")} for t in recent]
 
-    # Entry targets — vùng liq SÂU NHẤT có thể bị quét
-    # SHORT: vùng liq LONG cao nhất phía trên (xa nhất)
-    # LONG: vùng liq SHORT thấp nhất phía dưới (xa nhất)
+    # Entry targets — vùng liq THẬT từ WS real-time (giống Coinglass)
+    # Chỉ hiện khi liq tracker đã có đủ data thật, không fallback giá fake
     entry_targets = {}
     liq_tracker = _state.get("liq_tracker") if _state else None
     for sym in watchlist:
@@ -540,29 +541,33 @@ def api_state():
             continue
         short_trigger = None
         long_trigger  = None
-        if liq_tracker:
+        has_real_data = False
+
+        if liq_tracker and liq_tracker.total_liq_usd(sym) > 0:
             try:
-                # SHORT trigger: vùng liq LONG xa nhất phía trên
-                above_all = liq_tracker.get_liq_heatmap(sym)
-                if above_all:
-                    candidates_above = [(price, usd) for price, usd in above_all.items()
-                                        if price > p and usd >= 50_000]
-                    candidates_below = [(price, usd) for price, usd in above_all.items()
-                                        if price < p and usd >= 50_000]
-                    # Xa nhất phía trên (SHORT trigger)
-                    if candidates_above:
-                        short_trigger = max(candidates_above, key=lambda x: x[0])[0]
-                    # Xa nhất phía dưới (LONG trigger)
-                    if candidates_below:
-                        long_trigger = min(candidates_below, key=lambda x: x[0])[0]
+                heatmap = liq_tracker.get_liq_heatmap(sym) or {}
+                if heatmap:
+                    # SHORT trigger: vùng liq LONG xa nhất phía trên (real data)
+                    above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 50_000]
+                    below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 50_000]
+                    if above:
+                        short_trigger = max(above, key=lambda x: x[0])[0]
+                    if below:
+                        long_trigger = min(below, key=lambda x: x[0])[0]
+                    has_real_data = True
             except Exception:
                 pass
-        # Fallback nếu không có liq data
-        if short_trigger is None:
+
+        if not has_real_data:
+            # Chưa có data thật → dùng ±1% tạm thời, đánh dấu là estimate
             short_trigger = round(p * 1.01, 2 if p >= 100 else 6)
-        if long_trigger is None:
-            long_trigger = round(p * 0.99, 2 if p >= 100 else 6)
-        entry_targets[sym] = {"short_entry": float(short_trigger), "long_entry": float(long_trigger)}
+            long_trigger  = round(p * 0.99, 2 if p >= 100 else 6)
+
+        entry_targets[sym] = {
+            "short_entry": float(short_trigger) if short_trigger else 0,
+            "long_entry":  float(long_trigger)  if long_trigger  else 0,
+            "has_real_data": has_real_data
+        }
 
     resp = jsonify({
         "running": s.get("running", False),
