@@ -116,25 +116,27 @@ class LiquidationTracker:
                 except Exception:
                     oi_resp = []
 
-                # Estimate vùng liq dựa trên leverage phổ biến (10x, 20x, 50x)
-                # Long bị liq khi giá giảm X% từ entry → vùng liq LONG ở phía dưới
-                # Short bị liq khi giá tăng X% từ entry → vùng liq SHORT ở phía trên
-                leverage_levels = [5, 10, 20, 50, 100]
+                # Estimate vùng liq dựa trên leverage phổ biến
+                # Giới hạn range ±3-10% quanh giá hiện tại (giống Coinglass 12h)
+                leverage_levels = [10, 20, 50]
                 for lev in leverage_levels:
-                    liq_down_pct = 1.0 / lev  # long bị liq khi giảm 1/lev
-                    liq_up_pct   = 1.0 / lev  # short bị liq khi tăng 1/lev
+                    liq_down_pct = 1.0 / lev
+                    liq_up_pct   = 1.0 / lev
 
-                    for mult in [0.5, 1.0, 1.5, 2.0, 3.0]:
-                        # Vùng liq phía dưới (long liq zone)
+                    for mult in [0.5, 1.0, 1.5]:
+                        # Vùng liq phía dưới (long liq zone) — tối đa -10%
                         liq_price_down = mark_price * (1 - liq_down_pct * mult)
+                        if liq_price_down < mark_price * 0.90:
+                            continue  # bỏ qua nếu > 10% từ giá
                         bucket_down = self._price_to_bucket(liq_price_down)
-                        # OI estimate: càng nhiều long → càng nhiều liq tiềm năng
                         oi_usd = mark_price * 1000 * (2.0 if avg_ls > 1.2 else 1.0) / lev
                         with self._lock:
                             self._buckets[sym][bucket_down] += oi_usd
 
-                        # Vùng liq phía trên (short liq zone)
+                        # Vùng liq phía trên (short liq zone) — tối đa +10%
                         liq_price_up = mark_price * (1 + liq_up_pct * mult)
+                        if liq_price_up > mark_price * 1.10:
+                            continue  # bỏ qua nếu > 10% từ giá
                         bucket_up = self._price_to_bucket(liq_price_up)
                         oi_usd_short = mark_price * 1000 * (2.0 if avg_ls < 0.8 else 1.0) / lev
                         with self._lock:
