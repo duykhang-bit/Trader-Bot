@@ -145,4 +145,4 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 # phân tích theo chart telegram
 #ssh root@159.65.136.39
 #cd /root/Trader-Bot && git pull && pkill -9 -f bot.py; sleep 2; nohup /root/start_bot.sh > /tmp/bot.log 2>&1 &
-
+#BOT7

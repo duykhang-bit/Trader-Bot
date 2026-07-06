@@ -529,21 +529,32 @@ def api_state():
         "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
         "time":t.get("time","")} for t in recent]
 
-    # Entry targets — dùng vùng liq MẠNH NHẤT (giống logic scan auto BOT8)
+    # Entry targets — vùng liq SÂU NHẤT có thể bị quét
+    # SHORT: vùng liq LONG cao nhất phía trên (xa nhất)
+    # LONG: vùng liq SHORT thấp nhất phía dưới (xa nhất)
     entry_targets = {}
     liq_tracker = _state.get("liq_tracker") if _state else None
     for sym in watchlist:
         p = prices.get(sym, 0)
         if p <= 0:
             continue
-        short_trigger = None  # SHORT khi giá pump lên đây (vùng liq LONG phía trên)
-        long_trigger  = None  # LONG khi giá dump xuống đây (vùng liq SHORT phía dưới)
+        short_trigger = None
+        long_trigger  = None
         if liq_tracker:
             try:
-                # SHORT trigger: vùng liq LONG lớn nhất phía trên (nơi giá pump lên quét)
-                short_trigger = liq_tracker.get_strongest_liq_above(sym, p, min_usd=80_000)
-                # LONG trigger: vùng liq SHORT lớn nhất phía dưới (nơi giá dump xuống quét)
-                long_trigger  = liq_tracker.get_strongest_liq_below(sym, p, min_usd=80_000)
+                # SHORT trigger: vùng liq LONG xa nhất phía trên
+                above_all = liq_tracker.get_liq_heatmap(sym)
+                if above_all:
+                    candidates_above = [(price, usd) for price, usd in above_all.items()
+                                        if price > p and usd >= 50_000]
+                    candidates_below = [(price, usd) for price, usd in above_all.items()
+                                        if price < p and usd >= 50_000]
+                    # Xa nhất phía trên (SHORT trigger)
+                    if candidates_above:
+                        short_trigger = max(candidates_above, key=lambda x: x[0])[0]
+                    # Xa nhất phía dưới (LONG trigger)
+                    if candidates_below:
+                        long_trigger = min(candidates_below, key=lambda x: x[0])[0]
             except Exception:
                 pass
         # Fallback nếu không có liq data

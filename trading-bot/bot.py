@@ -732,26 +732,35 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # Filter 3: Liquidity Sweep Method
+                # Filter 3: Liquidity Sweep Method — dùng vùng liq SÂU NHẤT
                 if not skip_reason:
                     if liq_inst and liq_inst.is_connected():
                         cur_price = exchange.get_ticker_price(best.symbol)
+                        heatmap   = liq_inst.get_liq_heatmap(best.symbol) or {}
+
                         if best.signal == "LONG":
-                            # Bắt đáy: giá dump xuống quét vùng liq SHORT phía dưới
-                            liq_zone = liq_inst.get_strongest_liq_below(best.symbol, cur_price, min_usd=100_000)
+                            # Vùng liq SHORT xa nhất phía dưới (deep liq zone — bị quét sâu nhất)
+                            below_all = [(p, u) for p, u in heatmap.items() if p < cur_price and u >= 80_000]
+                            if below_all:
+                                liq_zone = min(below_all, key=lambda x: x[0])[0]
+                            else:
+                                liq_zone = liq_inst.get_strongest_liq_below(best.symbol, cur_price, min_usd=80_000)
+
                             if not liq_zone:
                                 skip_reason = "Không có vùng liq SHORT phía dưới"
                             else:
                                 dist_pct = (cur_price - liq_zone) / cur_price * 100
-                                if dist_pct > 4.0:
-                                    skip_reason = f"Vùng liq dưới xa {dist_pct:.1f}% > 4%"
-                                elif dist_pct <= 2.0:
-                                    # Đủ gần hoặc đã sweep → setup
+                                # Vùng xa → chỉ setup nếu giá đang tiến gần (≤5%)
+                                if dist_pct > 10.0:
+                                    skip_reason = f"Vùng liq dưới quá xa {dist_pct:.1f}% > 10%"
+                                else:
                                     entry_price = round(liq_zone * 1.001, 8)
-                                    sl = round(min(liq_zone * 0.985, liq_zone - atr * 1.5), 8)
-                                    liq_tp = liq_inst.get_strongest_liq_above(best.symbol, cur_price, min_usd=150_000)
-                                    if liq_tp and liq_tp > cur_price * 1.01:
-                                        tp = round(liq_tp * 0.998, 8)
+                                    sl = round(min(liq_zone * 0.983, liq_zone - atr * 2.0), 8)
+                                    # TP: vùng liq LONG xa nhất phía trên
+                                    above_all = [(p, u) for p, u in heatmap.items() if p > cur_price and u >= 80_000]
+                                    if above_all:
+                                        liq_tp_zone = max(above_all, key=lambda x: x[0])[0]
+                                        tp = round(liq_tp_zone * 0.998, 8)
                                     else:
                                         tp = round(entry_price + (entry_price - sl) * 3, 8)
                                     rr = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
@@ -759,26 +768,32 @@ def scan_engine(exchange, notifier):
                                         skip_reason = f"RR={rr:.1f} < 1.5"
                                     else:
                                         order_type_used = "LIMIT"
-                                        sweep_done = df["low"].iloc[-1] <= liq_zone * 1.002
+                                        sweep_done = df["low"].iloc[-1] <= liq_zone * 1.003
                                         mode = "SWEEP" if sweep_done else "PENDING"
-                                        logger.info(f"[Sweep] LONG {best.symbol} {mode} liq={liq_zone:.6f} entry={entry_price:.6f} RR={rr:.1f}")
-                                else:
-                                    skip_reason = f"Giá cách vùng liq dưới {dist_pct:.1f}% (cần ≤2%)"
-                        else:
-                            # Short đỉnh: giá pump lên quét vùng liq LONG phía trên
-                            liq_zone = liq_inst.get_strongest_liq_above(best.symbol, cur_price, min_usd=100_000)
+                                        logger.info(f"[DeepSweep] LONG {best.symbol} {mode} liq={liq_zone:.6f} dist={dist_pct:.1f}% entry={entry_price:.6f} RR={rr:.1f}")
+
+                        else:  # SHORT
+                            # Vùng liq LONG xa nhất phía trên (deep liq zone — bị quét sâu nhất)
+                            above_all = [(p, u) for p, u in heatmap.items() if p > cur_price and u >= 80_000]
+                            if above_all:
+                                liq_zone = max(above_all, key=lambda x: x[0])[0]
+                            else:
+                                liq_zone = liq_inst.get_strongest_liq_above(best.symbol, cur_price, min_usd=80_000)
+
                             if not liq_zone:
                                 skip_reason = "Không có vùng liq LONG phía trên"
                             else:
                                 dist_pct = (liq_zone - cur_price) / cur_price * 100
-                                if dist_pct > 4.0:
-                                    skip_reason = f"Vùng liq trên xa {dist_pct:.1f}% > 4%"
-                                elif dist_pct <= 2.0:
+                                if dist_pct > 10.0:
+                                    skip_reason = f"Vùng liq trên quá xa {dist_pct:.1f}% > 10%"
+                                else:
                                     entry_price = round(liq_zone * 0.999, 8)
-                                    sl = round(max(liq_zone * 1.015, liq_zone + atr * 1.5), 8)
-                                    liq_tp = liq_inst.get_strongest_liq_below(best.symbol, cur_price, min_usd=150_000)
-                                    if liq_tp and liq_tp < cur_price * 0.99:
-                                        tp = round(liq_tp * 1.002, 8)
+                                    sl = round(max(liq_zone * 1.017, liq_zone + atr * 2.0), 8)
+                                    # TP: vùng liq SHORT xa nhất phía dưới
+                                    below_all = [(p, u) for p, u in heatmap.items() if p < cur_price and u >= 80_000]
+                                    if below_all:
+                                        liq_tp_zone = min(below_all, key=lambda x: x[0])[0]
+                                        tp = round(liq_tp_zone * 1.002, 8)
                                     else:
                                         tp = round(entry_price - (sl - entry_price) * 3, 8)
                                     rr = abs(entry_price - tp) / abs(sl - entry_price) if abs(sl - entry_price) > 0 else 0
@@ -786,11 +801,10 @@ def scan_engine(exchange, notifier):
                                         skip_reason = f"RR={rr:.1f} < 1.5"
                                     else:
                                         order_type_used = "LIMIT"
-                                        sweep_done = df["high"].iloc[-1] >= liq_zone * 0.998
+                                        sweep_done = df["high"].iloc[-1] >= liq_zone * 0.997
                                         mode = "SWEEP" if sweep_done else "PENDING"
-                                        logger.info(f"[Sweep] SHORT {best.symbol} {mode} liq={liq_zone:.6f} entry={entry_price:.6f} RR={rr:.1f}")
-                                else:
-                                    skip_reason = f"Giá cách vùng liq trên {dist_pct:.1f}% (cần ≤2%)"
+                                        logger.info(f"[DeepSweep] SHORT {best.symbol} {mode} liq={liq_zone:.6f} dist={dist_pct:.1f}% entry={entry_price:.6f} RR={rr:.1f}")
+
                     else:
                         # Không có liq data → ATR fallback chỉ khi score >= 70
                         if best.score >= 70:
@@ -810,6 +824,8 @@ def scan_engine(exchange, notifier):
                     continue
 
                 qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                # Vùng liq xa → dùng 50% margin để quản lý risk
+                qty = round(qty * 0.5, 8)
                 if qty * entry_price < 5.0:
                     qty = round(5.0 / entry_price + 0.001, 3)
 
