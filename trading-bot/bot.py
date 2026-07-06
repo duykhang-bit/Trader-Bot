@@ -651,12 +651,12 @@ def monitor_engine(exchange, notifier):
         time.sleep(3)
 
 # ============================================================
+# ============================================================
 # THREAD 2b: Scan coin mới và vào lệnh (mỗi LOOP_INTERVAL giây)
 # ============================================================
 def scan_engine(exchange, notifier):
     while state["running"]:
         try:
-            # Cooldown sau khi lỗ
             with lock:
                 last_loss_time = state.get("last_loss_time", 0)
             cooldown = getattr(config, "COOLDOWN_AFTER_LOSS", 180)
@@ -666,7 +666,6 @@ def scan_engine(exchange, notifier):
                 time.sleep(config.LOOP_INTERVAL_SECONDS)
                 continue
 
-            # Kiểm tra số lệnh đang mở
             with lock:
                 n_open = len(state.get("open_positions", []))
             if n_open >= config.MAX_OPEN_POSITIONS:
@@ -683,7 +682,6 @@ def scan_engine(exchange, notifier):
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
 
             if best:
-                # Không vào lệnh trùng symbol đã có position trên Binance
                 with lock:
                     open_syms = {p["symbol"] for p in state.get("open_positions", [])
                                  if abs(float(p.get("positionAmt", 0))) > 0}
@@ -691,8 +689,6 @@ def scan_engine(exchange, notifier):
                     logger.info(f"Skip {best.symbol}: already has open position")
                     time.sleep(config.LOOP_INTERVAL_SECONDS)
                     continue
-
-                # Không vào lệnh trùng symbol đã có pending order (LIMIT chờ khớp)
                 try:
                     pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     pending_syms = {o["symbol"] for o in pending_orders if not o.get("reduceOnly", False)}
@@ -703,265 +699,137 @@ def scan_engine(exchange, notifier):
                 except Exception:
                     pass
 
-                # ── Liquidation filter: chỉ vào lệnh khi giá gần vùng liq mạnh ──
-                # LONG: giá đang gần vùng liq SHORT lớn phía dưới (đáy thanh khoản → bắt đáy)
-                # SHORT: giá đang gần vùng liq LONG lớn phía trên (đỉnh thanh khoản → short)
-                # Nếu liq_tracker chưa có data → bỏ qua filter, vào lệnh bình thường
-                liq_tracker_inst = state.get("liq_tracker")
-                if liq_tracker_inst and liq_tracker_inst.is_connected():
-                    try:
-                        cur_price_quick = exchange.get_ticker_price(best.symbol)
-
-                        if best.signal == "LONG":
-                            # Tìm vùng liq SHORT lớn nhất phía dưới (đáy thanh khoản)
-                            liq_bottom = liq_tracker_inst.get_strongest_liq_below(
-                                best.symbol, cur_price_quick, min_usd=100_000)
-                            # Giá phải đang trong vòng 3% phía trên vùng liq đó
-                            # → tức là giá vừa chạm/vượt qua vùng liq → bắt đáy hợp lý
-                            if liq_bottom:
-                                dist_pct = (cur_price_quick - liq_bottom) / cur_price_quick * 100
-                                if dist_pct <= 3.0:
-                                    logger.info(f"[LiqFilter] {best.symbol} LONG ✅ gần đáy liq ${liq_bottom:.4f} ({dist_pct:.1f}%)")
-                                else:
-                                    logger.info(f"[LiqFilter] {best.symbol} LONG ❌ xa đáy liq ${liq_bottom:.4f} ({dist_pct:.1f}% > 3%)")
-                                    time.sleep(config.LOOP_INTERVAL_SECONDS)
-                                    continue
-                            else:
-                                # Không có vùng liq phía dưới → vẫn vào nhưng log warning
-                                logger.info(f"[LiqFilter] {best.symbol} LONG ⚠️ không có liq bottom data, vào ATR")
-
-                        else:  # SHORT
-                            # Tìm vùng liq LONG lớn nhất phía trên (đỉnh thanh khoản)
-                            liq_top = liq_tracker_inst.get_strongest_liq_above(
-                                best.symbol, cur_price_quick, min_usd=100_000)
-                            # Giá phải đang trong vòng 3% phía dưới vùng liq đó
-                            # → tức là giá vừa chạm/vượt qua vùng liq → short hợp lý
-                            if liq_top:
-                                dist_pct = (liq_top - cur_price_quick) / cur_price_quick * 100
-                                if dist_pct <= 3.0:
-                                    logger.info(f"[LiqFilter] {best.symbol} SHORT ✅ gần đỉnh liq ${liq_top:.4f} ({dist_pct:.1f}%)")
-                                else:
-                                    logger.info(f"[LiqFilter] {best.symbol} SHORT ❌ xa đỉnh liq ${liq_top:.4f} ({dist_pct:.1f}% > 3%)")
-                                    time.sleep(config.LOOP_INTERVAL_SECONDS)
-                                    continue
-                            else:
-                                logger.info(f"[LiqFilter] {best.symbol} SHORT ⚠️ không có liq top data, vào ATR")
-
-                    except Exception as e:
-                        logger.debug(f"[LiqFilter] {best.symbol} skip filter: {e}")
-
                 klines = exchange.get_klines(best.symbol, config.INTERVAL, limit=200)
-                df = _klines_to_df(klines)
-                price = df["close"].iloc[-1]
-                atr = calculate_atr(df["high"], df["low"], df["close"]).iloc[-1]
-                bal = exchange.get_account_balance()
-
+                df     = _klines_to_df(klines)
+                price  = df["close"].iloc[-1]
+                atr    = calculate_atr(df["high"], df["low"], df["close"]).iloc[-1]
+                bal    = exchange.get_account_balance()
                 try: exchange.set_leverage(best.symbol, config.LEVERAGE)
                 except: pass
 
-                # ── SL/TP: ưu tiên dùng liquidation zones, fallback ATR ──
-                liq_tracker = state.get("liq_tracker")
-
-                if best.signal == "LONG":
-                    side = "BUY"
-                    # SL: đặt dưới vùng liq SHORT gần nhất phía dưới (tránh bị quét)
-                    # Nếu không có liq data → dùng ATR×1.5
-                    sl_atr = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    if liq_tracker:
-                        liq_below = liq_tracker.get_nearest_liq_below(best.symbol, price, min_usd=50_000)
-                        if liq_below and liq_below < price * 0.995:
-                            # SL đặt ngay dưới vùng liq 0.3% để tránh bị quét trước
-                            sl = liq_below * 0.997
-                            # Không để SL quá xa (max 4%)
-                            if sl < price * 0.96:
-                                sl = sl_atr
-                        else:
-                            sl = sl_atr
-                    else:
-                        sl = sl_atr
-
-                    # TP: vùng liq LONG lớn nhất phía trên (nơi giá sẽ pump tới)
-                    tp_atr = price + (price - sl) * 3
-                    if liq_tracker:
-                        liq_above = liq_tracker.get_nearest_liq_above(best.symbol, price, min_usd=100_000)
-                        if liq_above and liq_above > price * 1.005:
-                            tp = liq_above * 0.998  # TP ngay dưới vùng liq 0.2%
-                            # Đảm bảo RR tối thiểu 1:1.5
-                            if tp < price + (price - sl) * 1.5:
-                                tp = tp_atr
-                        else:
-                            tp = tp_atr
-                    else:
-                        tp = tp_atr
-
-                else:  # SHORT
-                    side = "SELL"
-                    # SL: đặt trên vùng liq LONG gần nhất phía trên
-                    sl_atr = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
-                    if liq_tracker:
-                        liq_above = liq_tracker.get_nearest_liq_above(best.symbol, price, min_usd=50_000)
-                        if liq_above and liq_above > price * 1.005:
-                            sl = liq_above * 1.003  # SL trên vùng liq 0.3%
-                            if sl > price * 1.04:
-                                sl = sl_atr
-                        else:
-                            sl = sl_atr
-                    else:
-                        sl = sl_atr
-
-                    # TP: vùng liq SHORT lớn nhất phía dưới
-                    tp_atr = price - (sl - price) * 3
-                    if liq_tracker:
-                        liq_below = liq_tracker.get_nearest_liq_below(best.symbol, price, min_usd=100_000)
-                        if liq_below and liq_below < price * 0.995:
-                            tp = liq_below * 1.002  # TP ngay trên vùng liq 0.2%
-                            if tp > price - (sl - price) * 1.5:
-                                tp = tp_atr
-                        else:
-                            tp = tp_atr
-                    else:
-                        tp = tp_atr
-
-                # Log dùng liq hay ATR
-                sl_src = "LIQ" if (liq_tracker and state.get("liq_tracker")) else "ATR"
-                logger.info(f"[ScanEngine] {best.symbol} {best.signal} SL={sl:.4f} TP={tp:.4f} src={sl_src}")
-
-                qty = calc_qty(bal, price, sl, symbol=best.symbol, exchange=exchange)
-                min_notional = 5.0
-                if qty * price < min_notional:
-                    qty = round(min_notional / price + 0.001, 3)
-
-                close_side = "SELL" if side == "BUY" else "BUY"
+                liq_inst   = state.get("liq_tracker")
+                side       = "BUY"  if best.signal == "LONG" else "SELL"
+                close_side = "SELL" if best.signal == "LONG" else "BUY"
                 entry_price = price
-                order_type_used = "MARKET"
+                sl = tp = 0.0
+                order_type_used = "SKIP"
                 skip_reason = None
 
-                # ── 5 bộ lọc nâng cao theo gợi ý ChatGPT ──────────────────────
-                if liq_tracker_inst and liq_tracker_inst.is_connected():
-                    if best.signal == "LONG":
-                        liq_entry = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=100_000)
-                        liq_resist = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=150_000)
-                    else:
-                        liq_entry = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=100_000)
-                        liq_resist = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=150_000)
+                # Filter 1: Score >= 65
+                if best.score < 65:
+                    skip_reason = f"Score {best.score} < 65"
 
-                    # ── Filter 3: Không MARKET nếu giá ngay sát kháng cự ──
-                    if liq_resist:
-                        dist_resist = abs(price - liq_resist) / price
-                        if dist_resist < 0.008:  # giá cách kháng cự < 0.8%
-                            skip_reason = f"Giá sát kháng cự liq ({dist_resist*100:.1f}% < 0.8%)"
+                # Filter 2: MACD momentum
+                if not skip_reason:
+                    try:
+                        from indicators import calculate_macd
+                        _, _, histogram = calculate_macd(df["close"])
+                        hist_val = histogram.iloc[-1]
+                        if best.signal == "LONG" and hist_val <= 0:
+                            skip_reason = f"MACD hist={hist_val:.5f} (cần dương cho LONG)"
+                        elif best.signal == "SHORT" and hist_val >= 0:
+                            skip_reason = f"MACD hist={hist_val:.5f} (cần âm cho SHORT)"
+                    except Exception:
+                        pass
 
-                    if not skip_reason and liq_entry:
-                        dist_pct = abs(price - liq_entry) / price
-
-                        # ── Filter 1: Khoảng cách theo ATR ──
-                        atr_limit = atr * 0.4
-                        dist_abs  = abs(price - liq_entry)
-                        use_limit = dist_abs <= atr_limit and dist_pct <= 0.04
-
-                        # ── Filter 2: Sweep check — giá đã chạm vùng liq chưa ──
-                        # Nếu dist_pct < 0.003 tức giá vừa sweep xong → MARKET luôn
-                        if dist_pct < 0.003:
-                            use_limit = False  # vào MARKET ngay vì đã sweep
-
-                        # ── Filter 4: Momentum check (MACD histogram) ──
-                        try:
-                            from indicators import calculate_macd
-                            macd_line, signal_line, histogram = calculate_macd(df["close"])
-                            hist_val = histogram.iloc[-1]
-                            momentum_ok = hist_val > 0 if best.signal == "LONG" else hist_val < 0
-                        except Exception:
-                            momentum_ok = True  # fallback pass nếu lỗi
-
-                        if not momentum_ok:
-                            skip_reason = f"Momentum ngược chiều (MACD hist={hist_val:.4f})"
-
-                        # ── Filter 5: RR check sau khi kéo entry về liq ──
-                        if not skip_reason and use_limit:
-                            if best.signal == "LONG":
-                                _ep = liq_entry * 1.001
+                # Filter 3: Liquidity Sweep Method
+                if not skip_reason:
+                    if liq_inst and liq_inst.is_connected():
+                        cur_price = exchange.get_ticker_price(best.symbol)
+                        if best.signal == "LONG":
+                            # Bắt đáy: giá dump xuống quét vùng liq SHORT phía dưới
+                            liq_zone = liq_inst.get_strongest_liq_below(best.symbol, cur_price, min_usd=100_000)
+                            if not liq_zone:
+                                skip_reason = "Không có vùng liq SHORT phía dưới"
                             else:
-                                _ep = liq_entry * 0.999
-                            _risk   = abs(_ep - sl)
-                            _reward = abs(tp - _ep)
-                            _rr     = _reward / _risk if _risk > 0 else 0
-                            if _rr < 1.5:
-                                use_limit = False  # RR không đủ → MARKET hoặc bỏ
-                                logger.info(f"[ScanEngine] RR={_rr:.1f} < 1.5 with LIMIT, fallback MARKET")
-
-                        # ── Score-based priority ──
-                        # Score >= 80 → LIMIT bắt buộc
-                        # Score 65-79 → LIMIT nếu có liq
-                        # Score 50-64 → chỉ MARKET nếu momentum mạnh
-                        if not skip_reason:
-                            if best.score >= 80:
-                                # Bắt buộc LIMIT, không market bừa
-                                if not use_limit:
-                                    skip_reason = f"Score>=80 nhưng không có liq phù hợp để LIMIT"
-                            elif best.score >= 65:
-                                pass  # LIMIT nếu có, MARKET nếu không
-                            else:
-                                # Score 50-64: chỉ MARKET nếu momentum mạnh
-                                if not momentum_ok:
-                                    skip_reason = f"Score {best.score}<65 và momentum yếu"
-
-                    elif not skip_reason:
-                        # Không có liq data
-                        if best.score >= 80:
-                            pass  # score cao → MARKET được
-                        elif best.score >= 65:
-                            pass  # MARKET được
+                                dist_pct = (cur_price - liq_zone) / cur_price * 100
+                                if dist_pct > 4.0:
+                                    skip_reason = f"Vùng liq dưới xa {dist_pct:.1f}% > 4%"
+                                elif dist_pct <= 2.0:
+                                    # Đủ gần hoặc đã sweep → setup
+                                    entry_price = round(liq_zone * 1.001, 8)
+                                    sl = round(min(liq_zone * 0.985, liq_zone - atr * 1.5), 8)
+                                    liq_tp = liq_inst.get_strongest_liq_above(best.symbol, cur_price, min_usd=150_000)
+                                    if liq_tp and liq_tp > cur_price * 1.01:
+                                        tp = round(liq_tp * 0.998, 8)
+                                    else:
+                                        tp = round(entry_price + (entry_price - sl) * 3, 8)
+                                    rr = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
+                                    if rr < 1.5:
+                                        skip_reason = f"RR={rr:.1f} < 1.5"
+                                    else:
+                                        order_type_used = "LIMIT"
+                                        sweep_done = df["low"].iloc[-1] <= liq_zone * 1.002
+                                        mode = "SWEEP" if sweep_done else "PENDING"
+                                        logger.info(f"[Sweep] LONG {best.symbol} {mode} liq={liq_zone:.6f} entry={entry_price:.6f} RR={rr:.1f}")
+                                else:
+                                    skip_reason = f"Giá cách vùng liq dưới {dist_pct:.1f}% (cần ≤2%)"
                         else:
-                            skip_reason = f"Score {best.score}<65 và không có liq data"
-                else:
-                    momentum_ok = True
-                    liq_entry = None
-                    use_limit = False
+                            # Short đỉnh: giá pump lên quét vùng liq LONG phía trên
+                            liq_zone = liq_inst.get_strongest_liq_above(best.symbol, cur_price, min_usd=100_000)
+                            if not liq_zone:
+                                skip_reason = "Không có vùng liq LONG phía trên"
+                            else:
+                                dist_pct = (liq_zone - cur_price) / cur_price * 100
+                                if dist_pct > 4.0:
+                                    skip_reason = f"Vùng liq trên xa {dist_pct:.1f}% > 4%"
+                                elif dist_pct <= 2.0:
+                                    entry_price = round(liq_zone * 0.999, 8)
+                                    sl = round(max(liq_zone * 1.015, liq_zone + atr * 1.5), 8)
+                                    liq_tp = liq_inst.get_strongest_liq_below(best.symbol, cur_price, min_usd=150_000)
+                                    if liq_tp and liq_tp < cur_price * 0.99:
+                                        tp = round(liq_tp * 1.002, 8)
+                                    else:
+                                        tp = round(entry_price - (sl - entry_price) * 3, 8)
+                                    rr = abs(entry_price - tp) / abs(sl - entry_price) if abs(sl - entry_price) > 0 else 0
+                                    if rr < 1.5:
+                                        skip_reason = f"RR={rr:.1f} < 1.5"
+                                    else:
+                                        order_type_used = "LIMIT"
+                                        sweep_done = df["high"].iloc[-1] >= liq_zone * 0.998
+                                        mode = "SWEEP" if sweep_done else "PENDING"
+                                        logger.info(f"[Sweep] SHORT {best.symbol} {mode} liq={liq_zone:.6f} entry={entry_price:.6f} RR={rr:.1f}")
+                                else:
+                                    skip_reason = f"Giá cách vùng liq trên {dist_pct:.1f}% (cần ≤2%)"
+                    else:
+                        # Không có liq data → ATR fallback chỉ khi score >= 70
+                        if best.score >= 70:
+                            if best.signal == "LONG":
+                                sl = price - max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                                tp = price + (price - sl) * 3
+                            else:
+                                sl = price + max(atr * 1.5, price * config.STOP_LOSS_PCT)
+                                tp = price - (sl - price) * 3
+                            order_type_used = "MARKET"
+                        else:
+                            skip_reason = f"Không có liq data và score {best.score} < 70"
 
-                # ── Bỏ lệnh nếu có skip_reason ──
-                if skip_reason:
-                    logger.info(f"[ScanEngine] SKIP {best.symbol}: {skip_reason}")
+                if skip_reason or order_type_used == "SKIP":
+                    logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
                     time.sleep(config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                # ── Đặt lệnh ──
-                try:
-                    exchange.set_leverage(best.symbol, config.LEVERAGE)
-                except Exception:
-                    pass
+                qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                if qty * entry_price < 5.0:
+                    qty = round(5.0 / entry_price + 0.001, 3)
 
-                if liq_tracker_inst and liq_tracker_inst.is_connected() and liq_entry and use_limit:
-                    if best.signal == "LONG":
-                        entry_price = round(liq_entry * 1.001, 6)
-                        order_side = "BUY"
-                    else:
-                        entry_price = round(liq_entry * 0.999, 6)
-                        order_side = "SELL"
+                if order_type_used == "LIMIT":
                     try:
-                        exchange.place_limit_order(best.symbol, order_side, qty, entry_price)
-                        order_type_used = "LIMIT"
-                        logger.info(f"[ScanEngine] LIMIT {order_side} {best.symbol} @ {entry_price:.4f} (liq={liq_entry:.4f})")
+                        exchange.place_limit_order(best.symbol, side, qty, entry_price)
+                        logger.info(f"[Sweep] LIMIT {side} {best.symbol} @ {entry_price:.6f}")
                     except Exception as e:
-                        logger.error(f"[ScanEngine] LIMIT failed, fallback MARKET: {e}")
+                        logger.error(f"[Sweep] LIMIT failed → MARKET: {e}")
                         exchange.place_market_order(best.symbol, side, qty)
                         entry_price = price
                         order_type_used = "MARKET"
                 else:
                     exchange.place_market_order(best.symbol, side, qty)
-                    order_type_used = "MARKET"
 
-                # ── Đặt SL/TP ──
                 time.sleep(1)
-                try:
-                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
-                    logger.info(f"SL placed: {best.symbol} @ {sl:.4f}")
-                except Exception as e:
-                    logger.error(f"SL place failed {best.symbol}: {e}")
-                try:
-                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
-                    logger.info(f"TP placed: {best.symbol} @ {tp:.4f}")
-                except Exception as e:
-                    logger.error(f"TP place failed {best.symbol}: {e}")
+                try: exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                except Exception as e: logger.error(f"SL failed: {e}")
+                try: exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                except Exception as e: logger.error(f"TP failed: {e}")
 
                 with lock:
                     state["position"]  = best.signal
@@ -972,39 +840,26 @@ def scan_engine(exchange, notifier):
                     state["qty"]       = qty
                     state["trail_ext"] = entry_price
                     state["trade_log"].append({
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": best.symbol, "side": best.signal,
-                        "entry": entry_price, "sl": sl, "tp": tp,
-                        "qty": qty, "status": "OPEN",
-                        "note": f"scan_{order_type_used.lower()}"
+                        "entry":  entry_price, "sl": sl, "tp": tp,
+                        "qty":    qty, "status": "OPEN",
+                        "note":   f"scan_{order_type_used.lower()}"
                     })
 
-                icon = "🟢" if best.signal=="LONG" else "🔴"
-                margin = qty * entry_price / config.LEVERAGE
-                order_tag = "⏳ LIMIT (chờ khớp)" if order_type_used == "LIMIT" else "⚡ MARKET"
+                icon      = "🟢" if best.signal == "LONG" else "🔴"
+                margin    = qty * entry_price / config.LEVERAGE
+                order_tag = "⏳ LIMIT" if order_type_used == "LIMIT" else "⚡ MARKET"
                 rr_actual = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
-                liq_info = ""
-                if liq_tracker_inst and liq_tracker_inst.is_connected():
-                    if best.signal == "LONG":
-                        lb = liq_tracker_inst.get_strongest_liq_below(best.symbol, price, min_usd=100_000)
-                        la = liq_tracker_inst.get_nearest_liq_above(best.symbol, price, min_usd=100_000)
-                        if lb: liq_info += f"\n💧 Liq đáy : <b>${lb:.4f}</b>"
-                        if la: liq_info += f"\n🎯 Liq đỉnh: <b>${la:.4f}</b>"
-                    else:
-                        la = liq_tracker_inst.get_strongest_liq_above(best.symbol, price, min_usd=100_000)
-                        lb = liq_tracker_inst.get_nearest_liq_below(best.symbol, price, min_usd=100_000)
-                        if la: liq_info += f"\n💧 Liq đỉnh: <b>${la:.4f}</b>"
-                        if lb: liq_info += f"\n🎯 Liq đáy : <b>${lb:.4f}</b>"
                 notifier.telegram.send(
                     f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
-                    f"💰 Entry  : <b>${entry_price:.4f}</b>  (giá TT: ${price:.4f})\n"
-                    f"🛑 SL     : <b>${sl:.4f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
-                    f"🎯 TP     : <b>${tp:.4f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
+                    f"💰 Entry  : <b>${entry_price:.6f}</b>  (TT: ${price:.6f})\n"
+                    f"🛑 SL     : <b>${sl:.6f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
+                    f"🎯 TP     : <b>${tp:.6f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
                     f"📐 RR     : <b>1:{rr_actual:.1f}</b>\n"
-                    f"📦 Size   : {qty} (~<b>${qty*entry_price:,.2f}</b> notional)\n"
+                    f"📦 Size   : {qty} (~<b>${qty*entry_price:,.2f}</b>)\n"
                     f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
-                    f"⭐ Score  : {best.score}đ | {best.reason}"
-                    f"{liq_info}\n"
+                    f"⭐ Score  : {best.score}đ | {best.reason}\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
 
@@ -1017,7 +872,6 @@ def scan_engine(exchange, notifier):
 
         time.sleep(config.LOOP_INTERVAL_SECONDS)
 
-# ============================================================
 # THREAD 4: Liquidation Strategy Engine
 # Mỗi 30s: phân tích liq data → vào 2 lệnh split nếu có setup
 # Mỗi 5s : monitor các lệnh split đang chờ khớp + theo dõi SL/TP
