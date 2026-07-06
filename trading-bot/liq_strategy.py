@@ -36,8 +36,8 @@ class LiqSetup:
     reason:        str
 
     # size split
-    size1_pct:     float = 0.35  # 35% tổng size vào lệnh 1
-    size2_pct:     float = 0.65  # 65% tổng size vào lệnh 2
+    size1_pct:     float = 0.40  # 40% tổng size vào lệnh 1
+    size2_pct:     float = 0.60  # 60% tổng size vào lệnh 2
 
 
 @dataclass
