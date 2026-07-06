@@ -367,8 +367,8 @@ function renderDashboard(d) {
 
     // Trigger prices - hiện rõ giá cụ thể bot sẽ vào lệnh
     html += `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">`;
-    html += `<b style="font-size:12px;color:#58a6ff">&#x1F3AF; TRIGGER PRICES (bot vào lệnh khi giá đạt):</b>`;
-    html += `<table style="margin-top:8px"><tr><th>Coin</th><th style="color:#f85149">SHORT khi giá ≥</th><th style="color:#3fb950">LONG khi giá ≤</th><th>Current</th><th>Gap</th></tr>`;
+    html += `<b style="font-size:12px;color:#58a6ff">&#x1F3AF; TRIGGER PRICES — Vùng liq bot sẽ vào lệnh:</b>`;
+    html += `<table style="margin-top:8px"><tr><th>Coin</th><th style="color:#f85149">SHORT khi giá pump lên ≥ (liq LONG zone)</th><th style="color:#3fb950">LONG khi giá dump xuống ≤ (liq SHORT zone)</th><th>Current</th><th>Khoảng cách</th></tr>`;
     d.watchlist.forEach(sym => {
         const name = sym.replace('USDT','');
         const p = d.prices[sym] || 0;
@@ -529,27 +529,29 @@ def api_state():
         "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
         "time":t.get("time","")} for t in recent]
 
-    # Add entry targets - dùng smart_entry tìm giá entry tối ưu
+    # Entry targets — dùng vùng liq MẠNH NHẤT (giống logic scan auto BOT8)
     entry_targets = {}
     liq_tracker = _state.get("liq_tracker") if _state else None
     for sym in watchlist:
         p = prices.get(sym, 0)
         if p <= 0:
             continue
-        above = None
-        below = None
+        short_trigger = None  # SHORT khi giá pump lên đây (vùng liq LONG phía trên)
+        long_trigger  = None  # LONG khi giá dump xuống đây (vùng liq SHORT phía dưới)
         if liq_tracker:
             try:
-                above = liq_tracker.get_nearest_liq_above(sym, p, min_usd=1000)
-                below = liq_tracker.get_nearest_liq_below(sym, p, min_usd=1000)
+                # SHORT trigger: vùng liq LONG lớn nhất phía trên (nơi giá pump lên quét)
+                short_trigger = liq_tracker.get_strongest_liq_above(sym, p, min_usd=80_000)
+                # LONG trigger: vùng liq SHORT lớn nhất phía dưới (nơi giá dump xuống quét)
+                long_trigger  = liq_tracker.get_strongest_liq_below(sym, p, min_usd=80_000)
             except Exception:
                 pass
-        # Fallback: dùng ±1% estimate
-        if above is None:
-            above = round(p * 1.01, 2 if p >= 100 else 6)
-        if below is None:
-            below = round(p * 0.99, 2 if p >= 100 else 6)
-        entry_targets[sym] = {"short_entry": float(above), "long_entry": float(below)}
+        # Fallback nếu không có liq data
+        if short_trigger is None:
+            short_trigger = round(p * 1.01, 2 if p >= 100 else 6)
+        if long_trigger is None:
+            long_trigger = round(p * 0.99, 2 if p >= 100 else 6)
+        entry_targets[sym] = {"short_entry": float(short_trigger), "long_entry": float(long_trigger)}
 
     resp = jsonify({
         "running": s.get("running", False),
