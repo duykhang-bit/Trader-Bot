@@ -823,23 +823,62 @@ def scan_engine(exchange, notifier):
                     time.sleep(config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
-                # Vùng liq xa → dùng 50% margin để quản lý risk
-                qty = round(qty * 0.5, 8)
-                if qty * entry_price < 5.0:
-                    qty = round(5.0 / entry_price + 0.001, 3)
+                # ── 2 lệnh LIMIT đồng thời ──
+                # Lệnh 1 (near zone): vùng liq MẠNH NHẤT gần nhất → 50% size
+                # Lệnh 2 (deep zone): vùng liq XA NHẤT → full size
+                heatmap_now = liq_inst.get_liq_heatmap(best.symbol) if (liq_inst and liq_inst.is_connected()) else {}
+                cur_p = exchange.get_ticker_price(best.symbol)
 
-                if order_type_used == "LIMIT":
-                    try:
-                        exchange.place_limit_order(best.symbol, side, qty, entry_price)
-                        logger.info(f"[Sweep] LIMIT {side} {best.symbol} @ {entry_price:.6f}")
-                    except Exception as e:
-                        logger.error(f"[Sweep] LIMIT failed → MARKET: {e}")
-                        exchange.place_market_order(best.symbol, side, qty)
-                        entry_price = price
-                        order_type_used = "MARKET"
+                if best.signal == "LONG":
+                    near_zone = liq_inst.get_strongest_liq_below(best.symbol, cur_p, min_usd=80_000) \
+                                if liq_inst else None
+                    # deep zone = entry_price đã tính ở trên
+                    deep_zone = entry_price
                 else:
-                    exchange.place_market_order(best.symbol, side, qty)
+                    near_zone = liq_inst.get_strongest_liq_above(best.symbol, cur_p, min_usd=80_000) \
+                                if liq_inst else None
+                    deep_zone = entry_price
+
+                # Tính qty full (cho deep zone = $20)
+                qty_full = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                if qty_full * entry_price < 5.0:
+                    qty_full = round(5.0 / entry_price + 0.001, 3)
+
+                orders_placed = []
+
+                # ── Lệnh 1: near zone, 50% size ──
+                if near_zone and near_zone != deep_zone:
+                    if best.signal == "LONG":
+                        near_entry = round(near_zone * 1.001, 8)
+                    else:
+                        near_entry = round(near_zone * 0.999, 8)
+                    qty_near = round(qty_full * 0.5, 8)
+                    if qty_near * near_entry >= 5.0:
+                        try:
+                            exchange.place_limit_order(best.symbol, side, qty_near, near_entry)
+                            orders_placed.append(f"NEAR ${near_entry:.6f} qty={qty_near} (50%)")
+                            logger.info(f"[DualLimit] NEAR {side} {best.symbol} @ {near_entry:.6f} qty={qty_near}")
+                        except Exception as e:
+                            logger.error(f"[DualLimit] NEAR order failed: {e}")
+
+                # ── Lệnh 2: deep zone, full size ──
+                qty_deep = qty_full
+                try:
+                    exchange.place_limit_order(best.symbol, side, qty_deep, deep_zone)
+                    orders_placed.append(f"DEEP ${deep_zone:.6f} qty={qty_deep} (100%)")
+                    logger.info(f"[DualLimit] DEEP {side} {best.symbol} @ {deep_zone:.6f} qty={qty_deep}")
+                    order_type_used = "LIMIT"
+                except Exception as e:
+                    logger.error(f"[DualLimit] DEEP order failed → MARKET: {e}")
+                    exchange.place_market_order(best.symbol, side, qty_deep)
+                    order_type_used = "MARKET"
+
+                if not orders_placed:
+                    # fallback market
+                    exchange.place_market_order(best.symbol, side, qty_full)
+                    order_type_used = "MARKET"
+
+                qty = qty_full  # dùng qty_full cho SL/TP
 
                 time.sleep(1)
                 try: exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
@@ -865,20 +904,20 @@ def scan_engine(exchange, notifier):
 
                 icon      = "🟢" if best.signal == "LONG" else "🔴"
                 margin    = qty * entry_price / config.LEVERAGE
-                order_tag = "⏳ LIMIT" if order_type_used == "LIMIT" else "⚡ MARKET"
+                order_tag = "⏳ DUAL LIMIT" if order_type_used == "LIMIT" else "⚡ MARKET"
                 rr_actual = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
+                orders_str = "\n".join([f"  📌 {o}" for o in orders_placed]) if orders_placed else f"  📌 {entry_price:.6f}"
                 notifier.telegram.send(
                     f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
-                    f"💰 Entry  : <b>${entry_price:.6f}</b>  (TT: ${price:.6f})\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{orders_str}\n"
                     f"🛑 SL     : <b>${sl:.6f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.6f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
                     f"📐 RR     : <b>1:{rr_actual:.1f}</b>\n"
-                    f"📦 Size   : {qty} (~<b>${qty*entry_price:,.2f}</b>)\n"
-                    f"💵 Margin : <b>${margin:.2f} USDT</b> ({config.LEVERAGE}x)\n"
+                    f"💵 Full   : ${qty_full*entry_price:,.2f} | Half: ${qty_full*0.5*entry_price:,.2f}\n"
                     f"⭐ Score  : {best.score}đ | {best.reason}\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
-
         except KeyboardInterrupt:
             break
         except Exception as e:
