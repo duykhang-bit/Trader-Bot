@@ -677,7 +677,7 @@ def scan_engine(exchange, notifier):
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
 
-            best = scan_market(exchange, config, min_score=config.MIN_SCORE)
+            best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
 

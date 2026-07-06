@@ -321,7 +321,7 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         return None
 
 
-def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore]:
+def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Optional[CoinScore]:
     """
     Quét WATCHLIST động từ Binance (refresh mỗi 30 phút).
     Tối ưu tốc độ: 
@@ -527,12 +527,22 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
                     f"  📋 PENDING {symbol}: tele={css_signal} vs scan={scored.signal} "
                     f"WR={win_rate:.0f}% → watch list ({len(_pending_watch)} pending)"
                 )
+                # Notify Telegram lần đầu vào pending
+                if notifier and symbol not in _pending_watch:
+                    try:
+                        notifier.telegram.send(
+                            f"⏳ <b>PENDING</b>: {symbol} {scored.signal}\n"
+                            f"📊 Score: {final_score:.0f} | WR: {win_rate:.0f}%\n"
+                            f"⚠️ Tele: {css_signal} (chưa khớp) | {' '.join(css_reasons[:3])}"
+                        )
+                    except Exception:
+                        pass
                 continue
 
             # ── Bước 3: Win rate gate — cần ≥ 65% mới vào lệnh ──────────
             WIN_RATE_MIN = 65.0
             if win_rate < WIN_RATE_MIN:
-                # Lưu pending để theo dõi, nhưng không vào lệnh
+                is_new_pending = symbol not in _pending_watch
                 _pending_watch[symbol] = {
                     "signal":   scored.signal,
                     "score":    final_score,
@@ -546,13 +556,22 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
                     f"  📊 LOW WR {symbol}: {scored.signal} score={final_score:.0f} "
                     f"WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}% → pending"
                 )
+                if notifier and is_new_pending:
+                    try:
+                        notifier.telegram.send(
+                            f"📊 <b>WATCH</b>: {symbol} {scored.signal}\n"
+                            f"⚠️ WR={win_rate:.0f}% chưa đủ 65% | Score={final_score:.0f}\n"
+                            f"👁 Đang theo dõi, chờ WR tăng..."
+                        )
+                    except Exception:
+                        pass
                 continue
 
             # ── Bước 4: Smart Entry — 1m + 15m timing ───────────────────
             smart = get_smart_entry_signal(df_15m, df_1m, scored.signal)
 
             if smart["signal"] == "WAIT":
-                # Signal OK + WR OK nhưng 1m chưa có trigger → pending
+                is_new_pending = symbol not in _pending_watch
                 _pending_watch[symbol] = {
                     "signal":   scored.signal,
                     "score":    final_score,
@@ -566,6 +585,23 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
                     f"  ⏳ SMART WAIT {symbol}: {scored.signal} score={final_score:.0f} "
                     f"WR={win_rate:.0f}% | 1m: {smart['reason'][:50]} → pending"
                 )
+                # Notify tele — gần vào lệnh nhất (chỉ còn chờ 1m trigger)
+                if notifier and is_new_pending:
+                    icon = "🟢" if scored.signal == "LONG" else "🔴"
+                    try:
+                        notifier.telegram.send(
+                            f"{icon} <b>🎯 GẦN VÀO LỆNH!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 <b>{symbol}</b> | {scored.signal}\n"
+                            f"⭐ Score: <b>{final_score:.0f}</b> | WR: <b>{win_rate:.0f}%</b>\n"
+                            f"✅ MTF: {mtf['detail']}\n"
+                            f"✅ Tele signal: {css_signal}\n"
+                            f"⏳ Chờ 1m trigger: {smart['reason'][:60]}\n"
+                            f"📋 {' | '.join(css_reasons[:3])}\n"
+                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                        )
+                    except Exception:
+                        pass
                 continue
 
             # ── Tất cả 4 bước pass → vào lệnh ──────────────────────────
