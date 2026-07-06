@@ -51,56 +51,67 @@ DECISION_MAP = {
 
 def analyze_coin(ticker: str, date_str: str = None) -> dict:
     """
-    Chạy TradingAgents cho 1 coin.
-    Trả về: {"ticker": "BTC-USD", "bias": "LONG/SHORT/HOLD", "decision": "Buy/...", "reason": "..."}
+    Phân tích bias cho 1 coin dùng indicators (RSI/EMA/MACD/BB/HTF).
+    Không dùng tradingagents — hoạt động standalone trên server.
     """
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Thêm TradingAgents vào sys.path
-    if TRADING_AGENTS_DIR not in sys.path:
-        sys.path.insert(0, TRADING_AGENTS_DIR)
-
-    # Load .env từ TradingAgents
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(os.path.join(TRADING_AGENTS_DIR, ".env"))
-    except ImportError:
-        pass
+    # Tìm symbol từ ticker
+    sym = ticker  # fallback
+    for s, t in SYMBOL_MAP.items():
+        if t == ticker:
+            sym = s
+            break
 
     try:
-        from tradingagents.default_config import DEFAULT_CONFIG
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
+        # Import exchange từ bot state (nếu chạy trong bot)
+        # Hoặc dùng requests thẳng tới Binance public API
+        import requests
+        import pandas as pd
 
-        config = DEFAULT_CONFIG.copy()
-        config["llm_provider"] = "google"
-        config["deep_think_llm"] = "gemini-2.0-flash-thinking-exp"
-        config["quick_think_llm"] = "gemini-2.0-flash"
-        config["max_debate_rounds"] = 1
-        config["max_risk_discuss_rounds"] = 1
+        def _fetch_klines(symbol, interval, limit=100):
+            url = "https://fapi.binance.com/fapi/v1/klines"
+            r = requests.get(url, params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            df = pd.DataFrame(data, columns=[
+                "open_time","open","high","low","close","volume",
+                "close_time","quote_volume","trades",
+                "taker_buy_base","taker_buy_quote","ignore"
+            ])
+            for col in ["open","high","low","close","volume"]:
+                df[col] = df[col].astype(float)
+            return df
 
-        ta = TradingAgentsGraph(debug=False, config=config)
-        final_state, decision = ta.propagate(ticker, date_str, asset_type="crypto")
+        df_15m = _fetch_klines(sym, "15m", 100)
+        df_1h  = _fetch_klines(sym, "1h",  50)
+        df_4h  = _fetch_klines(sym, "4h",  50)
 
-        # decision = "Buy" / "Overweight" / "Hold" / "Underweight" / "Sell"
-        bias = DECISION_MAP.get(decision, "HOLD")
+        from indicators import compute_signal_score
+        css = compute_signal_score(df_15m, df_1h, df_4h)
 
-        # Lấy reason từ final_trade_decision
-        reason = final_state.get("final_trade_decision", "")[:500]
+        signal   = css["signal"]   # LONG / SHORT / WAIT
+        win_rate = css["win_rate"]
+        reasons  = (css["long_reasons"] if signal == "LONG"
+                    else css["short_reasons"] if signal == "SHORT"
+                    else css["long_reasons"] + css["short_reasons"])
+
+        bias = signal if signal != "WAIT" else "HOLD"
 
         return {
             "ticker": ticker,
-            "bias": bias,
-            "decision": decision,
-            "reason": reason,
+            "bias":   bias,
+            "decision": f"WR={win_rate:.0f}%",
+            "reason": " | ".join(reasons[:5]),
             "timestamp": datetime.now().isoformat(),
         }
 
     except Exception as e:
-        logger.error(f"AI Analyzer failed for {ticker}: {e}")
+        logger.error(f"analyze_coin failed for {sym}: {e}")
         return {
             "ticker": ticker,
-            "bias": "HOLD",  # Default HOLD nếu lỗi
+            "bias": "HOLD",
             "decision": "Error",
             "reason": str(e)[:200],
             "timestamp": datetime.now().isoformat(),
