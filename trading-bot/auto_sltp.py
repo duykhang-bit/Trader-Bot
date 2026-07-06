@@ -12,189 +12,219 @@ logger = logging.getLogger(__name__)
 def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
                  liq_tracker=None) -> Dict:
     """
-    Phân tích đa khung thời gian + thanh khoản để đề xuất SL/TP tối ưu.
-    
-    Phương pháp:
-    1. ATR (Average True Range) — đo biến động
-    2. Support/Resistance (swing high/low 20 nến)
-    3. EMA 50 — trend support/resistance
-    4. Liquidation zones (nếu có liq_tracker)
-    5. Risk:Reward tối thiểu 1:2
-    
+    Đặt SL/TP dựa vào THANH KHOẢN (liquidation zones) là ưu tiên số 1.
+
+    Nguyên tắc:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  SL  → nằm DƯỚI vùng liq bị quét (stop hunt zone)         │
+    │        Giá sẽ quét liq rồi đảo chiều → SL đặt sau vùng đó │
+    │                                                             │
+    │  TP  → vùng liq LỚN NHẤT phía target (nơi giá tiến tới)   │
+    │        Giá bị hút về vùng liq tập trung → TP đặt ở đó     │
+    └─────────────────────────────────────────────────────────────┘
+
+    Ưu tiên:
+      SL: liq_zone_bị_quét → swing_high/low → ATR fallback
+      TP: liq_zone_lớn_nhất_phía_target → resistance/support → ATR fallback
+
     Returns:
         {
             "sl": float,
             "tp": float,
-            "sl_pct": float,    # % từ entry đến SL
-            "tp_pct": float,    # % từ entry đến TP
-            "rr": float,        # Risk:Reward ratio
-            "method": str,      # phương pháp chính
-            "details": str,     # chi tiết phân tích
+            "sl_pct": float,
+            "tp_pct": float,
+            "rr": float,
+            "method": str,
+            "details": str,
         }
     """
+    decimals = _price_decimals(entry_price)
+
     try:
-        # Lấy data đa khung
+        # ── Lấy data chart đa khung ──────────────────────────
         klines_15m = exchange.get_klines(symbol, "15m", limit=100)
-        klines_1h = exchange.get_klines(symbol, "1h", limit=100)
-        klines_4h = exchange.get_klines(symbol, "4h", limit=50)
-
+        klines_1h  = exchange.get_klines(symbol, "1h",  limit=100)
+        klines_4h  = exchange.get_klines(symbol, "4h",  limit=50)
         df_15m = _to_df(klines_15m)
-        df_1h = _to_df(klines_1h)
-        df_4h = _to_df(klines_4h)
+        df_1h  = _to_df(klines_1h)
+        df_4h  = _to_df(klines_4h)
 
-        price = df_15m["close"].iloc[-1]
-
-        # 1. ATR — đo biến động
-        atr_15m = _calc_atr(df_15m, 14)
+        price  = df_15m["close"].iloc[-1]
         atr_1h = _calc_atr(df_1h, 14)
         atr_4h = _calc_atr(df_4h, 14)
 
-        # 2. Support/Resistance từ 1h
+        # Swing high/low từ 1h (20 nến gần nhất)
         supports, resistances = _find_sr_levels(df_1h, price)
+        # Recent swing extremes từ 4h (dùng để backup SL)
+        sup_4h, res_4h = _find_sr_levels(df_4h, price)
 
-        # 3. EMA 50 trên 1h
-        ema50 = df_1h["close"].ewm(span=50).mean().iloc[-1]
+        details = [f"entry=${entry_price:.{decimals}f}", f"ATR(1h)=${atr_1h:.{decimals}f}"]
 
-        # 4. Liquidity zones
-        liq_above = None
-        liq_below = None
+        # ── Lấy toàn bộ liq heatmap ──────────────────────────
+        heatmap: Dict = {}
         if liq_tracker:
             try:
-                liq_above = liq_tracker.get_nearest_liq_above(symbol, price, min_usd=50000)
-                liq_below = liq_tracker.get_nearest_liq_below(symbol, price, min_usd=50000)
+                heatmap = liq_tracker.get_liq_heatmap(symbol) or {}
             except Exception:
                 pass
 
-        # === Tính SL ===
-        sl_candidates = []
-        details = []
+        # Tách vùng liq phía dưới và phía trên entry
+        liq_below_map = {p: u for p, u in heatmap.items() if p < entry_price}
+        liq_above_map = {p: u for p, u in heatmap.items() if p > entry_price}
 
+        # ── ═══════════════════════════════════════════════════
+        # LONG: SL dưới vùng liq SHORT bị quét, TP lên vùng liq LONG lớn nhất
+        # ── ═══════════════════════════════════════════════════
         if side == "LONG":
-            # ATR-based SL: 1.5x ATR dưới entry
-            atr_sl = entry_price - atr_1h * 1.5
-            sl_candidates.append(("ATR 1.5x", atr_sl))
-            details.append(f"ATR(1h)=${atr_1h:.2f}")
 
-            # Support level gần nhất dưới entry
-            valid_supports = [s for s in supports if s < entry_price * 0.995]
-            if valid_supports:
-                sr_sl = max(valid_supports)  # support gần nhất
-                sl_candidates.append(("Support", sr_sl))
-                details.append(f"Support=${sr_sl:.2f}")
+            # ── SL: nằm SAU (dưới) vùng liq bị quét ──────────
+            # Vùng liq SHORT phía dưới = nơi stop hunt sẽ xảy ra
+            # SL đặt thêm buffer dưới vùng đó để tránh bị quét
+            sl_method = "ATR fallback"
+            best_sl   = entry_price - atr_1h * 2.0  # fallback
 
-            # EMA50 nếu nằm dưới entry
-            if ema50 < entry_price * 0.995:
-                sl_candidates.append(("EMA50", ema50 * 0.998))
-                details.append(f"EMA50=${ema50:.2f}")
+            if liq_below_map:
+                # Lấy vùng liq gần entry nhất phía dưới (vùng bị quét đầu tiên)
+                # → SL đặt dưới vùng đó 0.3% (buffer tránh stop hunt)
+                sweep_zone = max(liq_below_map.keys())  # gần entry nhất phía dưới
+                sweep_usd  = liq_below_map[sweep_zone]
 
-            # Liq zone dưới
-            if liq_below and liq_below < entry_price * 0.995:
-                sl_candidates.append(("Liq zone", liq_below * 0.998))
-                details.append(f"Liq↓=${liq_below:.2f}")
+                # Nếu có vùng liq lớn ($50k+) thì SL đặt dưới nó
+                if sweep_usd >= 50_000:
+                    # SL = dưới đáy vùng liq 0.3%
+                    candidate_sl = sweep_zone * 0.997
+                    # Kiểm tra không quá xa (max 5% từ entry)
+                    if candidate_sl > entry_price * 0.95:
+                        best_sl   = candidate_sl
+                        sl_method = f"Below liq↓${sweep_zone:.{decimals}f}(${sweep_usd/1e3:.0f}k)"
+                        details.append(f"SweepZone=${sweep_zone:.{decimals}f}")
+                    else:
+                        # Vùng liq quá xa → dùng swing low gần nhất + buffer
+                        sl_method = "Liq too far, swing low"
 
-            # Chọn SL tốt nhất: gần entry nhất nhưng không quá gần (>0.5%)
-            valid_sls = [(name, sl) for name, sl in sl_candidates
-                         if sl < entry_price * 0.995 and sl > entry_price * 0.95]
-            if valid_sls:
-                # Chọn SL cao nhất (gần entry nhất) = risk ít nhất
-                best_sl_name, best_sl = max(valid_sls, key=lambda x: x[1])
-            else:
-                # Fallback: 2% dưới entry
-                best_sl_name = "Default 2%"
-                best_sl = entry_price * 0.98
+            # Nếu không có liq data hoặc vùng liq quá xa → swing low
+            if sl_method in ("ATR fallback", "Liq too far, swing low"):
+                valid_sup = [s for s in supports if s < entry_price * 0.995]
+                if valid_sup:
+                    swing_low = max(valid_sup)  # swing low gần nhất
+                    # SL = dưới swing low 0.2% (buffer nhỏ)
+                    candidate_sl = swing_low * 0.998
+                    if candidate_sl > entry_price * 0.95:
+                        best_sl   = candidate_sl
+                        sl_method = f"Below swing low ${swing_low:.{decimals}f}"
+                        details.append(f"SwingLow=${swing_low:.{decimals}f}")
+                    else:
+                        # Swing low quá xa → ATR 2x
+                        best_sl   = entry_price - atr_1h * 2.0
+                        sl_method = f"ATR×2.0"
+                else:
+                    best_sl   = entry_price - atr_1h * 2.0
+                    sl_method = f"ATR×2.0"
 
-            # === Tính TP ===
-            risk = entry_price - best_sl
-            # TP tối thiểu RR 1:2
-            default_tp = entry_price + risk * 2.5
+            # Hard floor: SL không được quá 5% dưới entry (bảo vệ rủi ro)
+            best_sl = max(best_sl, entry_price * 0.95)
+            risk    = entry_price - best_sl
 
-            tp_candidates = []
-            # Resistance gần nhất trên entry
-            valid_resistances = [r for r in resistances if r > entry_price * 1.005]
-            if valid_resistances:
-                sr_tp = min(valid_resistances)  # resistance gần nhất
-                tp_candidates.append(("Resistance", sr_tp))
-                details.append(f"Resistance=${sr_tp:.2f}")
+            # ── TP: vùng liq LONG lớn nhất phía trên ──────────
+            # Thị trường bị hút về vùng tập trung liq lớn
+            tp_method = "RR 2.5x fallback"
+            best_tp   = entry_price + risk * 2.5  # fallback RR 1:2.5
 
-            # Liq zone trên
-            if liq_above and liq_above > entry_price * 1.005:
-                tp_candidates.append(("Liq zone", liq_above))
-                details.append(f"Liq↑=${liq_above:.2f}")
+            if liq_above_map:
+                # Lấy tất cả vùng liq phía trên đảm bảo RR >= 1.5
+                min_tp_rr = entry_price + risk * 1.5
+                valid_liq_tp = {p: u for p, u in liq_above_map.items()
+                                if p >= min_tp_rr}
 
-            # ATR-based TP
-            tp_candidates.append(("ATR 3x", entry_price + atr_1h * 3))
+                if valid_liq_tp:
+                    # TP = vùng liq LỚN NHẤT (về USD) phía trên
+                    # → đây là vùng giá bị hút mạnh nhất
+                    target_zone = max(valid_liq_tp.keys(), key=lambda p: valid_liq_tp[p])
+                    target_usd  = valid_liq_tp[target_zone]
+                    # TP đặt ngay trước vùng liq (0.2% dưới) để chốt trước khi đảo chiều
+                    best_tp   = target_zone * 0.998
+                    tp_method = f"Liq↑${target_zone:.{decimals}f}(${target_usd/1e3:.0f}k)"
+                    details.append(f"LiqTarget=${target_zone:.{decimals}f}")
 
-            # Chọn TP: gần nhất mà vẫn đảm bảo RR >= 1.5
-            min_tp = entry_price + risk * 1.5  # RR tối thiểu 1.5
-            valid_tps = [(name, tp) for name, tp in tp_candidates if tp >= min_tp]
-            if valid_tps:
-                best_tp_name, best_tp = min(valid_tps, key=lambda x: x[1])
-            else:
-                best_tp_name = "RR 2.5x"
-                best_tp = default_tp
+            # Fallback nếu liq TP không đủ RR: dùng resistance hoặc ATR
+            if best_tp < entry_price + risk * 1.5:
+                valid_res = [r for r in resistances if r > entry_price + risk * 1.5]
+                if valid_res:
+                    best_tp   = min(valid_res) * 0.999
+                    tp_method = f"Resistance ${min(valid_res):.{decimals}f}"
+                else:
+                    best_tp   = entry_price + risk * 2.5
+                    tp_method = "RR 2.5x"
 
-        else:  # SHORT
-            # ATR-based SL: 1.5x ATR trên entry
-            atr_sl = entry_price + atr_1h * 1.5
-            sl_candidates.append(("ATR 1.5x", atr_sl))
-            details.append(f"ATR(1h)=${atr_1h:.2f}")
+        # ── ═══════════════════════════════════════════════════
+        # SHORT: SL trên vùng liq LONG bị quét, TP xuống vùng liq SHORT lớn nhất
+        # ── ═══════════════════════════════════════════════════
+        else:
 
-            # Resistance gần nhất trên entry
-            valid_resistances = [r for r in resistances if r > entry_price * 1.005]
-            if valid_resistances:
-                sr_sl = min(valid_resistances)
-                sl_candidates.append(("Resistance", sr_sl))
-                details.append(f"Resistance=${sr_sl:.2f}")
+            # ── SL: nằm SAU (trên) vùng liq bị quét ──────────
+            sl_method = "ATR fallback"
+            best_sl   = entry_price + atr_1h * 2.0  # fallback
 
-            # EMA50 nếu nằm trên entry
-            if ema50 > entry_price * 1.005:
-                sl_candidates.append(("EMA50", ema50 * 1.002))
-                details.append(f"EMA50=${ema50:.2f}")
+            if liq_above_map:
+                # Vùng liq LONG gần entry nhất phía trên = nơi stop hunt xảy ra
+                sweep_zone = min(liq_above_map.keys())
+                sweep_usd  = liq_above_map[sweep_zone]
 
-            # Liq zone trên
-            if liq_above and liq_above > entry_price * 1.005:
-                sl_candidates.append(("Liq zone", liq_above * 1.002))
-                details.append(f"Liq↑=${liq_above:.2f}")
+                if sweep_usd >= 50_000:
+                    candidate_sl = sweep_zone * 1.003  # SL trên vùng liq 0.3%
+                    if candidate_sl < entry_price * 1.05:
+                        best_sl   = candidate_sl
+                        sl_method = f"Above liq↑${sweep_zone:.{decimals}f}(${sweep_usd/1e3:.0f}k)"
+                        details.append(f"SweepZone=${sweep_zone:.{decimals}f}")
+                    else:
+                        sl_method = "Liq too far, swing high"
 
-            # Chọn SL: thấp nhất (gần entry nhất)
-            valid_sls = [(name, sl) for name, sl in sl_candidates
-                         if sl > entry_price * 1.005 and sl < entry_price * 1.05]
-            if valid_sls:
-                best_sl_name, best_sl = min(valid_sls, key=lambda x: x[1])
-            else:
-                best_sl_name = "Default 2%"
-                best_sl = entry_price * 1.02
+            if sl_method in ("ATR fallback", "Liq too far, swing high"):
+                valid_res = [r for r in resistances if r > entry_price * 1.005]
+                if valid_res:
+                    swing_high = min(valid_res)
+                    candidate_sl = swing_high * 1.002
+                    if candidate_sl < entry_price * 1.05:
+                        best_sl   = candidate_sl
+                        sl_method = f"Above swing high ${swing_high:.{decimals}f}"
+                        details.append(f"SwingHigh=${swing_high:.{decimals}f}")
+                    else:
+                        best_sl   = entry_price + atr_1h * 2.0
+                        sl_method = "ATR×2.0"
+                else:
+                    best_sl   = entry_price + atr_1h * 2.0
+                    sl_method = "ATR×2.0"
 
-            # === Tính TP ===
-            risk = best_sl - entry_price
-            default_tp = entry_price - risk * 2.5
+            # Hard ceiling: SL không quá 5% trên entry
+            best_sl = min(best_sl, entry_price * 1.05)
+            risk    = best_sl - entry_price
 
-            tp_candidates = []
-            # Support gần nhất dưới entry
-            valid_supports = [s for s in supports if s < entry_price * 0.995]
-            if valid_supports:
-                sr_tp = max(valid_supports)
-                tp_candidates.append(("Support", sr_tp))
-                details.append(f"Support=${sr_tp:.2f}")
+            # ── TP: vùng liq SHORT lớn nhất phía dưới ─────────
+            tp_method = "RR 2.5x fallback"
+            best_tp   = entry_price - risk * 2.5
 
-            # Liq zone dưới
-            if liq_below and liq_below < entry_price * 0.995:
-                tp_candidates.append(("Liq zone", liq_below))
-                details.append(f"Liq↓=${liq_below:.2f}")
+            if liq_below_map:
+                max_tp_rr = entry_price - risk * 1.5
+                valid_liq_tp = {p: u for p, u in liq_below_map.items()
+                                if p <= max_tp_rr}
 
-            # ATR-based TP
-            tp_candidates.append(("ATR 3x", entry_price - atr_1h * 3))
+                if valid_liq_tp:
+                    target_zone = min(valid_liq_tp.keys(), key=lambda p: -valid_liq_tp[p])
+                    target_usd  = valid_liq_tp[target_zone]
+                    best_tp   = target_zone * 1.002  # TP ngay trước vùng liq (0.2% trên)
+                    tp_method = f"Liq↓${target_zone:.{decimals}f}(${target_usd/1e3:.0f}k)"
+                    details.append(f"LiqTarget=${target_zone:.{decimals}f}")
 
-            # Chọn TP
-            max_tp = entry_price - risk * 1.5  # RR tối thiểu 1.5
-            valid_tps = [(name, tp) for name, tp in tp_candidates if tp <= max_tp]
-            if valid_tps:
-                best_tp_name, best_tp = max(valid_tps, key=lambda x: x[1])
-            else:
-                best_tp_name = "RR 2.5x"
-                best_tp = default_tp
+            if best_tp > entry_price - risk * 1.5:
+                valid_sup = [s for s in supports if s < entry_price - risk * 1.5]
+                if valid_sup:
+                    best_tp   = max(valid_sup) * 1.001
+                    tp_method = f"Support ${max(valid_sup):.{decimals}f}"
+                else:
+                    best_tp   = entry_price - risk * 2.5
+                    tp_method = "RR 2.5x"
 
-        # Tính metrics
+        # ── Tính metrics ──────────────────────────────────────
         if side == "LONG":
             sl_pct = (entry_price - best_sl) / entry_price * 100
             tp_pct = (best_tp - entry_price) / entry_price * 100
@@ -202,36 +232,44 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
             sl_pct = (best_sl - entry_price) / entry_price * 100
             tp_pct = (entry_price - best_tp) / entry_price * 100
 
-        rr = tp_pct / sl_pct if sl_pct > 0 else 0
+        # Đảm bảo sl_pct và tp_pct dương
+        sl_pct = abs(sl_pct)
+        tp_pct = abs(tp_pct)
+        rr     = tp_pct / sl_pct if sl_pct > 0 else 0
 
-        method = f"SL: {best_sl_name} | TP: {best_tp_name}"
+        logger.info(
+            f"[suggest_sltp] {symbol} {side} | entry={entry_price:.{decimals}f} "
+            f"SL={best_sl:.{decimals}f}(-{sl_pct:.2f}%) "
+            f"TP={best_tp:.{decimals}f}(+{tp_pct:.2f}%) RR=1:{rr:.1f} "
+            f"| SL:{sl_method} | TP:{tp_method}"
+        )
 
         return {
-            "sl": round(best_sl, _price_decimals(entry_price)),
-            "tp": round(best_tp, _price_decimals(entry_price)),
-            "sl_pct": round(sl_pct, 2),
-            "tp_pct": round(tp_pct, 2),
-            "rr": round(rr, 1),
-            "method": method,
+            "sl":      round(best_sl, decimals),
+            "tp":      round(best_tp, decimals),
+            "sl_pct":  round(sl_pct, 2),
+            "tp_pct":  round(tp_pct, 2),
+            "rr":      round(rr, 1),
+            "method":  f"SL: {sl_method} | TP: {tp_method}",
             "details": " | ".join(details),
         }
 
     except Exception as e:
-        logger.error(f"suggest_sltp error for {symbol}: {e}")
-        # Fallback: 1% SL, 1.5% TP
+        logger.error(f"suggest_sltp error for {symbol}: {e}", exc_info=True)
+        # Fallback an toàn: 1.5% SL, 3% TP (RR 1:2)
         if side == "LONG":
-            sl = entry_price * 0.99
-            tp = entry_price * 1.015
+            sl = round(entry_price * 0.985, decimals)
+            tp = round(entry_price * 1.030, decimals)
         else:
-            sl = entry_price * 1.01
-            tp = entry_price * 0.985
+            sl = round(entry_price * 1.015, decimals)
+            tp = round(entry_price * 0.970, decimals)
         return {
-            "sl": round(sl, _price_decimals(entry_price)),
-            "tp": round(tp, _price_decimals(entry_price)),
-            "sl_pct": 1.0,
-            "tp_pct": 1.5,
-            "rr": 1.5,
-            "method": "Fallback 1%/1.5%",
+            "sl":      sl,
+            "tp":      tp,
+            "sl_pct":  1.5,
+            "tp_pct":  3.0,
+            "rr":      2.0,
+            "method":  "Fallback 1.5%/3%",
             "details": f"Error: {e}",
         }
 

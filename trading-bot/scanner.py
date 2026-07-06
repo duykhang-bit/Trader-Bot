@@ -2,11 +2,16 @@
 # MULTI-COIN SCANNER — Tự quét coin, chọn cái tốt nhất vào lệnh
 # ============================================================
 import logging
+import time
 import requests
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional, List
-from indicators import get_signal, calculate_rsi, calculate_ema, calculate_atr, get_mtf_trend, is_volatile_coin, get_pullback_signal
+from indicators import (
+    get_signal, calculate_rsi, calculate_ema, calculate_atr,
+    get_mtf_trend, is_volatile_coin, get_pullback_signal,
+    get_smart_entry_signal, compute_signal_score,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +355,96 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
     logger.info(f"  Active: {len(quick_scores)} candidates → MTF check all")
     top15 = sorted(quick_scores, key=lambda x: x.score, reverse=True)
 
+    # ── Cleanup expired pending entries ──────────────────────────────
+    now_ts = time.time()
+    expired = [s for s, v in _pending_watch.items() if now_ts - v["ts"] > _PENDING_TTL]
+    for s in expired:
+        logger.info(f"  🗑  PENDING expired: {s}")
+        _pending_watch.pop(s, None)
+
+    # ── Retry pending coins ──────────────────────────────────────────
+    # Mỗi lần scan_market chạy → check lại tất cả coin đang pending
+    # Nếu 4 bước pass → add vào candidates ngay, không chờ
+    if _pending_watch:
+        logger.info(f"  🔄 Retrying {len(_pending_watch)} pending coins...")
+        for p_sym, p_info in list(_pending_watch.items()):
+            try:
+                p_info["retry"] += 1
+                klines_1h  = exchange.get_klines(p_sym, "1h",  limit=100)
+                klines_4h  = exchange.get_klines(p_sym, "4h",  limit=100)
+                klines_1m  = exchange.get_klines(p_sym, "1m",  limit=60)
+                klines_15m = exchange.get_klines(p_sym, "15m", limit=100)
+                df_1h  = _klines_to_df(klines_1h)
+                df_4h  = _klines_to_df(klines_4h)
+                df_1m  = _klines_to_df(klines_1m)
+                df_15m = _klines_to_df(klines_15m)
+
+                bias = p_info["signal"]   # "LONG" hoặc "SHORT"
+
+                # Re-check tất cả 4 bước ─────────────────────────────
+
+                # Bước 1+2: compute_signal_score lại
+                try:
+                    css = compute_signal_score(df_15m, df_1h, df_4h)
+                except Exception:
+                    css = {"signal": "WAIT", "win_rate": 0,
+                           "long_score": 0, "short_score": 0,
+                           "long_reasons": [], "short_reasons": []}
+
+                css_signal = css["signal"]
+                win_rate   = css["win_rate"]
+
+                if css_signal == "WAIT" or css_signal != bias:
+                    logger.debug(f"  ↻  {p_sym} pending retry#{p_info['retry']}: "
+                                 f"tele={css_signal} WR={win_rate:.0f}% (still waiting)")
+                    continue
+
+                # Bước 3: Win rate gate
+                if win_rate < 65.0:
+                    logger.debug(f"  ↻  {p_sym} pending retry#{p_info['retry']}: "
+                                 f"WR={win_rate:.0f}% < 65%")
+                    continue
+
+                # Bước 4: Smart entry 1m trigger
+                smart = get_smart_entry_signal(df_15m, df_1m, bias)
+                if smart["signal"] == "WAIT":
+                    logger.debug(f"  ↻  {p_sym} pending retry#{p_info['retry']}: "
+                                 f"1m not triggered yet ({smart['reason'][:40]})")
+                    continue
+
+                # ── Tất cả pass → tạo CoinScore và add vào candidates ──
+                _pending_watch.pop(p_sym, None)
+
+                base_score   = p_info["score"]
+                quality_bonus = {"A": 10, "B": 5, "C": 0}.get(smart["quality"], 0)
+                wr_bonus      = 5 if win_rate >= 80 else 0
+                final_score   = min(base_score + quality_bonus + wr_bonus, 100)
+                quality_tag   = {"A": "🎯Smart-A", "B": "⚡Smart-B",
+                                 "C": "Smart-C"}.get(smart["quality"], "")
+                css_reasons   = (css["long_reasons"] if bias == "LONG"
+                                 else css["short_reasons"])
+
+                final = CoinScore(
+                    symbol  = p_sym,
+                    signal  = bias,
+                    score   = final_score,
+                    rsi     = calculate_rsi(df_15m["close"], 14).iloc[-1],
+                    trend   = "BULLISH" if bias == "LONG" else "BEARISH",
+                    atr_pct = (calculate_atr(df_15m["high"], df_15m["low"],
+                                             df_15m["close"]).iloc[-1]
+                               / df_15m["close"].iloc[-1] * 100),
+                    reason  = (f"⟳PENDING→LIVE | WR={win_rate:.0f}% | "
+                               f"{quality_tag} {smart['reason']} | "
+                               + " | ".join(css_reasons[:3]))
+                )
+                candidates.append(final)
+                logger.info(f"  🔔 PENDING→LIVE {p_sym}: {bias} score={final_score} "
+                            f"WR={win_rate:.0f}% [{smart['quality']}] "
+                            f"retry#{p_info['retry']}")
+
+            except Exception as _e:
+                logger.debug(f"  ⚠️  pending retry {p_sym}: {_e}")
+
     # ── Bước 2: MTF full cho top 20 ─────────────────────────────────
     for scored in top15:
         symbol = scored.symbol
@@ -401,6 +496,91 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
             bonus = 15 if mtf["strength"] == "STRONG" else (8 if mtf["strength"] == "MEDIUM" else 3)
             final_score = min(scored.score + bonus, 100)
             mtf_tag = "MTF✅" if mtf["strength"] == "STRONG" else "MTF⚡"
+
+            # ── Bước 1: compute_signal_score — đồng bộ với phân tích Telegram ─
+            # Dùng cùng scoring system RSI/EMA/MACD/BB/Vol/HTF như tele
+            try:
+                css = compute_signal_score(df_15m, df_1h, df_4h)
+            except Exception as _e:
+                logger.debug(f"  compute_signal_score failed {symbol}: {_e}")
+                css = {"signal": "WAIT", "win_rate": 0, "long_score": 0,
+                       "short_score": 0, "long_reasons": [], "short_reasons": []}
+
+            css_signal   = css["signal"]   # LONG / SHORT / WAIT
+            win_rate     = css["win_rate"]  # 0-100%
+            css_reasons  = css["long_reasons"] if scored.signal == "LONG" else css["short_reasons"]
+
+            # ── Bước 2: kiểm tra tín hiệu tele có khớp với scanner không ──
+            # Nếu tele nói WAIT hoặc ngược chiều → chưa đủ điều kiện
+            if css_signal == "WAIT" or css_signal != scored.signal:
+                # Lưu vào _pending_watch để retry lần scan sau
+                _pending_watch[symbol] = {
+                    "signal":   scored.signal,
+                    "score":    final_score,
+                    "bias":     scored.signal,
+                    "win_rate": win_rate,
+                    "ts":       time.time(),
+                    "retry":    0,
+                    "css":      css,
+                }
+                logger.info(
+                    f"  📋 PENDING {symbol}: tele={css_signal} vs scan={scored.signal} "
+                    f"WR={win_rate:.0f}% → watch list ({len(_pending_watch)} pending)"
+                )
+                continue
+
+            # ── Bước 3: Win rate gate — cần ≥ 65% mới vào lệnh ──────────
+            WIN_RATE_MIN = 65.0
+            if win_rate < WIN_RATE_MIN:
+                # Lưu pending để theo dõi, nhưng không vào lệnh
+                _pending_watch[symbol] = {
+                    "signal":   scored.signal,
+                    "score":    final_score,
+                    "bias":     scored.signal,
+                    "win_rate": win_rate,
+                    "ts":       time.time(),
+                    "retry":    0,
+                    "css":      css,
+                }
+                logger.info(
+                    f"  📊 LOW WR {symbol}: {scored.signal} score={final_score:.0f} "
+                    f"WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}% → pending"
+                )
+                continue
+
+            # ── Bước 4: Smart Entry — 1m + 15m timing ───────────────────
+            smart = get_smart_entry_signal(df_15m, df_1m, scored.signal)
+
+            if smart["signal"] == "WAIT":
+                # Signal OK + WR OK nhưng 1m chưa có trigger → pending
+                _pending_watch[symbol] = {
+                    "signal":   scored.signal,
+                    "score":    final_score,
+                    "bias":     scored.signal,
+                    "win_rate": win_rate,
+                    "ts":       time.time(),
+                    "retry":    0,
+                    "css":      css,
+                }
+                logger.info(
+                    f"  ⏳ SMART WAIT {symbol}: {scored.signal} score={final_score:.0f} "
+                    f"WR={win_rate:.0f}% | 1m: {smart['reason'][:50]} → pending"
+                )
+                continue
+
+            # ── Tất cả 4 bước pass → vào lệnh ──────────────────────────
+            # Xóa khỏi pending nếu có
+            _pending_watch.pop(symbol, None)
+
+            # Cộng bonus theo chất lượng smart entry và win rate
+            quality_bonus  = {"A": 10, "B": 5,  "C": 0}.get(smart["quality"], 0)
+            wr_bonus       = 5 if win_rate >= 80 else 0
+            final_score    = min(final_score + quality_bonus + wr_bonus, 100)
+            quality_tag    = {"A": "🎯Smart-A", "B": "⚡Smart-B", "C": "Smart-C"}.get(smart["quality"], "")
+            wr_tag         = f"WR={win_rate:.0f}%"
+
+            css_reasons_str = " | ".join(css_reasons[:4]) if css_reasons else ""
+
             final = CoinScore(
                 symbol=symbol,
                 signal=scored.signal,
@@ -408,14 +588,14 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
                 rsi=scored.rsi,
                 trend=scored.trend,
                 atr_pct=scored.atr_pct,
-                reason=scored.reason + f" | {mtf_tag} {mtf['detail']}"
+                reason=scored.reason + f" | {mtf_tag} {mtf['detail']} | {quality_tag} {smart['reason']} | {wr_tag} {css_reasons_str}"
             )
 
             if final.score >= min_score:
                 candidates.append(final)
-                logger.info(f"  ✅ {symbol}: {final.signal} score={final.score} | {final.reason}")
+                logger.info(f"  ✅ {symbol}: {final.signal} score={final.score} WR={win_rate:.0f}% [{smart['quality']}] | {final.reason[:100]}")
             else:
-                logger.info(f"  📊 {symbol}: {final.signal} score={final.score} (below {min_score})")
+                logger.info(f"  📊 {symbol}: {final.signal} score={final.score} WR={win_rate:.0f}% (below {min_score})")
 
         except Exception as e:
             logger.debug(f"  ⚠️  {symbol} MTF skip: {e}")
@@ -435,7 +615,14 @@ def scan_market(exchange, config, min_score: float = 40.0) -> Optional[CoinScore
 
 scan_market._last_candidates = []
 
-
+# ── Pending watch: coin pass MTF nhưng 1m chưa trigger ──────
+# {symbol: {"signal": "LONG"/"SHORT", "score": float,
+#            "bias": str, "ts": float, "retry": int,
+#            "df_15m": df, "df_1m": df}}
+# Tồn tại tối đa 10 phút (10 lần scan × 60s), sau đó tự xóa
+_pending_watch: dict = {}
+_PENDING_TTL       = 600   # giây — 10 phút
+_PENDING_MAX_RETRY = 10    # tối đa 10 lần retry
 def _klines_to_df(klines: list) -> pd.DataFrame:
     df = pd.DataFrame(klines, columns=[
         "open_time", "open", "high", "low", "close", "volume",
