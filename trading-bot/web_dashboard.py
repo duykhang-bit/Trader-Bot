@@ -114,6 +114,15 @@ async function apiPost(url, body={}) {
 }
 
 async function toggleBot() { await apiPost('/api/toggle'); refresh(); }
+async function toggleOrphan(enabled) {
+    await apiPost('/api/set_auto_cancel', {enabled: enabled});
+    refresh();
+}
+async function cancelAllPending() {
+    if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
+    await apiPost('/api/cancel_all_pending');
+    refresh();
+}
 async function addCoin() {
     const inp = document.getElementById('add-coin-input');
     let sym = inp.value.trim().toUpperCase();
@@ -187,6 +196,17 @@ function renderDashboard(d) {
             </button>
             <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
             <span style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
+        </div>
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:12px">
+            <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="toggle-orphan" ${d.auto_cancel_orphan ? 'checked' : ''}
+                    onchange="toggleOrphan(this.checked)"
+                    style="width:14px;height:14px;cursor:pointer">
+                <span>🧹 Tự động huỷ lệnh entry chờ không có vị thế</span>
+            </label>
+            <button class="btn btn-red btn-sm" onclick="cancelAllPending()" style="margin-left:8px">
+                &#x1F5D1; Huỷ tất cả lệnh chờ ngay
+            </button>
         </div>
     </div>`;
 
@@ -577,6 +597,7 @@ def api_state():
 
     resp = jsonify({
         "running": s.get("running", False),
+        "auto_cancel_orphan": s.get("auto_cancel_orphan", False),
         "balance": s.get("balance", 0),
         "today_pnl": today_pnl, "total_pnl": total_pnl, "unrealized": unrealized,
         "win_rate": wr, "total_trades": len(closed),
@@ -606,6 +627,63 @@ def api_state():
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
+
+
+@app.route("/api/set_auto_cancel", methods=["POST"])
+def api_set_auto_cancel():
+    """Bật/tắt tự động huỷ lệnh entry chờ không có vị thế."""
+    data = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    with _lock:
+        _state["auto_cancel_orphan"] = enabled
+    msg = "✅ Bật tự động huỷ lệnh chờ không có vị thế" if enabled else "⏸ Tắt tự động huỷ — lệnh manual được giữ"
+    logger.info(f"[AutoCancel] {msg}")
+    return jsonify({"ok": True, "msg": msg, "enabled": enabled})
+
+
+@app.route("/api/cancel_all_pending", methods=["POST"])
+def api_cancel_all_pending():
+    """Huỷ ngay tất cả lệnh LIMIT entry đang chờ không có vị thế."""
+    if not _exchange:
+        return jsonify({"ok": False, "msg": "Exchange not connected"})
+    try:
+        # Lấy positions đang mở
+        all_pos = _exchange._get("/fapi/v2/positionRisk", signed=True)
+        open_syms = {p["symbol"] for p in all_pos
+                     if abs(float(p.get("positionAmt", 0))) > 0}
+
+        # Lấy tất cả lệnh đang chờ
+        all_orders = _exchange._get("/fapi/v1/openOrders", signed=True)
+
+        cancelled = []
+        kept = []
+        for o in all_orders:
+            sym      = o.get("symbol", "")
+            otype    = o.get("type", "")
+            reduce   = o.get("reduceOnly", False)
+            order_id = o.get("orderId")
+
+            # Chỉ huỷ lệnh ENTRY (không phải SL/TP reduceOnly)
+            # và coin đó không có position
+            if not reduce and sym not in open_syms:
+                try:
+                    _exchange._delete("/fapi/v1/order",
+                                      {"symbol": sym, "orderId": order_id})
+                    cancelled.append(f"{sym} {otype}")
+                except Exception as e:
+                    logger.error(f"Cancel order {sym} {order_id}: {e}")
+            else:
+                kept.append(f"{sym} {otype}")
+
+        msg = (f"🗑 Đã huỷ {len(cancelled)} lệnh chờ:\n"
+               + "\n".join(f"• {c}" for c in cancelled[:10])
+               + (f"\n⚠️ Còn {len(cancelled)-10} lệnh..." if len(cancelled) > 10 else "")
+               + (f"\n✅ Giữ lại {len(kept)} lệnh có vị thế" if kept else ""))
+        logger.info(f"[CancelPending] {msg}")
+        return jsonify({"ok": True, "msg": msg, "cancelled": len(cancelled)})
+    except Exception as e:
+        logger.error(f"cancel_all_pending error: {e}")
+        return jsonify({"ok": False, "msg": str(e)})
 
 
 def _get_ai_bias_safe():

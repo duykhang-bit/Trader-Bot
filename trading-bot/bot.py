@@ -1531,6 +1531,16 @@ def orphan_order_cleanup(exchange, notifier):
                             cancelled.append(f"{sym} ({o.get('type', '')})")
                         except Exception:
                             pass
+
+                    # Auto cancel entry orders nếu được bật
+                    if (sym and sym not in open_syms
+                            and not o.get("reduceOnly", False)
+                            and state.get("auto_cancel_orphan", False)):
+                        try:
+                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
+                            cancelled.append(f"{sym} ({o.get('type','')} entry-orphan)")
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
