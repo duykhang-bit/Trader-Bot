@@ -1585,78 +1585,75 @@ def memory_cleanup():
 # ============================================================
 def pending_order_reviewer(exchange, notifier):
     """
-    Mỗi 15 phút:
+    Mỗi 4 tiếng (nếu auto_cancel_orphan=True):
     1. Lấy tất cả pending limit orders
     2. Kiểm tra xu hướng hiện tại (EMA, RSI)
     3. Nếu lệnh LONG nhưng xu hướng BEARISH → hủy
     4. Nếu lệnh SHORT nhưng xu hướng BULLISH → hủy
     5. Nếu giá đã đi xa quá (>3%) khỏi entry → hủy
+
+    CHÚ Ý: chỉ chạy khi state["auto_cancel_orphan"] = True
+    Nếu False → giữ nguyên tất cả lệnh chờ (manual order mode)
     """
     from indicators import calculate_rsi, calculate_ema
     from scanner import _klines_to_df
 
-    # Đợi 5 phút sau khi bot start mới bắt đầu review
+    # Đợi 5 phút sau khi bot start
     time.sleep(300)
 
     while state["running"]:
         try:
+            # ── Chỉ chạy khi user bật toggle trên web ──────────
+            if not state.get("auto_cancel_orphan", False):
+                time.sleep(900)  # check lại sau 15 phút
+                continue
+
             # Lấy pending orders
             all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
             limit_orders = [o for o in all_orders if o.get("type") == "LIMIT"
                            and not o.get("reduceOnly", False)]
 
             if not limit_orders:
-                time.sleep(900)  # 15 phút
+                time.sleep(14400)  # 4 tiếng
                 continue
 
             cancelled = []
             for order in limit_orders:
                 sym = order.get("symbol", "")
-                side = order.get("side", "")  # BUY = LONG, SELL = SHORT
+                side = order.get("side", "")
                 order_price = float(order.get("price", 0))
-                order_id = order.get("orderId", "")
 
                 try:
-                    # Lấy giá hiện tại
                     current_price = exchange.get_ticker_price(sym)
 
-                    # Check 1: giá đã đi xa quá 3% khỏi entry → hủy
+                    # Check 1: giá đi xa quá 3%
                     dist_pct = abs(current_price - order_price) / order_price * 100
                     if dist_pct > 3:
                         exchange.cancel_all_orders(sym)
                         cancelled.append(f"{sym} (giá xa {dist_pct:.1f}%)")
-                        logger.info(f"[PendingReview] Cancelled {sym}: price moved {dist_pct:.1f}% from order")
+                        logger.info(f"[PendingReview] Cancelled {sym}: price moved {dist_pct:.1f}%")
                         continue
 
-                    # Lấy klines 15m để check xu hướng
+                    # Check 2: xu hướng ngược
                     klines = exchange.get_klines(sym, "15m", limit=50)
                     df = _klines_to_df(klines)
                     close = df["close"]
-
                     rsi = calculate_rsi(close, 14).iloc[-1]
                     ema9 = calculate_ema(close, 9).iloc[-1]
                     ema21 = calculate_ema(close, 21).iloc[-1]
 
-                    # Check 2: xu hướng ngược với lệnh → hủy
-                    if side == "BUY":  # LONG order
-                        # Hủy nếu: RSI > 70 (overbought) HOẶC EMA9 < EMA21 (bearish)
+                    if side == "BUY":
                         if rsi > 70 or (ema9 < ema21 and current_price < ema21):
                             exchange.cancel_all_orders(sym)
                             cancelled.append(f"{sym} LONG (xu hướng bearish, RSI={rsi:.0f})")
-                            logger.info(f"[PendingReview] Cancelled LONG {sym}: bearish (RSI={rsi:.0f}, EMA9<EMA21)")
-                            continue
-                    else:  # SELL = SHORT order
-                        # Hủy nếu: RSI < 30 (oversold) HOẶC EMA9 > EMA21 (bullish)
+                    else:
                         if rsi < 30 or (ema9 > ema21 and current_price > ema21):
                             exchange.cancel_all_orders(sym)
                             cancelled.append(f"{sym} SHORT (xu hướng bullish, RSI={rsi:.0f})")
-                            logger.info(f"[PendingReview] Cancelled SHORT {sym}: bullish (RSI={rsi:.0f}, EMA9>EMA21)")
-                            continue
 
                 except Exception as e:
                     logger.debug(f"[PendingReview] Skip {sym}: {e}")
 
-            # Notify nếu có lệnh bị hủy
             if cancelled:
                 notifier.telegram.send(
                     f"🔄 <b>PENDING ORDER REVIEW</b>\n"
@@ -1669,7 +1666,7 @@ def pending_order_reviewer(exchange, notifier):
         except Exception as e:
             logger.error(f"[PendingReview] Error: {e}")
 
-        time.sleep(900)  # 15 phút
+        time.sleep(14400)  # 4 tiếng
 
 
 # ============================================================
