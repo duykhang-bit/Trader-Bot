@@ -946,20 +946,19 @@ def scan_engine(exchange, notifier):
                 cur_p = exchange.get_ticker_price(best.symbol)
 
                 if best.signal == "LONG":
-                    # Near zone: cluster phía dưới gần hơn entry (nếu có)
-                    near_cluster = liq_inst.get_best_entry_cluster(
+                    near_cluster = (liq_inst.get_best_entry_cluster(
                         best.symbol, cur_p, "LONG",
                         min_usd=10_000, cluster_gap_pct=0.012
-                    ) if (liq_inst and liq_inst.is_connected()) else None
+                    ) if (liq_inst and liq_inst.is_connected()) else None)
                     near_zone = (round(near_cluster["entry"], 8)
                                  if near_cluster and near_cluster["entry"] > entry_price
                                  else None)
                     deep_zone = entry_price
                 else:
-                    near_cluster = liq_inst.get_best_entry_cluster(
+                    near_cluster = (liq_inst.get_best_entry_cluster(
                         best.symbol, cur_p, "SHORT",
                         min_usd=10_000, cluster_gap_pct=0.012
-                    ) if (liq_inst and liq_inst.is_connected()) else None
+                    ) if (liq_inst and liq_inst.is_connected()) else None)
                     near_zone = (round(near_cluster["entry"], 8)
                                  if near_cluster and near_cluster["entry"] < entry_price
                                  else None)
