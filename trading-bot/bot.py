@@ -541,13 +541,27 @@ def price_updater(exchange):
 # THREAD 2: Trade engine mỗi 60 giây
 # ============================================================
 def calc_qty(balance, entry, sl, symbol="", exchange=None):
-    # Luôn dùng MAX_ORDER_USDT làm margin mỗi lệnh
-    max_notional = config.MAX_ORDER_USDT * config.LEVERAGE
-    qty = max_notional / entry
+    # ── Kelly sizing — dùng win rate thực tế từ trade_log ──────
+    try:
+        from quant_sizing import calc_kelly_qty
+        with lock:
+            tlog = list(state.get("trade_log", []))
+        qty = calc_kelly_qty(
+            balance    = balance,
+            entry_price= entry,
+            sl_price   = sl,
+            trade_log  = tlog,
+            max_usdt   = config.MAX_ORDER_USDT,
+            leverage   = config.LEVERAGE,
+        )
+    except Exception as _ke:
+        logger.debug(f"Kelly sizing failed: {_ke}, fallback to fixed")
+        # Fallback: dùng MAX_ORDER_USDT cố định
+        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry if entry > 0 else 1.0
 
     # Lấy stepSize + maxQty từ Binance API nếu có
-    step = 1.0
-    max_qty = None
+    step     = 1.0
+    max_qty  = None
     decimals = 0
     if exchange and symbol:
         try:
@@ -557,18 +571,18 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
 
     # Fallback cap nếu không lấy được từ API
     if max_qty is None:
-        if entry >= 10000:    max_qty = 100
-        elif entry >= 1000:   max_qty = 1000
-        elif entry >= 100:    max_qty = 10000
-        elif entry >= 10:     max_qty = 100000
-        elif entry >= 1:      max_qty = 500000
-        elif entry >= 0.1:    max_qty = 50000
-        elif entry >= 0.01:   max_qty = 20000
-        else:                 max_qty = 10000
+        if entry >= 10000:  max_qty = 100
+        elif entry >= 1000: max_qty = 1000
+        elif entry >= 100:  max_qty = 10000
+        elif entry >= 10:   max_qty = 100000
+        elif entry >= 1:    max_qty = 500000
+        elif entry >= 0.1:  max_qty = 50000
+        elif entry >= 0.01: max_qty = 20000
+        else:               max_qty = 10000
 
     qty = min(qty, max_qty)
 
-    # Hard cap: margin không vượt MAX_ORDER_USDT
+    # Hard cap: margin không vượt MAX_ORDER_USDT × LEVERAGE
     max_margin_qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry
     qty = min(qty, max_margin_qty)
 
@@ -731,6 +745,54 @@ def scan_engine(exchange, notifier):
                             skip_reason = f"MACD hist={hist_val:.5f} (cần âm cho SHORT)"
                     except Exception:
                         pass
+
+                # Filter Q1: Correlation — không vào 2 coin cùng nhóm cùng chiều
+                if not skip_reason:
+                    try:
+                        from quant_correlation import is_correlated_with_open
+                        with lock:
+                            open_pos = list(state.get("open_positions", []))
+                        corr, corr_reason = is_correlated_with_open(
+                            best.symbol, best.signal, open_pos
+                        )
+                        if corr:
+                            skip_reason = f"Corr: {corr_reason}"
+                    except Exception:
+                        pass
+
+                # Filter Q2: Order Flow — delta/CVD xác nhận
+                if not skip_reason:
+                    try:
+                        from quant_orderflow import get_orderflow_signal, orderflow_confirms
+                        klines_of = exchange.get_klines(best.symbol, "15m", limit=50)
+                        df_of     = _klines_to_df(klines_of)
+                        of_result = get_orderflow_signal(df_of, bias=best.signal)
+                        if not orderflow_confirms(of_result, best.signal):
+                            skip_reason = (f"OrderFlow: {of_result['pressure']} ngược "
+                                           f"{best.signal} | {of_result['reason']}")
+                        else:
+                            logger.info(f"[OF] {best.symbol}: {of_result['pressure']} "
+                                        f"score={of_result['score']} CVD={of_result['cvd']:+.0f} "
+                                        f"ratio={of_result['buy_ratio']:.0%}")
+                    except Exception as _e:
+                        logger.debug(f"OrderFlow skip: {_e}")
+
+                # Filter Q3: Volume Profile — VWAP/POC xác nhận
+                if not skip_reason:
+                    try:
+                        from quant_volume_profile import get_vp_signal, vp_confirms
+                        klines_vp = exchange.get_klines(best.symbol, "1h", limit=100)
+                        df_vp     = _klines_to_df(klines_vp)
+                        vp_result = get_vp_signal(df_vp, bias=best.signal, window=50)
+                        ok, vp_reason = vp_confirms(vp_result, best.signal)
+                        if not ok:
+                            skip_reason = f"VP: {vp_reason}"
+                        else:
+                            logger.info(f"[VP] {best.symbol}: {vp_result['price_vs']} "
+                                        f"VWAP={vp_result['vwap']:.4f} POC={vp_result['poc']:.4f} "
+                                        f"score={vp_result['score']}")
+                    except Exception as _e:
+                        logger.debug(f"VolumeProfile skip: {_e}")
 
                 # Filter 3: Liquidity Cluster Entry
                 # ┌────────────────────────────────────────────────────────┐
