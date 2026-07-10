@@ -491,6 +491,22 @@ def price_updater(exchange):
                 pnl = p.get("_pnl", 0)
                 sym = p["symbol"]
                 if pnl < -max_loss:
+                    # ── Chỉ tự đóng nếu KHÔNG có SL order trên Binance ──
+                    # Nếu có SL → để Binance tự đóng, không can thiệp
+                    try:
+                        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                        has_sl = any(
+                            o.get("symbol") == sym
+                            and o.get("type") in ("STOP_MARKET", "STOP")
+                            and o.get("reduceOnly", False)
+                            for o in all_orders
+                        )
+                        if has_sl:
+                            logger.debug(f"[MAX LOSS] {sym} pnl=${pnl:.2f} — SL tồn tại trên Binance, để Binance đóng")
+                            continue
+                    except Exception:
+                        pass  # Không lấy được orders → vẫn chạy safety net
+
                     amt = float(p.get("positionAmt", 0))
                     close_side = "SELL" if amt > 0 else "BUY"
                     qty = abs(amt)
@@ -1005,11 +1021,18 @@ def scan_engine(exchange, notifier):
 
                 qty = qty_full  # dùng qty_full cho SL/TP
 
-                time.sleep(1)
-                try: exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
-                except Exception as e: logger.error(f"SL failed: {e}")
-                try: exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
-                except Exception as e: logger.error(f"TP failed: {e}")
+                # ── SL/TP: chỉ đặt ngay khi MARKET order ────────────
+                # LIMIT order: chờ limit_order_monitor phát hiện khớp → đặt SL/TP
+                # Tránh duplicate: không đặt SL/TP trước khi lệnh khớp
+                if order_type_used == "MARKET":
+                    time.sleep(1)
+                    try: exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                    except Exception as e: logger.error(f"SL failed: {e}")
+                    try: exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                    except Exception as e: logger.error(f"TP failed: {e}")
+                else:
+                    # LIMIT: lưu sl/tp vào pending_smart_orders để limit_order_monitor xử lý
+                    logger.info(f"[SL/TP] LIMIT order → chờ khớp, SL/TP sẽ đặt sau khi fill")
 
                 with lock:
                     state["position"]  = best.signal
@@ -1365,16 +1388,34 @@ def limit_order_monitor(exchange, notifier):
                     except Exception as e:
                         logger.debug(f"[LimitMonitor] Check order {order_id}: {e}")
 
-            # ── B. Auto SL/TP cho positions mới (mỗi 30s) ──
-            if _time.time() - last_auto_check > 30:
+            # ── B. Auto SL/TP cho positions mới (mỗi 60s) ──
+            # Chỉ đặt nếu position THỰC SỰ không có SL/TP trên Binance
+            # VÀ không có pending entry order chưa khớp (tránh đặt trùng)
+            if _time.time() - last_auto_check > 60:
                 last_auto_check = _time.time()
                 try:
                     from auto_sltp import get_positions_without_sltp, auto_set_sltp
                     liq_tracker = state.get("liq_tracker")
                     unprotected = get_positions_without_sltp(exchange)
+
+                    # Lấy danh sách pending entry orders (chưa khớp)
+                    try:
+                        pending_entry_syms = {
+                            o["symbol"] for o in exchange._get("/fapi/v1/openOrders", signed=True)
+                            if not o.get("reduceOnly", False)
+                               and o.get("type") == "LIMIT"
+                        }
+                    except Exception:
+                        pending_entry_syms = set()
+
                     for pos in unprotected:
-                        logger.info(f"[AutoSLTP] Detected unprotected: {pos['symbol']} {pos['side']}")
-                        auto_set_sltp(exchange, pos["symbol"], pos["side"],
+                        sym = pos["symbol"]
+                        # Bỏ qua nếu còn pending entry order chưa khớp
+                        if sym in pending_entry_syms:
+                            logger.debug(f"[AutoSLTP] Skip {sym}: còn pending entry order")
+                            continue
+                        logger.info(f"[AutoSLTP] Detected unprotected: {sym} {pos['side']}")
+                        auto_set_sltp(exchange, sym, pos["side"],
                                      pos["entry"], pos["qty"], liq_tracker)
                 except Exception as e:
                     logger.debug(f"[AutoSLTP] Check error: {e}")
