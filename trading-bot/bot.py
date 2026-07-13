@@ -811,29 +811,31 @@ def scan_engine(exchange, notifier):
                         logger.debug(f"VolumeProfile skip: {_e}")
 
                 # Filter 3: Liquidity Cluster Entry
-                # ┌────────────────────────────────────────────────────────┐
-                # │  Dùng get_best_entry_cluster() để tìm vùng liq tối ưu │
-                # │  SHORT: entry tại đáy cluster phía trên (dễ khớp)     │
-                # │  LONG:  entry tại đỉnh cluster phía dưới (dễ khớp)   │
-                # │  SL: ngoài cluster + 0.2% buffer                      │
-                # │  TP: cluster lớn nhất USD phía target                 │
-                # └────────────────────────────────────────────────────────┘
                 if not skip_reason:
-                    if liq_inst and liq_inst.is_connected():
+                    # Ưu tiên: websocket tracker (nếu có data)
+                    # Fallback: REST API cache (có data ngay từ đầu)
+                    liq_source = None
+                    if liq_inst and liq_inst.is_connected() and liq_inst.total_liq_usd(best.symbol) > 0:
+                        liq_source = liq_inst
+                        logger.debug(f"[LiqSource] {best.symbol}: dùng WS tracker")
+                    else:
+                        liq_api = state.get("liq_api_cache")
+                        if liq_api and liq_api.is_ready(best.symbol):
+                            liq_source = liq_api
+                            logger.debug(f"[LiqSource] {best.symbol}: dùng REST API cache")
+
+                    if liq_source:
                         cur_price = exchange.get_ticker_price(best.symbol)
 
-                        # Lấy cluster entry tối ưu
-                        cluster = liq_inst.get_best_entry_cluster(
+                        cluster = liq_source.get_best_entry_cluster(
                             symbol        = best.symbol,
                             current_price = cur_price,
                             direction     = best.signal,
                             min_usd       = 30_000,
-                            cluster_gap_pct = 0.008,   # gom bucket trong 0.8%
+                            cluster_gap_pct = 0.008,
                         )
-
                         if not cluster:
-                            # Fallback: thử với ngưỡng thấp hơn
-                            cluster = liq_inst.get_best_entry_cluster(
+                            cluster = liq_source.get_best_entry_cluster(
                                 symbol        = best.symbol,
                                 current_price = cur_price,
                                 direction     = best.signal,
@@ -925,8 +927,8 @@ def scan_engine(exchange, notifier):
                                 )
 
                     else:
-                        # Không có liq data → dùng suggest_sltp fallback
-                        if best.score >= 70:
+                        # Cả WS lẫn REST API cache đều không có data → ATR fallback
+                        if best.score >= 65:
                             try:
                                 from auto_sltp import suggest_sltp
                                 suggestion = suggest_sltp(
@@ -1766,7 +1768,7 @@ if __name__ == "__main__":
     state["_notifier"] = notifier
     state["grids"]     = {}
 
-    # Khởi động Liquidation Tracker
+    # Khởi động Liquidation Tracker (websocket — tích lũy theo thời gian)
     from scanner import WATCHLIST as _wl
     liq_tracker = LiquidationTracker(
         symbols  = list(_wl),
@@ -1775,6 +1777,22 @@ if __name__ == "__main__":
     )
     liq_tracker.start()
     state["liq_tracker"] = liq_tracker
+
+    # Khởi động LiqHeatmapCache (REST API — có data ngay lập tức)
+    # Dùng song song với websocket tracker để có data từ đầu
+    try:
+        from liq_heatmap_api import LiqHeatmapCache
+        liq_api_cache = LiqHeatmapCache(
+            symbols  = list(_wl),
+            interval = "1h",
+            lookback = 24,   # 24h lookback
+        )
+        liq_api_cache.start()
+        state["liq_api_cache"] = liq_api_cache
+        logger.info(f"[LiqAPI] Heatmap cache started for {len(_wl)} symbols")
+    except Exception as _e:
+        logger.warning(f"[LiqAPI] Cache start failed: {_e}")
+        state["liq_api_cache"] = None
 
     # Load lịch sử từ file (nếu có)
     from trade_history import load_history, save_history
