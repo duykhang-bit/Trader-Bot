@@ -49,7 +49,7 @@ except:
 import config
 from exchange import BinanceFutures
 from indicators import calculate_atr, get_signal
-from scanner import scan_market, WATCHLIST, _klines_to_df
+from scanner import scan_market, WATCHLIST, _klines_to_df, _pending_watch
 from notifier import Notifier
 from liquidation_tracker import LiquidationTracker
 from liq_strategy import LiqStrategy, SplitPosition
