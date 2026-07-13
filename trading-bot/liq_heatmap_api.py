@@ -229,18 +229,16 @@ class LiqHeatmapCache:
         self._running = False
 
     def start(self):
-        """Chạy background thread refresh cache."""
+        """Chạy background thread refresh cache — không block main thread."""
         self._running = True
-        # Load lần đầu ngay
-        self._refresh_all()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        # Load lần đầu trong thread riêng, không block
+        self._thread = threading.Thread(target=self._start_async, daemon=True)
         self._thread.start()
-        logger.info(f"[LiqHeatmapCache] Started for {self.symbols}")
+        logger.info(f"[LiqHeatmapCache] Started async for {self.symbols}")
 
-    def stop(self):
-        self._running = False
-
-    def _loop(self):
+    def _start_async(self):
+        """Load lần đầu rồi loop refresh."""
+        self._refresh_all()
         while self._running:
             time.sleep(self.REFRESH_INTERVAL)
             self._refresh_all()
