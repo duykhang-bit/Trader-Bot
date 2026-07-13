@@ -1811,18 +1811,20 @@ if __name__ == "__main__":
     state["liq_tracker"] = liq_tracker
 
     # Khởi động LiqHeatmapCache (REST API — có data ngay lập tức)
-    # Dùng song song với websocket tracker để có data từ đầu
     try:
         from liq_heatmap_api import LiqHeatmapCache
+        print("🔄 Starting LiqHeatmapCache...", flush=True)
         liq_api_cache = LiqHeatmapCache(
             symbols  = list(_wl),
             interval = "1h",
-            lookback = 24,   # 24h lookback
+            lookback = 24,
         )
         liq_api_cache.start()
         state["liq_api_cache"] = liq_api_cache
+        print(f"✅ LiqHeatmapCache started for {len(_wl)} symbols", flush=True)
         logger.info(f"[LiqAPI] Heatmap cache started for {len(_wl)} symbols")
     except Exception as _e:
+        print(f"⚠️ LiqAPI Cache start failed: {_e}", flush=True)
         logger.warning(f"[LiqAPI] Cache start failed: {_e}")
         state["liq_api_cache"] = None
 
@@ -1974,6 +1976,7 @@ if __name__ == "__main__":
     t1ws.start()
 
     trade_engine(exchange, notifier)  # send startup notification
+    print("✅ trade_engine done", flush=True)
 
     t2a = threading.Thread(target=monitor_engine, args=(exchange, notifier), daemon=True)
     t2a.start()
