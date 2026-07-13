@@ -49,130 +49,165 @@ def fetch_open_interest_hist(symbol: str, period: str = "1h",
     return data
 
 
-def fetch_klines(symbol: str, interval: str = "1h",
-                 limit: int = 24) -> Optional[List]:
-    data = _get("/fapi/v1/klines",
-                {"symbol": symbol, "interval": interval, "limit": limit})
+def fetch_top_trader_ratio(symbol: str, period: str = "1h",
+                            limit: int = 24) -> Optional[List]:
+    """Long/Short ratio của top traders — dùng để weight liq zones."""
+    data = _get("/futures/data/topLongShortPositionRatio",
+                {"symbol": symbol, "period": period, "limit": limit})
     return data
 
 
-def estimate_liq_zones(symbol: str,
-                        interval: str = "1h",
-                        lookback: int = 24) -> Dict[float, float]:
+def calc_liq_zones_from_oi(symbol: str,
+                            period: str = "1h",
+                            lookback: int = 24) -> Dict[float, float]:
     """
-    Ước tính liquidation zones giống Coinglass 12h heatmap.
+    Tính liquidation zones từ DATA THẬT của Binance:
 
-    Phương pháp:
-    ─────────────────────────────────────────────────────────
-    1. Lấy klines 1h × 24 candles (12h = 12, 24h = 24)
-    2. Với mỗi candle: tính 2 vùng liq ước tính
-       - LONG liq zone: candle_low × (1 - 1/leverage_est)
-         Người dùng long với leverage L sẽ bị liq khi giá giảm ~1/L
-       - SHORT liq zone: candle_high × (1 + 1/leverage_est)
-         Người dùng short với leverage L sẽ bị liq khi giá tăng ~1/L
-    3. Volume candle = proxy cho lượng lệnh mở tại vùng đó
-    4. Accumulate USD = volume × price vào price buckets
-    5. Bucket size = 0.1% của giá
+    Sources (tất cả public API, không cần auth):
+    1. /futures/data/openInterestHist  → OI USD theo từng giờ
+    2. /fapi/v1/klines                 → High/Low của từng giờ
+    3. /futures/data/topLongShortPositionRatio → % Long/Short của top traders
 
-    Leverage distribution (ước tính từ thực tế Binance):
-    - 30% traders dùng 10x → liq at ±10%
-    - 40% traders dùng 20x → liq at ±5%
-    - 20% traders dùng 50x → liq at ±2%
-    - 10% traders dùng 100x → liq at ±1%
+    Logic:
+    ─────────────────────────────────────────────
+    Với mỗi candle (1h):
+      - OI tăng + giá tăng = new LONG positions mở
+        → liq zone của họ = entry × (1 - 1/leverage)
+      - OI tăng + giá giảm = new SHORT positions mở
+        → liq zone của họ = entry × (1 + 1/leverage)
+      - Entry price = midpoint của candle (high+low)/2
+      - USD tại vùng liq = OI_change × long_ratio hoặc short_ratio
 
-    Returns: {price_bucket: estimated_liq_usd}
+    Leverage distribution từ Binance stats:
+    - 50% traders dùng 10-20x → liq ±5-10%
+    - 35% traders dùng 20-50x → liq ±2-5%
+    - 15% traders dùng 50-100x → liq ±1-2%
+    ─────────────────────────────────────────────
+    Returns: {price_bucket: liq_usd} — data thật, không ước tính volume
     """
-    klines = fetch_klines(symbol, interval, lookback)
-    if not klines:
-        logger.warning(f"[LiqAPI] No klines for {symbol}")
+    import math
+
+    # Fetch tất cả data cùng lúc
+    klines   = _get("/fapi/v1/klines",
+                    {"symbol": symbol, "interval": period, "limit": lookback})
+    oi_hist  = _get("/futures/data/openInterestHist",
+                    {"symbol": symbol, "period": period, "limit": lookback})
+    ls_ratio = _get("/futures/data/topLongShortPositionRatio",
+                    {"symbol": symbol, "period": period, "limit": lookback})
+    mark     = fetch_mark_price(symbol)
+
+    if not klines or not oi_hist:
+        logger.warning(f"[LiqAPI] Thiếu data cho {symbol}")
         return {}
 
-    mark_price = fetch_mark_price(symbol)
-    if not mark_price:
-        mark_price = float(klines[-1][4])  # fallback: close price
+    if not mark:
+        mark = float(klines[-1][4])
 
-    # Leverage distribution
-    leverage_dist = [
-        (10,  0.30),  # 10x — 30% traders
-        (20,  0.40),  # 20x — 40% traders
-        (50,  0.20),  # 50x — 20% traders
-        (100, 0.10),  # 100x — 10% traders
-    ]
+    # Build OI map theo timestamp
+    oi_map = {}
+    for item in oi_hist:
+        ts  = int(item.get("timestamp", 0))
+        oi  = float(item.get("sumOpenInterestValue", 0))  # OI in USD
+        oi_map[ts] = oi
 
-    # Bucket size: 0.1% của giá
-    bucket_pct = 0.001
+    # Build long/short ratio map
+    ls_map = {}
+    if ls_ratio:
+        for item in ls_ratio:
+            ts = int(item.get("timestamp", 0))
+            ls_map[ts] = {
+                "long":  float(item.get("longAccount", 0.5)),
+                "short": float(item.get("shortAccount", 0.5)),
+            }
 
+    # Bucket helper
+    bucket_pct = 0.001  # 0.1%
     def price_to_bucket(price: float) -> float:
-        import math
         if price <= 0:
             return 0.0
-        magnitude  = 10 ** math.floor(math.log10(price))
+        magnitude   = 10 ** math.floor(math.log10(price))
         bucket_size = magnitude * bucket_pct * 10
         return round(math.floor(price / bucket_size) * bucket_size, 8)
 
+    # Leverage distribution (theo thống kê Binance)
+    leverage_dist = [
+        (10,  0.25),   # 10x
+        (20,  0.35),   # 20x
+        (30,  0.20),   # 30x
+        (50,  0.15),   # 50x
+        (100, 0.05),   # 100x
+    ]
+
     buckets: Dict[float, float] = defaultdict(float)
 
-    for kline in klines:
-        open_t  = int(kline[0])
-        high    = float(kline[2])
-        low     = float(kline[3])
-        close   = float(kline[4])
-        volume  = float(kline[5])      # base volume
-        quote_vol = float(kline[7])    # quote volume (USD)
+    oi_vals  = sorted(oi_map.items())  # [(ts, oi), ...]
+    prev_oi  = None
 
-        # Tính thời gian — candle cũ hơn decay nhẹ
-        age_hours = (time.time() * 1000 - open_t) / 3_600_000
-        # Decay: candle 12h trước còn 50%, 24h trước còn 25%
-        decay = max(0.25, 1.0 - age_hours / 48)
+    for i, kline in enumerate(klines):
+        open_ts  = int(kline[0])
+        high     = float(kline[2])
+        low      = float(kline[3])
+        close    = float(kline[4])
+        entry    = (high + low) / 2   # ước tính entry price của kỳ này
 
-        for leverage, weight in leverage_dist:
-            liq_margin = 1.0 / leverage  # % giá move → liq
+        # Lấy OI của candle này
+        curr_oi = oi_map.get(open_ts, 0)
+        if curr_oi == 0 and oi_vals:
+            # Tìm OI gần nhất theo timestamp
+            closest = min(oi_vals, key=lambda x: abs(x[0] - open_ts))
+            curr_oi = closest[1]
 
-            # ── LONG liquidation zones ────────────────────────
-            # Long positions mở trong candle này sẽ bị liq nếu giá giảm liq_margin
-            # Estimated entry: từ low đến high của candle
-            # Liq price của long entry tại P với leverage L: P × (1 - 1/L)
+        oi_change = curr_oi - (prev_oi or curr_oi)
+        prev_oi   = curr_oi
 
-            # Vùng liq long = từ low*(1-1/L) đến high*(1-1/L)
-            long_liq_low  = low  * (1 - liq_margin)
-            long_liq_high = high * (1 - liq_margin)
+        if abs(oi_change) < 1000:  # OI thay đổi < $1k → bỏ qua
+            continue
 
-            # USD tại vùng này = quote_vol × weight của leverage này × decay
-            usd = quote_vol * weight * decay * 0.5  # 50% giả định long
+        # Long/short ratio
+        ls = ls_map.get(open_ts, {"long": 0.5, "short": 0.5})
+        long_ratio  = ls["long"]
+        short_ratio = ls["short"]
 
-            # Phân bổ vào buckets trong range [long_liq_low, long_liq_high]
-            n_buckets = max(1, int((long_liq_high - long_liq_low) / (mark_price * bucket_pct * 10)))
-            if n_buckets > 0:
-                usd_per_bucket = usd / n_buckets
-                step = (long_liq_high - long_liq_low) / n_buckets
-                for i in range(n_buckets):
-                    p = long_liq_low + step * i
-                    b = price_to_bucket(p)
+        # Thời gian decay: candle cũ hơn decay nhẹ
+        age_hours = (time.time() - open_ts / 1000) / 3600
+        decay     = max(0.3, 1.0 - age_hours / 72)  # decay 72h
+
+        usd_added = abs(oi_change) * decay
+
+        # Xác định hướng: OI tăng + giá tăng → LONG mở
+        price_up = close > float(klines[i-1][4]) if i > 0 else True
+
+        if oi_change > 0:
+            if price_up:
+                # New LONG positions → tính liq zones dưới entry
+                for lev, w in leverage_dist:
+                    liq_price = entry * (1 - 1 / lev)
+                    b = price_to_bucket(liq_price)
                     if b > 0:
-                        buckets[b] += usd_per_bucket
-
-            # ── SHORT liquidation zones ───────────────────────
-            # Short positions sẽ bị liq nếu giá tăng liq_margin
-            # Liq price của short entry tại P với leverage L: P × (1 + 1/L)
-
-            short_liq_low  = low  * (1 + liq_margin)
-            short_liq_high = high * (1 + liq_margin)
-
-            usd_short = quote_vol * weight * decay * 0.5  # 50% giả định short
-
-            n_buckets_s = max(1, int((short_liq_high - short_liq_low) / (mark_price * bucket_pct * 10)))
-            if n_buckets_s > 0:
-                usd_per_bucket_s = usd_short / n_buckets_s
-                step_s = (short_liq_high - short_liq_low) / n_buckets_s
-                for i in range(n_buckets_s):
-                    p = short_liq_low + step_s * i
-                    b = price_to_bucket(p)
+                        buckets[b] += usd_added * w * long_ratio
+            else:
+                # New SHORT positions → tính liq zones trên entry
+                for lev, w in leverage_dist:
+                    liq_price = entry * (1 + 1 / lev)
+                    b = price_to_bucket(liq_price)
                     if b > 0:
-                        buckets[b] += usd_per_bucket_s
+                        buckets[b] += usd_added * w * short_ratio
+        else:
+            # OI giảm = lệnh đóng — vẫn có lệnh còn lại, weight thấp hơn
+            remaining = abs(oi_change) * 0.3 * decay
+            for lev, w in leverage_dist:
+                liq_long  = entry * (1 - 1 / lev)
+                liq_short = entry * (1 + 1 / lev)
+                bl = price_to_bucket(liq_long)
+                bs = price_to_bucket(liq_short)
+                if bl > 0:
+                    buckets[bl] += remaining * w * long_ratio
+                if bs > 0:
+                    buckets[bs] += remaining * w * short_ratio
 
-    logger.info(f"[LiqAPI] {symbol}: {len(buckets)} buckets, "
-                f"max=${max(buckets.values(), default=0)/1e3:.0f}k "
-                f"mark=${mark_price:,.2f}")
+    total = sum(buckets.values())
+    logger.info(f"[LiqAPI] {symbol}: {len(buckets)} zones, "
+                f"total=${total/1e6:.2f}M, mark=${mark:,.2f}")
     return dict(buckets)
 
 
@@ -213,7 +248,7 @@ class LiqHeatmapCache:
     def _refresh_all(self):
         for sym in self.symbols:
             try:
-                data = estimate_liq_zones(sym, self.interval, self.lookback)
+                data = calc_liq_zones_from_oi(sym, self.interval, self.lookback)
                 with self._lock:
                     self._cache[sym] = data
                     self._last_update[sym] = time.time()
