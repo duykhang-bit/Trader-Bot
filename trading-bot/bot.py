@@ -575,13 +575,14 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
         # Fallback: dùng MAX_ORDER_USDT cố định
         qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry if entry > 0 else 1.0
 
-    # Lấy stepSize + maxQty từ Binance API nếu có
-    step     = 1.0
-    max_qty  = None
-    decimals = 0
+    # Lấy stepSize + maxQty + min_notional từ Binance API
+    step         = 1.0
+    max_qty      = None
+    decimals     = 0
+    min_notional = 5.0
     if exchange and symbol:
         try:
-            step, max_qty, decimals = exchange.get_qty_precision(symbol)
+            step, max_qty, decimals, min_notional = exchange.get_qty_precision(symbol)
         except Exception:
             pass
 
@@ -607,6 +608,15 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
         qty = int(qty // step) * int(step)
     else:
         qty = round(int(qty / step) * step, decimals)
+
+    # Đảm bảo notional >= min_notional (tránh lỗi 400)
+    import math as _math
+    min_qty_notional = min_notional / entry if entry > 0 else step
+    if step >= 1:
+        min_qty_notional = max(step, int(_math.ceil(min_qty_notional / step)) * int(step))
+    else:
+        min_qty_notional = max(step, round(_math.ceil(min_qty_notional / step) * step, decimals))
+    qty = max(qty, min_qty_notional)
 
     return max(qty, step)
 
@@ -848,83 +858,104 @@ def scan_engine(exchange, notifier):
                         elif cluster["dist_pct"] > 10.0:
                             skip_reason = f"Cluster quá xa {cluster['dist_pct']:.1f}% > 10%"
                         else:
-                            # ── Entry: tại vùng liq (dễ khớp nhất) ──────
-                            entry_price = cluster["entry"]
+                            # ── Check giá đang TIẾN VỀ cluster không ────
+                            # Lấy giá 3 nến 15m gần nhất để xem momentum
+                            klines_check = exchange.get_klines(best.symbol, "15m", limit=5)
+                            df_check = _klines_to_df(klines_check)
+                            price_3ago = df_check["close"].iloc[-4]
+                            price_now  = df_check["close"].iloc[-1]
 
-                            # ── SL: ngoài cluster + buffer ───────────────
-                            sl = cluster["sl_zone"]
-                            # Hard cap SL
                             if best.signal == "LONG":
-                                sl = round(max(sl, entry_price * 0.95), 8)
-                            else:
-                                sl = round(min(sl, entry_price * 1.05), 8)
-
-                            # ── TP: cluster USD lớn nhất phía target ─────
-                            heatmap = liq_inst.get_liq_heatmap(best.symbol) or {}
-                            if best.signal == "LONG":
-                                # TP: cluster lớn nhất phía trên
-                                tp_cluster = liq_inst.get_best_entry_cluster(
-                                    symbol        = best.symbol,
-                                    current_price = entry_price,
-                                    direction     = "SHORT",   # vùng liq phía trên
-                                    min_usd       = 10_000,
-                                    cluster_gap_pct = 0.012,
-                                )
-                                if tp_cluster and tp_cluster["entry"] > entry_price:
-                                    # TP = đáy cluster TP (chốt trước khi cluster bị hit)
-                                    tp = round(tp_cluster["cluster_low"] * 0.999, 8)
-                                else:
-                                    # Fallback: liq lớn nhất USD phía trên
-                                    above = [(p, u) for p, u in heatmap.items()
-                                             if p > cur_price and u >= 10_000]
-                                    if above:
-                                        liq_tp = max(above, key=lambda x: x[1])[0]
-                                        tp = round(liq_tp * 0.998, 8)
-                                    else:
-                                        tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                                # Giá đang giảm về cluster phía dưới → đúng hướng
+                                price_moving_toward = price_now < price_3ago
+                                # Hoặc giá đã ở gần cluster (trong 1%)
+                                near_cluster = cluster["dist_pct"] <= 1.0
                             else:  # SHORT
-                                # TP: cluster lớn nhất phía dưới
-                                tp_cluster = liq_inst.get_best_entry_cluster(
-                                    symbol        = best.symbol,
-                                    current_price = entry_price,
-                                    direction     = "LONG",    # vùng liq phía dưới
-                                    min_usd       = 10_000,
-                                    cluster_gap_pct = 0.012,
-                                )
-                                if tp_cluster and tp_cluster["entry"] < entry_price:
-                                    # TP = đỉnh cluster TP (chốt trước khi cluster bị hit)
-                                    tp = round(tp_cluster["cluster_high"] * 1.001, 8)
-                                else:
-                                    below = [(p, u) for p, u in heatmap.items()
-                                             if p < cur_price and u >= 10_000]
-                                    if below:
-                                        liq_tp = min(below, key=lambda x: -x[1])[0]
-                                        tp = round(liq_tp * 1.002, 8)
-                                    else:
-                                        tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+                                # Giá đang tăng về cluster phía trên → đúng hướng
+                                price_moving_toward = price_now > price_3ago
+                                near_cluster = cluster["dist_pct"] <= 1.0
 
-                            # ── Validate RR ──────────────────────────────
-                            risk   = abs(entry_price - sl)
-                            reward = abs(tp - entry_price)
-                            rr = reward / risk if risk > 0 else 0
-
-                            if rr < 1.5:
-                                skip_reason = f"RR={rr:.1f} < 1.5"
+                            if not price_moving_toward and not near_cluster:
+                                # Giá đang đi ngược → pending, chờ lần scan sau
+                                _pending_watch.pop(best.symbol, None)
+                                skip_reason = (f"Giá chưa tiến về cluster "
+                                               f"({'↗' if price_now > price_3ago else '↘'} "
+                                               f"vs cluster {cluster['dist_pct']:.1f}% away)")
                             else:
-                                order_type_used = "LIMIT"
-                                sweep_done = (
-                                    df["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.002
-                                    if best.signal == "LONG" else
-                                    df["high"].iloc[-1] >= cluster["cluster_high"] * 0.998
-                                )
-                                mode = "SWEEP" if sweep_done else "PENDING"
-                                logger.info(
-                                    f"[ClusterEntry] {best.signal} {best.symbol} {mode} | "
-                                    f"cluster=[{cluster['cluster_low']:.4f}-{cluster['cluster_high']:.4f}] "
-                                    f"${cluster['total_usd']/1e3:.0f}k n={cluster['n_buckets']} | "
-                                    f"entry={entry_price:.6f} dist={cluster['dist_pct']:.1f}% | "
-                                    f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f}"
-                                )
+                                # ── Entry: tại ĐÚNG vùng liq ──────────────
+                                # SHORT: entry = đáy cluster (giá pump lên chạm là vào)
+                                # LONG:  entry = đỉnh cluster (giá dump xuống chạm là vào)
+                                entry_price = cluster["entry"]
+
+                                # ── SL: ngoài cluster + buffer ────────────
+                                sl = cluster["sl_zone"]
+                                if best.signal == "LONG":
+                                    sl = round(max(sl, entry_price * 0.95), 8)
+                                else:
+                                    sl = round(min(sl, entry_price * 1.05), 8)
+
+                                # ── TP: cluster lớn nhất USD phía target ──
+                                heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
+                                if best.signal == "LONG":
+                                    tp_cluster = liq_source.get_best_entry_cluster(
+                                        symbol        = best.symbol,
+                                        current_price = entry_price,
+                                        direction     = "SHORT",
+                                        min_usd       = 10_000,
+                                        cluster_gap_pct = 0.012,
+                                    )
+                                    if tp_cluster and tp_cluster["entry"] > entry_price:
+                                        tp = round(tp_cluster["cluster_low"] * 0.999, 8)
+                                    else:
+                                        above = [(p, u) for p, u in heatmap.items()
+                                                 if p > cur_price and u >= 10_000]
+                                        if above:
+                                            liq_tp = max(above, key=lambda x: x[1])[0]
+                                            tp = round(liq_tp * 0.998, 8)
+                                        else:
+                                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                                else:  # SHORT
+                                    tp_cluster = liq_source.get_best_entry_cluster(
+                                        symbol        = best.symbol,
+                                        current_price = entry_price,
+                                        direction     = "LONG",
+                                        min_usd       = 10_000,
+                                        cluster_gap_pct = 0.012,
+                                    )
+                                    if tp_cluster and tp_cluster["entry"] < entry_price:
+                                        tp = round(tp_cluster["cluster_high"] * 1.001, 8)
+                                    else:
+                                        below = [(p, u) for p, u in heatmap.items()
+                                                 if p < cur_price and u >= 10_000]
+                                        if below:
+                                            liq_tp = min(below, key=lambda x: -x[1])[0]
+                                            tp = round(liq_tp * 1.002, 8)
+                                        else:
+                                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+
+                                # ── Validate RR ──────────────────────────
+                                risk   = abs(entry_price - sl)
+                                reward = abs(tp - entry_price)
+                                rr = reward / risk if risk > 0 else 0
+
+                                if rr < 1.5:
+                                    skip_reason = f"RR={rr:.1f} < 1.5"
+                                else:
+                                    order_type_used = "LIMIT"
+                                    sweep_done = (
+                                        df["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.002
+                                        if best.signal == "LONG" else
+                                        df["high"].iloc[-1] >= cluster["cluster_high"] * 0.998
+                                    )
+                                    mode = "SWEEP" if sweep_done else ("TOWARD" if price_moving_toward else "NEAR")
+                                    logger.info(
+                                        f"[ClusterEntry] {best.signal} {best.symbol} {mode} | "
+                                        f"cluster=[{cluster['cluster_low']:.4f}-{cluster['cluster_high']:.4f}] "
+                                        f"${cluster['total_usd']/1e3:.0f}k | "
+                                        f"entry={entry_price:.6f} dist={cluster['dist_pct']:.1f}% | "
+                                        f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | "
+                                        f"price {'↘' if price_now < price_3ago else '↗'} toward={'Y' if price_moving_toward else 'N'}"
+                                    )
 
                     else:
                         # Cả WS lẫn REST API cache đều không có data → ATR fallback

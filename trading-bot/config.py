@@ -16,6 +16,17 @@ FIXED_COINS = [
     "BNBUSDT",
     "XRPUSDT",
     "SOLUSDT",
+    "NEARUSDT",
+    "HYPEUSDT",
+    "SPCXUSDT",
+    "MAGMAUSDT",
+    "SIRENUSDT",
+    "ZECUSDT",
+    "LINKUSDT",
+    "BELUSDT",
+    "LABUSDT",
+    "TLMUSDT",
+    "VANRYUSDT",
 ]
 
 # --- Binance API ---

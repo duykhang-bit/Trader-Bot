@@ -139,6 +139,7 @@ class BinanceFutures:
                     step = 1.0
                     max_q = 10000.0
                     decimals = 0
+                    min_notional = 5.0
                     for f in s.get("filters", []):
                         # LOT_SIZE: stepSize cho tất cả order types
                         if f["filterType"] == "LOT_SIZE":
@@ -153,10 +154,13 @@ class BinanceFutures:
                             market_max = float(f.get("maxQty", 0))
                             if market_max > 0:
                                 max_q = min(max_q, market_max)
-                    return step, max_q, decimals
+                        # MIN_NOTIONAL: giá trị tối thiểu của lệnh
+                        elif f["filterType"] == "MIN_NOTIONAL":
+                            min_notional = float(f.get("notional", 5.0))
+                    return step, max_q, decimals, min_notional
         except Exception:
             pass
-        return 1.0, 10000.0, 0  # fallback
+        return 1.0, 10000.0, 0, 5.0  # fallback
 
     def get_account_balance(self) -> float:
         """Lấy số dư USDT available"""
