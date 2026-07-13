@@ -486,11 +486,17 @@ def price_updater(exchange):
 
                 state["open_positions"] = open_pos
 
-            # ── Max loss check: đóng lệnh nếu lỗ > $20 (bất kể có SL trên Binance hay không) ──
+            # ── Max loss check: đóng lệnh nếu lỗ > $20 ──
             max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
             for p in open_pos:
                 pnl = p.get("_pnl", 0)
                 sym = p["symbol"]
+                amt = float(p.get("positionAmt", 0))
+
+                # Bỏ qua nếu position = 0 (đã đóng)
+                if abs(amt) == 0:
+                    continue
+
                 if pnl < -max_loss:
                     # ── Chỉ tự đóng nếu KHÔNG có SL order trên Binance ──
                     # Nếu có SL → để Binance tự đóng, không can thiệp
@@ -510,7 +516,6 @@ def price_updater(exchange):
 
                     amt = float(p.get("positionAmt", 0))
                     close_side = "SELL" if amt > 0 else "BUY"
-                    qty = abs(amt)
                     if qty == int(qty):
                         qty = int(qty)
                     try:
