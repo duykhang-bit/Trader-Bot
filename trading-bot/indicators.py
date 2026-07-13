@@ -729,16 +729,15 @@ def compute_signal_score(df_15m: pd.DataFrame, df_1h: pd.DataFrame,
     short_score = len(short_reasons)
     
     # ── Quyết định tín hiệu ────────────────────────────────
-    # Cần ít nhất 3 điểm và hơn bên kia 2 điểm
-    if long_score >= 3 and long_score >= short_score + 2:
+    # Cần ít nhất 3 điểm và hơn bên kia 1 điểm (nới từ 2 xuống 1)
+    if long_score >= 3 and long_score >= short_score + 1:
         signal = "LONG"
         win_rate = min(50 + long_score * 5, 85)
-    elif short_score >= 3 and short_score >= long_score + 2:
+    elif short_score >= 3 and short_score >= long_score + 1:
         signal = "SHORT"
         win_rate = min(50 + short_score * 5, 85)
     else:
         signal = "WAIT"
-        # WAIT vẫn có win rate ước tính nhưng thấp
         dominant = max(long_score, short_score)
         win_rate = min(40 + dominant * 3, 60)
     

@@ -234,22 +234,12 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             return None
 
         # Filter entry quality: chỉ vào lệnh ở vùng giá tốt
-        # SHORT: chỉ short khi RSI >= 40
-        if signal == "SHORT" and rsi < 40:
+        # SHORT: không short khi RSI quá oversold
+        if signal == "SHORT" and rsi < 30:
             return None
-        if signal == "LONG" and rsi > 60:
+        # LONG: không long khi RSI quá overbought
+        if signal == "LONG" and rsi > 70:
             return None
-
-        # Kiểm tra giá đang gần recent high/low (20 nến)
-        recent_high = high.rolling(20).max().iloc[-1]
-        recent_low  = low.rolling(20).min().iloc[-1]
-        price_range = recent_high - recent_low
-        if price_range > 0:
-            price_pos = (current_price - recent_low) / price_range
-            if signal == "SHORT" and price_pos < 0.4:
-                return None
-            if signal == "LONG" and price_pos > 0.6:
-                return None
 
         # --- Chấm điểm ---
         score = 0.0
@@ -431,7 +421,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 )
                 candidates.append(final)
                 logger.info(f"  🔔 PENDING→LIVE {p_sym}: {bias} score={final_score} "
-                            f"WR={win_rate:.0f}% [{smart['quality']}] "
+                            f"WR={win_rate:.0f}% "
                             f"retry#{p_info['retry']}")
 
             except Exception as _e:
