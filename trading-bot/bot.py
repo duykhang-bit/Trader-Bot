@@ -89,12 +89,13 @@ state = {
     "qty":            0.0,
     "candidates":     [],
     "trade_log":      [],
-    "open_positions": [],   # Tất cả positions từ Binance API
+    "open_positions": [],
     "running":        True,
+    "_watchlist":     list(WATCHLIST),  # sync với scanner WATCHLIST
     # --- Liquidation strategy state ---
-    "split_positions": {},  # {symbol: SplitPosition} — các lệnh split đang chờ/mở
-    "liq_data":       {},   # {symbol: total_liq_usd} — để hiển thị dashboard
-    "pending_smart_orders": {},  # {order_id: {symbol, side, qty, sl, tp}} — limit orders chờ fill
+    "split_positions": {},
+    "liq_data":       {},
+    "pending_smart_orders": {},
 }
 lock = threading.Lock()
 
@@ -2052,6 +2053,13 @@ if __name__ == "__main__":
             state=state, state_lock=lock,
             watchlist=WATCHLIST, config=config
         )
+        # Sync watchlist từ file (user đã add/remove coins) vào state
+        if cmd.watchlist:
+            with lock:
+                state["_watchlist"] = list(cmd.watchlist)
+            # Cũng update scanner WATCHLIST để scan đúng coins
+            import scanner as _scanner_mod
+            _scanner_mod.WATCHLIST[:] = cmd.watchlist
         t4 = threading.Thread(target=cmd.run, daemon=True)
         t4.start()
     except Exception as e:
