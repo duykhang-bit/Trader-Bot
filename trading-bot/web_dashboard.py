@@ -842,25 +842,8 @@ def api_place_order():
         price = _exchange.get_ticker_price(symbol)
 
         # Tính qty dùng stepSize thật từ Binance
-        try:
-            import math as _math
-            step, max_q, decimals, min_notional = _exchange.get_qty_precision(symbol)
-        except Exception:
-            step, max_q, decimals, min_notional = 1.0, 100000.0, 0, 5.0
-
-        raw_qty = (usdt * leverage) / price
-        if step >= 1:
-            qty = int(raw_qty // step) * int(step)
-        else:
-            qty = round(int(raw_qty / step) * step, decimals)
-
-        min_qty_by_notional = min_notional / price if price > 0 else step
-        if step >= 1:
-            min_qty_by_notional = max(int(step), int(_math.ceil(min_qty_by_notional / step)) * int(step))
-        else:
-            min_qty_by_notional = max(step, round(_math.ceil(min_qty_by_notional / step) * step, decimals))
-        qty = max(qty, min_qty_by_notional)
-        qty = min(qty, max_q)
+        from qty_utils import calc_qty_precise
+        qty, _qty_info = calc_qty_precise(_exchange, symbol, usdt, leverage, price)
 
         # Smart entry: tìm giá tốt hơn từ chart 1m
         from smart_entry import find_optimal_entry, place_smart_order
@@ -898,24 +881,15 @@ def api_place_order():
 
 
 def _round_qty(symbol: str, qty: float, price: float) -> float:
-    """Round qty theo stepSize phù hợp với giá coin."""
-    # Binance stepSize rules (phổ biến):
-    # BTC: 0.001, ETH: 0.001, SOL: 1, BNB: 0.01, altcoins nhỏ: 1 hoặc 0.1
-    if price >= 10000:   # BTC
-        return round(qty, 3)
-    elif price >= 1000:  # ETH
-        return round(qty, 3)
-    elif price >= 100:   # BNB, SOL
-        return round(qty, 2)
-    elif price >= 10:    # SOL, mid-cap
-        step = 0.1
-        return round(int(qty / step) * step, 1)
-    elif price >= 1:     # altcoins
-        return round(qty, 1)
-    elif price >= 0.01:  # small altcoins
-        return round(qty, 0)
-    else:                # very small
-        return round(qty, 0)
+    """Round qty theo stepSize — fallback khi không có exchange instance."""
+    # Dùng price-based estimate nếu không có exchange
+    if price >= 10000: return round(int(qty / 0.001) * 0.001, 3)
+    if price >= 1000:  return round(int(qty / 0.001) * 0.001, 3)
+    if price >= 100:   return round(int(qty / 0.01) * 0.01, 2)
+    if price >= 10:    return round(int(qty / 0.1) * 0.1, 1)
+    if price >= 1:     return float(int(qty))
+    if price >= 0.01:  return float(int(qty))
+    return float(int(qty))
 
 
 @app.route("/api/ai/run", methods=["POST"])
