@@ -840,15 +840,27 @@ def api_place_order():
 
     try:
         price = _exchange.get_ticker_price(symbol)
-        notional = usdt * leverage
-        qty = notional / price
 
-        # Round qty theo stepSize của Binance
-        qty = _round_qty(symbol, qty, price)
+        # Tính qty dùng stepSize thật từ Binance
+        try:
+            import math as _math
+            step, max_q, decimals, min_notional = _exchange.get_qty_precision(symbol)
+        except Exception:
+            step, max_q, decimals, min_notional = 1.0, 100000.0, 0, 5.0
 
-        # Min notional $5
-        if qty * price < 5.0:
-            qty = _round_qty(symbol, 5.0 / price + 0.01, price)
+        raw_qty = (usdt * leverage) / price
+        if step >= 1:
+            qty = int(raw_qty // step) * int(step)
+        else:
+            qty = round(int(raw_qty / step) * step, decimals)
+
+        min_qty_by_notional = min_notional / price if price > 0 else step
+        if step >= 1:
+            min_qty_by_notional = max(int(step), int(_math.ceil(min_qty_by_notional / step)) * int(step))
+        else:
+            min_qty_by_notional = max(step, round(_math.ceil(min_qty_by_notional / step) * step, decimals))
+        qty = max(qty, min_qty_by_notional)
+        qty = min(qty, max_q)
 
         # Smart entry: tìm giá tốt hơn từ chart 1m
         from smart_entry import find_optimal_entry, place_smart_order

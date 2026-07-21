@@ -1323,18 +1323,29 @@ class TelegramCommandHandler:
 
             rr = abs(final_tp - entry_price) / abs(entry_price - final_sl) if abs(entry_price - final_sl) > 0 else 0
 
-            # ── Bước 3: Tính qty ──
+            # ── Bước 3: Tính qty — dùng stepSize thật từ Binance ──
             price = entry_price
-            qty   = (max_usdt * lev) / price
-            qty   = round(qty, _qty_decimals(price))
-            min_q = _min_qty(price)
-            if qty < min_q:
-                qty = min_q
-                actual_margin = qty * price / lev
-                bal = exchange.get_account_balance()
-                if actual_margin > bal:
-                    self.send(f"❌ Không đủ balance. Cần tối thiểu ${actual_margin:.2f} margin")
-                    return
+            try:
+                step, max_q, decimals, min_notional = exchange.get_qty_precision(symbol)
+            except Exception:
+                step, max_q, decimals, min_notional = 1.0, 100000.0, 0, 5.0
+
+            raw_qty = (max_usdt * lev) / price
+            # Round theo stepSize
+            if step >= 1:
+                qty = int(raw_qty // step) * int(step)
+            else:
+                import math as _math
+                qty = round(int(raw_qty / step) * step, decimals)
+
+            # Đảm bảo notional >= min_notional
+            min_qty_by_notional = min_notional / price if price > 0 else step
+            if step >= 1:
+                min_qty_by_notional = max(int(step), int(_math.ceil(min_qty_by_notional / step)) * int(step))
+            else:
+                min_qty_by_notional = max(step, round(_math.ceil(min_qty_by_notional / step) * step, decimals))
+            qty = max(qty, min_qty_by_notional)
+            qty = min(qty, max_q)
 
             try: exchange.set_leverage(symbol, lev)
             except Exception: pass
