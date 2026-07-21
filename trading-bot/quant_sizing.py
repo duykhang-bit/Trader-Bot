@@ -29,9 +29,9 @@ def calc_kelly_fraction(trade_log: List[Dict],
               and abs(t.get("pnl_usdt", 0)) > 0.001]
 
     if len(closed) < 10:
-        # Chưa đủ data → dùng 1% fixed (conservative)
-        logger.debug(f"[Kelly] Chỉ có {len(closed)} trades, dùng fixed 1%")
-        return 0.01
+        # Chưa đủ data → dùng fixed sizing theo MAX_ORDER_USDT
+        logger.debug(f"[Kelly] Chỉ có {len(closed)} trades, dùng fixed sizing")
+        return None  # None = dùng MAX_ORDER_USDT fallback
 
     # Chỉ lấy lookback trades gần nhất
     recent = sorted(closed, key=lambda t: t.get("time", ""), reverse=True)[:lookback]
@@ -88,9 +88,19 @@ def calc_kelly_qty(balance: float,
     if risk_per_unit <= 0:
         risk_per_unit = entry_price * 0.02  # fallback 2%
 
-    # Kelly qty: risk fraction of balance / risk per unit
-    risk_usd = balance * kelly
-    qty = risk_usd / risk_per_unit
+    # Nếu kelly=None (chưa đủ lịch sử) → dùng max_usdt cố định
+    if kelly is None:
+        qty = (max_usdt * leverage) / entry_price
+        logger.info(f"[Kelly] Chưa đủ lịch sử → fixed sizing: notional=${qty*entry_price:.2f}")
+    else:
+        # Kelly qty: risk fraction of balance / risk per unit
+        risk_usd = balance * kelly
+        qty = risk_usd / risk_per_unit
+        logger.info(
+            f"[Kelly] balance=${balance:.2f} kelly={kelly:.3f} "
+            f"risk_usd=${risk_usd:.2f} risk/unit=${risk_per_unit:.4f} "
+            f"→ qty={qty:.4f} notional=${qty*entry_price:.2f}"
+        )
 
     # Cap theo max_usdt × leverage
     max_notional = max_usdt * leverage
@@ -100,12 +110,6 @@ def calc_kelly_qty(balance: float,
     # Minimum $5 notional
     min_qty = 5.0 / entry_price
     qty = max(qty, min_qty)
-
-    logger.info(
-        f"[Kelly] balance=${balance:.2f} kelly={kelly:.3f} "
-        f"risk_usd=${risk_usd:.2f} risk/unit=${risk_per_unit:.4f} "
-        f"→ qty={qty:.4f} notional=${qty*entry_price:.2f}"
-    )
     return round(qty, 6)
 
 
