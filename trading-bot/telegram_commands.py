@@ -1346,7 +1346,7 @@ class TelegramCommandHandler:
             else:
                 result = place_smart_order(exchange, symbol, signal, qty, entry_info, self.config,
                                             bot_state=self.state, bot_lock=self.lock)
-                entry_price = result.get("price", price)
+                entry_price = result.get("price", entry_price)
                 placed_type = result.get("type", "MARKET")
 
             import time as _time
