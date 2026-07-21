@@ -563,23 +563,8 @@ def price_updater(exchange):
 # THREAD 2: Trade engine mỗi 60 giây
 # ============================================================
 def calc_qty(balance, entry, sl, symbol="", exchange=None):
-    # ── Kelly sizing — dùng win rate thực tế từ trade_log ──────
-    try:
-        from quant_sizing import calc_kelly_qty
-        with lock:
-            tlog = list(state.get("trade_log", []))
-        qty = calc_kelly_qty(
-            balance    = balance,
-            entry_price= entry,
-            sl_price   = sl,
-            trade_log  = tlog,
-            max_usdt   = config.MAX_ORDER_USDT,
-            leverage   = config.LEVERAGE,
-        )
-    except Exception as _ke:
-        logger.debug(f"Kelly sizing failed: {_ke}, fallback to fixed")
-        # Fallback: dùng MAX_ORDER_USDT cố định
-        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry if entry > 0 else 1.0
+    # Dùng MAX_ORDER_USDT cố định từ config — đơn giản, nhất quán
+    qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry if entry > 0 else 1.0
 
     # Lấy stepSize + maxQty + min_notional từ Binance API
     step         = 1.0
