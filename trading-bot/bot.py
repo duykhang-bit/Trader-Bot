@@ -625,6 +625,120 @@ def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: in
         logger.error(f"[WS-Spike] Short {sym} failed: {e}")
 
 
+def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
+    """
+    Xử lý ConfirmedTopSignal — gửi alert + vào SHORT nếu bật AUTO SHORT.
+    Chạy trong thread riêng, không block WS.
+    """
+    try:
+        sym = sig.symbol
+        logger.info(
+            f"[CTD] CONFIRMED TOP: {sym} pump={sig.pump_pct:.0f}% "
+            f"peak={sig.peak_price:,.6g} entry={sig.entry_price:,.6g} "
+            f"SL={sig.sl_price:,.6g} TP={sig.tp_price:,.6g} "
+            f"RR=1:{sig.rr} cond={sig.conditions_passed}/5"
+        )
+
+        # Lưu vào pump_signals cho web
+        sig_dict = {
+            "symbol":       sym,
+            "is_pump_top":  True,
+            "score":        min(sig.conditions_passed * 18, 100),
+            "pump_pct":     sig.pump_pct,
+            "signals":      sig.conditions,
+            "entry_price":  sig.entry_price,
+            "sl_price":     sig.sl_price,
+            "tp1_price":    sig.tp_price,
+            "tp2_price":    sig.tp_price,
+            "atr":          0,
+            "volume_ratio": 0,
+            "rsi":          0,
+            "timestamp":    sig.timestamp,
+            "confidence":   min(sig.conditions_passed * 18, 95),
+            "tiers":        sig.conditions_passed,
+            "source":       "confirmed_top",
+        }
+        with lock:
+            signals = state.get("pump_signals", [])
+            idx = next((i for i, s in enumerate(signals)
+                        if s.get("symbol") == sym), None)
+            if idx is not None:
+                signals[idx] = sig_dict
+            else:
+                signals.append(sig_dict)
+            state["pump_signals"] = signals[-100:]
+
+        # Telegram alert
+        notifier_ref.telegram.send(sig.to_telegram())
+
+        # Auto SHORT nếu bật
+        auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
+        if not auto_short:
+            return
+
+        # Check max positions
+        with lock:
+            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                         if abs(float(p.get("positionAmt", 0))) > 0}
+            n_open = len(state.get("open_positions", []))
+
+        if sym in open_syms or n_open >= config.MAX_OPEN_POSITIONS:
+            logger.info(f"[CTD] Skip SHORT {sym}: already has position or max reached")
+            return
+
+        # Tính qty theo config
+        exchange_ref.set_leverage(sym, config.LEVERAGE)
+        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / sig.entry_price
+        try:
+            step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
+            qty = max(round(int(qty / step) * step, decimals), step)
+        except Exception:
+            qty = round(qty, 3)
+
+        if qty * sig.entry_price < 5.0:
+            logger.warning(f"[CTD] {sym} qty too small")
+            return
+
+        # Vào lệnh SHORT
+        exchange_ref.place_market_order(sym, "SELL", qty)
+        import time as _t; _t.sleep(0.3)
+        try:
+            exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
+        except Exception as e:
+            logger.error(f"[CTD] SL failed {sym}: {e}")
+        try:
+            exchange_ref.place_take_profit_order(sym, "BUY", qty, sig.tp_price)
+        except Exception as e:
+            logger.error(f"[CTD] TP failed {sym}: {e}")
+
+        with lock:
+            state["trade_log"].append({
+                "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": "SHORT",
+                "entry":  sig.entry_price,
+                "sl":     sig.sl_price,
+                "tp":     sig.tp_price,
+                "qty":    qty, "status": "OPEN",
+                "note":   f"confirmed_top_c{sig.conditions_passed}",
+            })
+
+        notifier_ref.telegram.send(
+            f"🔴 <b>AUTO SHORT — CONFIRMED TOP</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {sym}  📈 pump +{sig.pump_pct:.0f}%\n"
+            f"💰 Entry : <b>${sig.entry_price:,.6g}</b>\n"
+            f"🛑 SL    : <b>${sig.sl_price:,.6g}</b>\n"
+            f"🎯 TP    : <b>${sig.tp_price:,.6g}</b>\n"
+            f"📐 RR    : 1:{sig.rr}   📦 Qty: {qty}\n"
+            f"✅ {sig.conditions_passed}/5 điều kiện pass\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(f"[CTD] SHORT placed: {sym} qty={qty} RR=1:{sig.rr}")
+
+    except Exception as e:
+        logger.error(f"[CTD] Handle confirmed top {sig.symbol} failed: {e}")
+
+
 def price_ws_streamer():
     """WebSocket stream giá realtime từ Binance — nhanh hơn REST 30 lần"""
     import websocket as ws_lib
@@ -655,10 +769,30 @@ def price_ws_streamer():
                 with lock:
                     pump_watch = set(state.get("pump_watch_coins", []))
                 if sym in pump_watch:
-                    exc = _ws_exchange_ref[0]
+                    exc  = _ws_exchange_ref[0]
                     noti = _ws_notifier_ref[0]
                     if exc and noti:
+                        # 1. Spike detector (cũ) — detect pump đang xảy ra
                         _ws_pump_spike_check(sym, mark, exc, noti)
+                        # 2. Confirmed top detector (mới) — detect đỉnh đã xác nhận
+                        try:
+                            from confirmed_top_detector import get_ctd
+                            from orderbook_detector import get_ob_tracker
+                            _ctd = get_ctd(config)
+                            _ob  = get_ob_tracker(
+                                "wss://fstream.binance.com" if not config.USE_TESTNET
+                                else "wss://stream.binancefuture.com"
+                            )
+                            _ct_sig = _ctd.on_price_tick(sym, mark, exc, _ob)
+                            if _ct_sig:
+                                import threading as _th
+                                _th.Thread(
+                                    target=_handle_confirmed_top,
+                                    args=(_ct_sig, exc, noti),
+                                    daemon=True
+                                ).start()
+                        except Exception as _cte:
+                            logger.debug(f"[CTD] tick error: {_cte}")
 
         except Exception:
             pass
