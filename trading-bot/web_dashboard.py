@@ -866,6 +866,7 @@ async function refresh(){
         if (_firstRender) {
             saveInputs();
             document.getElementById('content').innerHTML = renderDashboard(d);
+            _pumpRendered = false;  // pump-radar-root vừa được tạo lại → cần render lại
             restoreInputs();
             _firstRender = false;
         } else {
