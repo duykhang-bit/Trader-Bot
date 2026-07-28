@@ -887,7 +887,7 @@ function renderPumpRadar(d) {
                 </div>
                 <div style="display:flex;align-items:center;gap:5px">
                   ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
-                  ${isAlert ? `<button onclick="pumpManualLong('${c.symbol}')"
+                  ${(isAlert && !isStale) ? `<button onclick="pumpManualLong('${c.symbol}')"
                           style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:4px;
                                  padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▲ LONG</button>` : ''}
                   <button onclick="pumpManualShort('${c.symbol}')"
@@ -1726,16 +1726,24 @@ def api_pump_state():
         effective_pump_pct = 0
         is_stale = False
         if sig_d:
-            entry_p = sig_d.get("entry_price", 0)
+            entry_p   = sig_d.get("entry_price", 0)
             sig_score = sig_d.get("score", 0)
             sig_pump  = sig_d.get("pump_pct", 0)
-            # Nếu giá đã về dưới entry 3% → coi signal đã hết hiệu lực
-            if entry_p > 0 and price > 0 and price < entry_p * 0.97:
-                is_stale = True
-                effective_score = 0
+            sig_ts    = sig_d.get("timestamp", 0)
+            age_min   = (time.time() - sig_ts) / 60 if sig_ts else 999
+
+            # Stale nếu:
+            # 1. Giá đã về dưới entry 3% (pump xả về dưới điểm detect)
+            # 2. Hoặc signal cũ hơn 15 phút và không phải confirmed top
+            price_dropped  = entry_p > 0 and price > 0 and price < entry_p * 0.97
+            timed_out      = age_min > 15 and not sig_d.get("is_pump_top", False)
+            is_stale       = price_dropped or timed_out
+
+            if is_stale:
+                effective_score    = 0
                 effective_pump_pct = 0
             else:
-                effective_score = sig_score
+                effective_score    = sig_score
                 effective_pump_pct = sig_pump
 
         rows.append({
