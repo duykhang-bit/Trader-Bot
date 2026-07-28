@@ -1663,6 +1663,86 @@ def pump_scan_engine(exchange, notifier):
                     except Exception as e:
                         logger.debug(f"[PumpEngine] fixed {symbol}: {e}")
 
+            # ── PUMP REVERSAL EXIT ──────────────────────────
+            # Nếu đang giữ SHORT từ pump, coin đó bắt đầu pump lên lại
+            # → đóng SHORT ngay, không chờ SL hit
+            try:
+                with lock:
+                    open_positions = list(state.get("open_positions", []))
+                    pump_shorts = {
+                        p["symbol"]
+                        for p in open_positions
+                        if (p.get("_side") == "SHORT" or float(p.get("positionAmt", 0)) < 0)
+                        and p["symbol"] in pump_coins  # chỉ áp dụng cho pump coins
+                    }
+
+                for symbol in pump_shorts:
+                    # Tìm signal vừa scan cho coin này
+                    sig_dict = next(
+                        (s for s in reversed(state.get("pump_signals", []))
+                         if s.get("symbol") == symbol), None
+                    )
+                    if not sig_dict:
+                        continue
+
+                    pump_pct  = sig_dict.get("pump_pct", 0)
+                    score     = sig_dict.get("score", 0)
+
+                    # Dấu hiệu pump lại: giá đang tăng lên (pump_pct > 5%) và score >= 30
+                    # Tức là coin đã xuống rồi bắt đầu tăng lại
+                    should_exit = pump_pct >= 5.0 and score >= 30
+
+                    if should_exit:
+                        try:
+                            all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+                            pos = next((p for p in all_pos
+                                       if p["symbol"] == symbol
+                                       and abs(float(p.get("positionAmt", 0))) > 0), None)
+                            if not pos:
+                                continue
+
+                            amt   = float(pos["positionAmt"])
+                            qty   = abs(amt)
+                            entry = float(pos.get("entryPrice", 0))
+                            close_price = exchange.get_ticker_price(symbol)
+
+                            # Đóng SHORT → BUY
+                            exchange.place_market_order(symbol, "BUY", qty)
+                            exchange.cancel_all_orders(symbol)
+
+                            pnl = qty * (entry - close_price)
+
+                            # Ghi trade log
+                            with lock:
+                                for t in reversed(state.get("trade_log", [])):
+                                    if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                        t.update({
+                                            "status": "CLOSED",
+                                            "close": close_price,
+                                            "pnl_usdt": round(pnl, 2),
+                                            "pnl_pct": round((entry - close_price) / entry * 100, 2),
+                                        })
+                                        break
+
+                            icon = "✅" if pnl >= 0 else "⚠️"
+                            notifier.telegram.send(
+                                f"🔄 <b>PUMP REVERSAL EXIT</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━\n"
+                                f"🪙 {symbol} đang pump lại +{pump_pct:.1f}%\n"
+                                f"⚡ Đóng SHORT ngay trước khi bị squeeze\n"
+                                f"💰 Entry: ${entry:.6f} → Close: ${close_price:.6f}\n"
+                                f"{icon} PnL: ${pnl:+.2f}\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            logger.info(
+                                f"[PumpEngine] REVERSAL EXIT: {symbol} "
+                                f"pump={pump_pct:.1f}% pnl=${pnl:+.2f}"
+                            )
+                        except Exception as ex:
+                            logger.error(f"[PumpEngine] Reversal exit {symbol}: {ex}")
+            except Exception as ex:
+                logger.error(f"[PumpEngine] Reversal check error: {ex}")
+
             # ── Update scan status cho web ──────────────────
             with lock:
                 st = state.setdefault("pump_scan_status", {})
