@@ -543,47 +543,187 @@ function renderPumpRadar(d) {
     const el = document.getElementById('pump-radar-root');
     if (!el || !d) return;
 
-    const status  = d.status  || {};
-    const coins   = d.coins   || [];
-    const history = d.history || [];
+    const status    = d.status   || {};
+    const coins     = d.coins    || [];
+    const history   = d.history  || [];
     const autoShort = d.auto_short || false;
     const minScore  = d.min_score  || 60;
-    const scanning  = status.scanning || false;
+    const scanning  = status.scanning   || false;
     const scanCount = status.scan_count || 0;
     const lastScan  = status.last_scan  || '--:--';
-
-    // Đếm coin đang cảnh báo
     const alertCoins = coins.filter(c => c.score >= minScore);
 
-    let html = `
-    <div class="pump-radar-wrap">
+    // Vị trí blip trên radar
+    const CX = 110, CY = 110, R = 85;
+    const blips = coins.map((c, i) => {
+        const angle = (i / Math.max(coins.length, 1)) * 360 - 90;
+        const rad   = angle * Math.PI / 180;
+        const dist  = R * (0.3 + 0.7 * (1 - c.score / 100));
+        const x = CX + dist * Math.cos(rad);
+        const y = CY + dist * Math.sin(rad);
+        const isAlert = c.score >= minScore;
+        const isNear  = c.score >= 40 && !isAlert;
+        const col = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a6a';
+        const sz  = isAlert ? 7 : isNear ? 5 : 3.5;
+        const lbl = c.symbol.replace('USDT','');
+        const anim = isAlert ? `<animate attributeName="r" values="${sz};${sz+3};${sz}" dur="1.2s" repeatCount="indefinite"/>` : '';
+        return `<g style="cursor:pointer" onclick="scrollToCoin('${c.symbol}')">
+          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.9">${anim}</circle>
+          <text x="${(x+sz+3).toFixed(1)}" y="${(y+4).toFixed(1)}" font-size="9" fill="${col}" opacity="0.8" font-family="monospace">${lbl}</text>
+        </g>`;
+    }).join('');
 
-      <!-- Header row -->
-      <div class="pump-header-row">
-        <div class="pump-title-block">
-          <div class="pump-radar-icon ${scanning ? 'spinning' : ''}">
-            <svg viewBox="0 0 60 60" width="54" height="54">
-              <circle cx="30" cy="30" r="28" fill="none" stroke="#1a2744" stroke-width="2"/>
-              <circle cx="30" cy="30" r="20" fill="none" stroke="#0d2137" stroke-width="1.5"/>
-              <circle cx="30" cy="30" r="12" fill="none" stroke="#0d2137" stroke-width="1.5"/>
-              <circle cx="30" cy="30" r="3" fill="#f85149"/>
-              <!-- Sweep arm -->
-              <line x1="30" y1="30" x2="30" y2="3" stroke="#f85149" stroke-width="2"
-                    stroke-linecap="round" opacity="0.9"
-                    class="${scanning ? 'radar-arm' : ''}" />
-              <!-- Blip dots -->
-              ${coins.filter(c=>c.score>0).map((_,i)=>{
-                const angle = (i * 137.5) % 360;
-                const rad   = (angle * Math.PI) / 180;
-                const r2    = 8 + (i % 3) * 7;
-                const x2    = 30 + r2 * Math.sin(rad);
-                const y2    = 30 - r2 * Math.cos(rad);
-                const col   = scoreColor(coins[i].score);
-                const sz    = coins[i].score >= minScore ? 3.5 : 2;
-                return `<circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.85"/>`;
-              }).join('')}
-            </svg>
-          </div>
+    const sweepX = (CX + R * Math.sin(Math.PI * 0.3)).toFixed(0);
+    const sweepY = (CY - R * Math.cos(Math.PI * 0.3)).toFixed(0);
+
+    // Build SVG radar
+    const svgRadar = `<svg width="220" height="220" viewBox="0 0 220 220" style="background:#060d14;border-radius:50%;border:1px solid #1a3a2a">
+      <defs>
+        <radialGradient id="swg" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#3fb950" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#3fb950" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <circle cx="110" cy="110" r="90" fill="none" stroke="#1a3a2a" stroke-width="1"/>
+      <circle cx="110" cy="110" r="60" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
+      <circle cx="110" cy="110" r="30" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
+      <line x1="110" y1="22" x2="110" y2="198" stroke="#1a3a2a" stroke-width="0.5"/>
+      <line x1="22" y1="110" x2="198" y2="110" stroke="#1a3a2a" stroke-width="0.5"/>
+      <g style="transform-origin:110px 110px;animation:armSpin 4s linear infinite">
+        <path d="M110,110 L110,20 A90,90 0 0,1 ${sweepX},${sweepY} Z" fill="url(#swg)" opacity="0.7"/>
+        <line x1="110" y1="110" x2="110" y2="22" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round" opacity="0.9"/>
+      </g>
+      <circle cx="110" cy="110" r="3" fill="#3fb950"/>
+      ${blips}
+    </svg>`;
+
+    let html = `
+    <div style="background:#060d14;border:1px solid #1a3a2a;border-radius:12px;padding:16px">
+
+      <!-- Top bar -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:9px;height:9px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;
+                      animation:pulseDot 1.2s ease-in-out infinite"></div>
+          <span style="color:#3fb950;font-size:14px;font-weight:700;letter-spacing:2px">PUMP RADAR</span>
+          <span style="color:#1a4a2a;font-size:11px">Scan #${scanCount} · ${lastScan}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input id="pump-coin-input" placeholder="BANKUSDT"
+                 style="width:110px;font-size:11px;background:#060d14;border-color:#1a3a2a;color:#3fb950"
+                 onkeydown="if(event.key==='Enter')addPumpCoin()">
+          <button class="btn btn-sm" onclick="addPumpCoin()"
+                  style="background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">+ Add</button>
+          <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" id="pump-auto-short" ${autoShort?'checked':''}
+                   onchange="toggleAutoShort(this.checked)" style="accent-color:#f85149">
+            <span style="color:${autoShort?'#f85149':'#2a5a3a'}">${autoShort?'🔴 AUTO SHORT':'⏸ Alert only'}</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Alert banner -->
+      ${alertCoins.length > 0 ? `
+      <div style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.4);border-radius:6px;
+                  padding:8px 12px;margin-bottom:12px;font-size:12px;color:#3fb950">
+        🚨 <b>SẮP VÀO LỆNH:</b>
+        ${alertCoins.map(c=>`<span style="background:rgba(63,185,80,.15);border:1px solid #3fb950;border-radius:4px;padding:2px 8px;margin-left:4px;font-weight:700">${c.symbol.replace('USDT','')} ${c.score}/100</span>`).join('')}
+      </div>` : ''}
+
+      <!-- Radar + Coin list -->
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+
+        <!-- SVG Radar -->
+        <div style="flex-shrink:0;text-align:center">
+          ${svgRadar}
+          <div style="font-size:10px;color:#1a4a2a;margin-top:4px">${coins.length} coin đang quét</div>
+        </div>
+
+        <!-- Coin list -->
+        <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:6px">
+          ${coins.length === 0 ? `
+            <div style="text-align:center;padding:40px 16px;color:#1a3a2a;border:1px dashed #1a3a2a;border-radius:8px;font-size:12px">
+              📡 Thêm coin dev hay pump<br><span style="font-size:10px;color:#0d2a1a">BANK · LAB · SIREN · MAGMA...</span>
+            </div>` :
+          coins.map(c => {
+            const name    = c.symbol.replace('USDT','');
+            const isAlert = c.score >= minScore;
+            const isNear  = c.score >= 40 && !isAlert;
+            const col     = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a4a';
+            const bg      = isAlert ? 'rgba(63,185,80,.08)' : isNear ? 'rgba(210,153,34,.05)' : 'transparent';
+            const bdr     = isAlert ? '1px solid rgba(63,185,80,.4)' : isNear ? '1px solid rgba(210,153,34,.3)' : '1px solid #0d2020';
+            const pStr    = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
+            const status  = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
+            const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
+            const ageStr  = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
+            return `
+            <div id="coin-${c.symbol}"
+                 style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;
+                        ${isAlert?'box-shadow:0 0 10px rgba(63,185,80,.15)':''}">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:14px;font-weight:700;color:${col}">${name}</span>
+                  <span style="font-size:11px;color:#1a5a3a">${pStr}</span>
+                  <span style="font-size:10px;color:${col}">${status}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                  ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
+                  <button onclick="removePumpCoin('${c.symbol}')"
+                          style="background:none;border:none;color:#1a4a3a;cursor:pointer;font-size:15px;padding:0">×</button>
+                </div>
+              </div>
+              <div style="margin-top:6px">
+                <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
+                  <span style="color:#0d3a2a">SCORE</span>
+                  <span style="color:${col};font-weight:700">${c.score}/100</span>
+                </div>
+                <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
+                  <div style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
+                              ${isAlert?'box-shadow:0 0 5px '+col:''}"></div>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">
+                ${c.pump_pct > 0 ? `<span style="color:#d29922">↑${c.pump_pct.toFixed(1)}%</span>` : ''}
+                ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
+                ${c.vol_ratio > 0 ? `<span style="color:#1a5a7a">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
+                ${isAlert && c.entry > 0 ? `
+                  <span style="color:#3fb950;font-weight:600">Entry $${c.entry.toPrecision(4)}</span>
+                  <span style="color:#f85149">SL $${c.sl.toPrecision(4)}</span>
+                  <span style="color:#3fb950">TP $${c.tp1.toPrecision(4)}</span>` : ''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- History -->
+      ${history.filter(h=>h.is_pump_top).length > 0 ? `
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid #0d2a1a">
+        <div style="font-size:10px;color:#1a4a2a;margin-bottom:6px">📋 Tín hiệu gần nhất:</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px">
+          ${history.filter(h=>h.is_pump_top).slice(-6).reverse().map(h=>{
+            const t=new Date(h.timestamp*1000);
+            const tStr=t.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+            const name=(h.symbol||'').replace('USDT','');
+            return `<div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.25);border-radius:5px;padding:4px 8px;font-size:10px">
+              <span style="color:#3fb950;font-weight:700">${name}</span>
+              <span style="color:#d29922;margin-left:3px">+${(h.pump_pct||0).toFixed(1)}%</span>
+              <span style="color:#1a5a3a;margin-left:3px">s=${h.score||0}</span>
+              <span style="color:#0d3a2a;margin-left:3px">${tStr}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+
+    </div>`;
+
+    el.innerHTML = html;
+}
+
+function scrollToCoin(sym) {
+    const el = document.getElementById('coin-'+sym);
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
           <div>
             <div style="font-size:16px;font-weight:700;color:#f85149;letter-spacing:1px">
               🎯 PUMP RADAR
@@ -613,121 +753,6 @@ function renderPumpRadar(d) {
           </label>
         </div>
       </div>
-
-      <!-- Alert banner nếu có đỉnh -->
-      ${alertCoins.length > 0 ? `
-      <div class="pump-alert-banner">
-        ⚠️ <b>${alertCoins.length} ĐỈNH PUMP PHÁT HIỆN</b>:
-        ${alertCoins.map(c=>`<span class="pump-alert-tag">${c.symbol.replace('USDT','')} score=${c.score}</span>`).join(' ')}
-      </div>` : ''}
-
-      <!-- Coin grid -->
-      <div class="pump-coin-grid">
-        ${coins.length === 0 ? `
-          <div style="grid-column:1/-1;text-align:center;padding:32px;color:#484f58">
-            <div style="font-size:32px;margin-bottom:8px">📡</div>
-            <div>Chưa có coin nào.<br>Thêm coin dev hay bơm vào đây để quét nhanh.</div>
-          </div>` : coins.map(c => {
-            const name    = c.symbol.replace('USDT','');
-            const isAlert = c.score >= minScore;
-            const pStr    = c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6);
-            const scorePct= c.score;
-            const barFill = Math.max(0, Math.min(100, scorePct));
-            const col     = scoreColor(c.score);
-            const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
-            const ageStr  = ageSec !== null && ageSec < 3600
-                            ? (ageSec < 60 ? `${ageSec}s ago` : `${Math.floor(ageSec/60)}m ago`)
-                            : '';
-            return `
-            <div class="pump-coin-card ${isAlert ? 'pump-coin-alert' : ''}">
-              <!-- Top row -->
-              <div style="display:flex;justify-content:space-between;align-items:start">
-                <div>
-                  <div style="font-size:15px;font-weight:700;color:${isAlert?'#f85149':'#c9d1d9'}">
-                    ${isAlert ? '🚨' : '📡'} ${name}
-                  </div>
-                  <div style="font-size:12px;color:#8b949e;margin-top:1px">${pStr}</div>
-                </div>
-                <button onclick="removePumpCoin('${c.symbol}')"
-                        style="background:none;border:none;color:#484f58;cursor:pointer;font-size:16px;line-height:1"
-                        title="Xóa khỏi radar">×</button>
-              </div>
-
-              <!-- Score bar -->
-              <div style="margin:8px 0 4px">
-                <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
-                  <span style="color:#8b949e">PUMP SCORE</span>
-                  <span style="color:${col};font-weight:700">${scorePct}/100</span>
-                </div>
-                <div style="background:#0d1117;border-radius:4px;height:6px;overflow:hidden">
-                  <div style="width:${barFill}%;height:100%;background:${col};
-                              border-radius:4px;transition:width 0.5s;
-                              ${isAlert?'box-shadow:0 0 6px '+col:''}"></div>
-                </div>
-              </div>
-
-              <!-- Stats row -->
-              <div style="display:flex;gap:8px;font-size:11px;margin-top:6px;flex-wrap:wrap">
-                ${c.pump_pct > 0 ? `<span style="color:#f85149">📈 +${c.pump_pct.toFixed(1)}%</span>` : ''}
-                ${c.rsi > 0      ? `<span style="color:${c.rsi>70?'#f85149':c.rsi<30?'#3fb950':'#8b949e'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
-                ${c.vol_ratio > 0? `<span style="color:#58a6ff">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
-                ${ageStr         ? `<span style="color:#484f58">${ageStr}</span>` : ''}
-              </div>
-
-              <!-- Alert details -->
-              ${isAlert && c.entry > 0 ? `
-              <div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">
-                <div style="color:#f85149;font-weight:600;margin-bottom:4px">SHORT SIGNAL ▼</div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px">
-                  <span style="color:#8b949e">Entry:</span>
-                  <span style="color:#c9d1d9;font-weight:600">$${c.entry.toPrecision(5)}</span>
-                  <span style="color:#8b949e">SL:</span>
-                  <span style="color:#f85149">$${c.sl.toPrecision(5)}</span>
-                  <span style="color:#8b949e">TP1:</span>
-                  <span style="color:#3fb950">$${c.tp1.toPrecision(5)}</span>
-                </div>
-                ${c.signals && c.signals.length > 0 ? `
-                <div style="margin-top:6px;padding:6px;background:#0d1117;border-radius:4px;font-size:10px;color:#8b949e">
-                  ${c.signals.slice(0,3).join('<br>')}
-                </div>` : ''}
-              </div>` : ''}
-
-              <!-- Scanning indicator -->
-              ${c.score === 0 ? `
-              <div style="margin-top:8px;font-size:10px;color:#484f58;display:flex;align-items:center;gap:4px">
-                <span class="scan-blink">▶</span> Đang quét...
-              </div>` : ''}
-            </div>`;
-        }).join('')}
-      </div>
-
-      <!-- Signal history -->
-      ${history.filter(h=>h.is_pump_top).length > 0 ? `
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">
-        <div style="font-size:12px;color:#8b949e;margin-bottom:8px">📋 Lịch sử tín hiệu gần nhất:</div>
-        <table style="font-size:11px">
-          <tr><th>Coin</th><th>Pump%</th><th>Score</th><th>Entry</th><th>SL</th><th>TP1</th><th>Thời gian</th></tr>
-          ${history.filter(h=>h.is_pump_top).slice(-8).reverse().map(h=>{
-            const t = new Date(h.timestamp*1000);
-            const tStr = t.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-            const name = (h.symbol||'').replace('USDT','');
-            return `<tr>
-              <td><b style="color:#f85149">${name}</b></td>
-              <td style="color:#f85149">+${(h.pump_pct||0).toFixed(1)}%</td>
-              <td><span style="color:${scoreColor(h.score||0)}">${h.score||0}</span></td>
-              <td>$${(h.entry_price||0).toPrecision(4)}</td>
-              <td style="color:#f85149">$${(h.sl_price||0).toPrecision(4)}</td>
-              <td style="color:#3fb950">$${(h.tp1_price||0).toPrecision(4)}</td>
-              <td style="color:#484f58">${tStr}</td>
-            </tr>`;
-          }).join('')}
-        </table>
-      </div>` : ''}
-
-    </div>`;
-
-    el.innerHTML = html;
-}
 
 // Pump radar auto-refresh riêng — nhanh hơn main (2s)
 setInterval(fetchPump, 2000);
