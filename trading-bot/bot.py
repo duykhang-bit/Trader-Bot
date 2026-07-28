@@ -1553,14 +1553,21 @@ def pump_scan_engine(exchange, notifier):
     logger.info("[PumpEngine] Started — watching for pump tops...")
 
     from pump_detector import PumpDetector, _to_df
+    from orderbook_detector import OrderBookTracker
 
-    detector = PumpDetector(config)
+    detector   = PumpDetector(config)
+    ob_tracker = OrderBookTracker()  # Real-time order book cho pump coins
+    logger.info("[PumpEngine] OrderBook tracker initialized")
 
     while state["running"]:
         try:
             # Lấy danh sách pump coins từ state (web có thể add/remove)
             with lock:
                 pump_coins = list(state.get("pump_watch_coins", []))
+
+            # Sync ob_tracker với pump coins hiện tại
+            if pump_coins:
+                ob_tracker.add_symbols(pump_coins)
 
             # Lấy config dynamic
             auto_short   = getattr(config, "PUMP_AUTO_SHORT", False)
@@ -1587,7 +1594,7 @@ def pump_scan_engine(exchange, notifier):
                     df_1m      = _to_df(klines_1m)
                     df_15m     = _to_df(klines_15m)
 
-                    sig = detector.analyze(symbol, df_1m, df_15m)
+                    sig = detector.analyze(symbol, df_1m, df_15m, ob_tracker=ob_tracker)
                     if sig is None:
                         continue
 
@@ -1652,7 +1659,7 @@ def pump_scan_engine(exchange, notifier):
                         klines_15m = exchange.get_klines(symbol, "15m", limit=50)
                         df_1m      = _to_df(klines_1m)
                         df_15m     = _to_df(klines_15m)
-                        sig = detector.analyze(symbol, df_1m, df_15m)
+                        sig = detector.analyze(symbol, df_1m, df_15m, ob_tracker=ob_tracker)
                         if sig and sig.is_pump_top:
                             confirmed_this_round.append(sig)
                             logger.info(f"[PumpEngine] Fixed coin TOP: {symbol} score={sig.score}")

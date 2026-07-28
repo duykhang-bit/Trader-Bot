@@ -125,7 +125,8 @@ class PumpDetector:
     def analyze(self,
                 symbol:  str,
                 df_1m:   pd.DataFrame,
-                df_15m:  Optional[pd.DataFrame] = None) -> Optional[PumpSignal]:
+                df_15m:  Optional[pd.DataFrame] = None,
+                ob_tracker = None) -> Optional[PumpSignal]:  # ob_tracker: OrderBookTracker
         """
         Phân tích coin có đang ở đỉnh pump không.
 
@@ -154,6 +155,21 @@ class PumpDetector:
 
         # Step 2: Chấm điểm đỉnh
         score, signals = self._score_pump_top(df_1m, df_15m, pump_high)
+
+        # Bonus: Order book pressure — ask wall đang đè = xác nhận đỉnh mạnh hơn
+        ob_score = 0
+        if ob_tracker is not None:
+            try:
+                snap = ob_tracker.get_snapshot(symbol)
+                if snap and snap.imbalance_score >= 55:
+                    ob_score = 20  # +20đ nếu order book confirm xả
+                    signals.append(f"📊 OB: ask áp đảo {snap.ask_dominance:.0%} wall={snap.wall_ratio:.1f}×")
+                elif snap and snap.ask_dominance >= 0.58:
+                    ob_score = 10
+                    signals.append(f"📊 OB: ask cao {snap.ask_dominance:.0%}")
+            except Exception:
+                pass
+        score += ob_score
 
         # Step 3: Tính entry / SL / TP
         current_price = df_1m["close"].iloc[-1]
