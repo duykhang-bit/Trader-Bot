@@ -133,11 +133,20 @@ function toast(msg, ok=true) {
 
 async function apiPost(url, body={}) {
     try {
-        const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const r = await fetch(url, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(8000)  // 8s timeout
+        });
         const d = await r.json();
         if (d.ok) toast(d.msg || 'OK'); else toast(d.msg || 'Error', false);
         return d;
-    } catch(e) { toast('Request failed', false); return {ok:false}; }
+    } catch(e) {
+        const msg = e.name === 'TimeoutError' ? 'Request timeout — thử lại' : 'Request failed';
+        toast(msg, false);
+        return {ok:false};
+    }
 }
 
 async function toggleBot() { await apiPost('/api/toggle'); refresh(); }
@@ -1694,7 +1703,7 @@ def api_pump_add_coin():
     with _lock:
         watch = _state.get("pump_watch_coins", [])
         if symbol in watch:
-            return jsonify({"ok": False, "msg": f"{symbol} đã có trong danh sách"})
+            return jsonify({"ok": False, "msg": f"⚠️ {symbol} đã có trong Pump Radar rồi"})
         watch.append(symbol)
         _state["pump_watch_coins"] = watch
 
