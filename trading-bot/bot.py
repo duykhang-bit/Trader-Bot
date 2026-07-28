@@ -1119,6 +1119,163 @@ def monitor_engine(exchange, notifier):
 
 # ============================================================
 # ============================================================
+# THREAD 2a2: Position Reversal Monitor — chốt lời sớm khi đảo chiều
+# Mỗi 10s: scan tất cả open positions
+# Nếu đang có lời + xuất hiện dấu hiệu đảo chiều → đóng ngay
+# ============================================================
+def position_reversal_monitor(exchange, notifier):
+    """
+    Monitor tất cả open positions.
+    Khi đang có lời mà phát hiện đảo chiều → đóng trước khi về entry / dính SL.
+    Điều kiện đảo chiều (cần >= 2/3):
+      1. RSI đảo chiều: SHORT đang lời mà RSI < 35 rồi bật lên > 40
+      2. EMA cross ngược chiều lệnh
+      3. Giá đã chạm TP 50%+ rồi quay đầu > 30% khoảng TP
+    """
+    import time as _time
+    _time.sleep(15)  # Đợi bot ổn định
+    logger.info("[ReversalMon] Started — monitoring all positions for early exit")
+
+    # Track RSI trước đó cho từng symbol
+    _prev_rsi = {}
+    _min_price = {}  # SHORT: giá thấp nhất đạt được
+    _max_price = {}  # LONG: giá cao nhất đạt được
+
+    while state["running"]:
+        try:
+            with lock:
+                open_positions = list(state.get("open_positions", []))
+
+            for pos in open_positions:
+                symbol = pos.get("symbol", "")
+                amt    = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+
+                side       = "SHORT" if amt < 0 else "LONG"
+                entry      = float(pos.get("entryPrice", 0))
+                mark_price = pos.get("_mark", 0) or float(pos.get("markPrice", 0))
+                pnl        = pos.get("_pnl", 0)
+                pnl_pct    = pos.get("_pct", 0)
+
+                if entry <= 0 or mark_price <= 0:
+                    continue
+
+                # Chỉ check khi đang có lời >= 0.5%
+                if pnl_pct < 0.5:
+                    continue
+
+                try:
+                    # Lấy klines 1m để tính indicators
+                    klines = exchange.get_klines(symbol, "1m", limit=30)
+                    df = _klines_to_df(klines)
+                    if df is None or len(df) < 10:
+                        continue
+
+                    rsi_series = calculate_rsi(df["close"], 14)
+                    rsi_now    = rsi_series.iloc[-1]
+                    rsi_prev   = _prev_rsi.get(symbol, rsi_now)
+
+                    ema9  = calculate_ema(df["close"], 9).iloc[-1]
+                    ema21 = calculate_ema(df["close"], 21).iloc[-1]
+                    close = df["close"].iloc[-1]
+
+                    # Track giá cực trị
+                    if side == "SHORT":
+                        if symbol not in _min_price or mark_price < _min_price[symbol]:
+                            _min_price[symbol] = mark_price
+                        min_reached = _min_price[symbol]
+                        # % giá đã đi từ entry xuống đáy
+                        profit_travel = (entry - min_reached) / entry * 100
+                        # % giá đã quay đầu từ đáy lên
+                        pullback = (mark_price - min_reached) / max(min_reached, 0.0001) * 100
+                    else:
+                        if symbol not in _max_price or mark_price > _max_price[symbol]:
+                            _max_price[symbol] = mark_price
+                        max_reached = _max_price[symbol]
+                        profit_travel = (max_reached - entry) / entry * 100
+                        pullback = (max_reached - mark_price) / max(max_reached, 0.0001) * 100
+
+                    # ── Điều kiện đảo chiều ──────────────────
+                    signals = []
+
+                    # 1. RSI đảo chiều
+                    if side == "SHORT":
+                        # SHORT đang lời: RSI đã xuống thấp rồi bật lên (oversold bounce)
+                        if rsi_prev < 38 and rsi_now > rsi_prev + 4:
+                            signals.append(f"RSI bounce {rsi_prev:.0f}→{rsi_now:.0f}")
+                    else:
+                        # LONG đang lời: RSI đã lên cao rồi quay xuống (overbought drop)
+                        if rsi_prev > 62 and rsi_now < rsi_prev - 4:
+                            signals.append(f"RSI drop {rsi_prev:.0f}→{rsi_now:.0f}")
+
+                    # 2. EMA cross ngược chiều
+                    if side == "SHORT" and ema9 > ema21:
+                        signals.append(f"EMA cross UP (9>{21:.0f})")
+                    elif side == "LONG" and ema9 < ema21:
+                        signals.append(f"EMA cross DOWN (9<21)")
+
+                    # 3. Pullback mạnh sau khi đã đi được lời tốt
+                    if profit_travel >= 1.5 and pullback >= 35:
+                        signals.append(f"Pullback {pullback:.0f}% sau khi profit_travel={profit_travel:.1f}%")
+
+                    _prev_rsi[symbol] = rsi_now
+
+                    # Cần >= 2 tín hiệu mới đóng (tránh false positive)
+                    if len(signals) < 2:
+                        continue
+
+                    # ── Đóng position ────────────────────────
+                    qty      = abs(amt)
+                    close_side = "BUY" if side == "SHORT" else "SELL"
+                    cur_price  = exchange.get_ticker_price(symbol)
+
+                    exchange.place_market_order(symbol, close_side, qty)
+                    exchange.cancel_all_orders(symbol)
+
+                    actual_pnl = qty * (entry - cur_price) if side == "SHORT" else qty * (cur_price - entry)
+                    icon = "✅" if actual_pnl >= 0 else "⚠️"
+
+                    # Ghi trade log
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                t.update({
+                                    "status":   "CLOSED",
+                                    "close":    cur_price,
+                                    "pnl_usdt": round(actual_pnl, 2),
+                                    "pnl_pct":  round(pnl_pct, 2),
+                                })
+                                break
+                        # Reset price tracker
+                        _min_price.pop(symbol, None)
+                        _max_price.pop(symbol, None)
+
+                    notifier.telegram.send(
+                        f"🔄 <b>REVERSAL EXIT — Chốt lời sớm</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 {symbol} {side} | Lời {pnl_pct:.1f}%\n"
+                        f"📍 Entry: ${entry:.4f} → Close: ${cur_price:.4f}\n"
+                        f"⚠️ Tín hiệu đảo chiều:\n"
+                        + "\n".join([f"  • {s}" for s in signals]) + "\n"
+                        f"{icon} PnL: <b>${actual_pnl:+.2f}</b>\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    logger.info(
+                        f"[ReversalMon] EXIT {symbol} {side} "
+                        f"pnl={actual_pnl:+.2f} signals={signals}"
+                    )
+
+                except Exception as e:
+                    logger.debug(f"[ReversalMon] {symbol}: {e}")
+
+        except Exception as e:
+            logger.error(f"[ReversalMon] Loop error: {e}")
+
+        _time.sleep(10)
+
+
+# ============================================================
 # THREAD 2b: Scan coin mới và vào lệnh (mỗi LOOP_INTERVAL giây)
 # ============================================================
 def scan_engine(exchange, notifier):
@@ -2751,6 +2908,8 @@ if __name__ == "__main__":
         _t1ws.start()
         _t2a = threading.Thread(target=monitor_engine, args=(exchange, notifier), daemon=True)
         _t2a.start()
+        _t2a2 = threading.Thread(target=position_reversal_monitor, args=(exchange, notifier), daemon=True)
+        _t2a2.start()
         _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
         _t2b.start()
         _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
