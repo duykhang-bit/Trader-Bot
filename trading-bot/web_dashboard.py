@@ -809,6 +809,14 @@ async function refresh(){
         const r = await fetch('/api/state');
         const d = await r.json();
 
+        // Backend chưa init xong (bot đang khởi động)
+        if (d.error) {
+            document.getElementById('content').innerHTML =
+                '<p style="color:#8b949e;text-align:center;padding:40px">⏳ Bot đang khởi động... (' + d.error + ')</p>';
+            _firstRender = true;
+            return;
+        }
+
         // Luôn render dashboard dù bot đang paused hay running
         if (_firstRender) {
             saveInputs();
@@ -819,7 +827,7 @@ async function refresh(){
             _patchDashboard(d);
         }
 
-        // Update trạng thái pause/resume để quản lý _refreshPaused flag
+        // Update trạng thái pause/resume
         if (!d.running) {
             _refreshPaused = true;
         } else if (_refreshPaused) {
@@ -827,7 +835,7 @@ async function refresh(){
         }
     }
     catch(e){
-        document.getElementById('content').innerHTML='<p style="color:#f85149">Connection lost...</p>';
+        document.getElementById('content').innerHTML='<p style="color:#f85149;text-align:center;padding:40px">⚠️ Connection lost — đang thử lại...</p>';
         _firstRender = true;
     }
 }
