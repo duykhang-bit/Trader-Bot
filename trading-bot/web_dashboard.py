@@ -609,11 +609,13 @@ function patchPumpRadar(d) {
         }
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
-            if (c.is_top)        statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
-            else if (c.is_alert) statusEl.textContent = '🚀 Đang pump!';
-            else if (c.score >= minScore) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
-            else if (c.score >= 40)       statusEl.textContent = '🟡 Đang gần';
-            else                          statusEl.textContent = '⚫ Đang quét';
+            const isStale = c.is_stale || false;
+            if (c.is_top)                             statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
+            else if (c.is_alert && !isStale)          statusEl.textContent = '🚀 Đang pump!';
+            else if (c.score >= minScore && !isStale) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
+            else if (c.score >= 40 && !isStale)       statusEl.textContent = '🟡 Đang gần';
+            else if (isStale)                         statusEl.textContent = '⚫ Đã xả — theo dõi';
+            else                                      statusEl.textContent = '⚫ Đang quét';
         }
 
         // Cập nhật pump alert banner bên dưới card nếu có
@@ -842,34 +844,36 @@ function renderPumpRadar(d) {
             const name    = c.symbol.replace('USDT','');
             const isTop   = c.is_top;
             const isAlert = c.is_alert && !isTop;
-            const isNear  = c.score >= 40 && !isTop && !isAlert;
+            const isStale = c.is_stale || false;
+            const isNear  = c.score >= 40 && !isTop && !isAlert && !isStale;
 
             // Màu theo trạng thái:
             // isTop   → đỏ (đỉnh pump, cần SHORT)
             // isAlert → xanh lá (đang pump, có thể LONG)
-            // isNear  → vàng (gần ngưỡng)
-            // default → tối
-            const col = isTop   ? '#f85149'
-                      : isAlert ? '#3fb950'
-                      : isNear  ? '#d29922'
-                      :           '#2d5a4a';
-            const bg  = isTop   ? 'rgba(248,81,73,.08)'
-                      : isAlert ? 'rgba(63,185,80,.08)'
-                      : isNear  ? 'rgba(210,153,34,.05)'
-                      :           'transparent';
-            const bdr = isTop   ? '1px solid rgba(248,81,73,.4)'
-                      : isAlert ? '1px solid rgba(63,185,80,.4)'
-                      : isNear  ? '1px solid rgba(210,153,34,.3)'
-                      :           '1px solid #0d2020';
+            // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
+            // isStale → tối (đã xả xong)
+            const col = isTop    ? '#f85149'
+                      : isAlert  ? '#3fb950'
+                      : isNear   ? '#d29922'
+                      :            '#2d5a4a';
+            const bg  = isTop    ? 'rgba(248,81,73,.08)'
+                      : isAlert  ? 'rgba(63,185,80,.08)'
+                      : isNear   ? 'rgba(210,153,34,.05)'
+                      :            'transparent';
+            const bdr = isTop    ? '1px solid rgba(248,81,73,.4)'
+                      : isAlert  ? '1px solid rgba(63,185,80,.4)'
+                      : isNear   ? '1px solid rgba(210,153,34,.3)'
+                      :            '1px solid #0d2020';
             const shadow = isTop   ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
                          : isAlert ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
                          :           '';
 
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const statusTxt = isTop   ? '🔴 Đỉnh — Vào SHORT!'
-                            : isAlert ? '🚀 Đang pump!'
-                            : isNear  ? '🟡 Đang gần'
-                            :           '⚫ Đang quét';
+            const statusTxt = isTop    ? '🔴 Đỉnh — Vào SHORT!'
+                            : isAlert  ? '🚀 Đang pump!'
+                            : isNear   ? '🟡 Đang gần'
+                            : isStale  ? '⚫ Đã xả — theo dõi'
+                            :            '⚫ Đang quét';
             const ageSec = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
             const ageStr = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
             return `
@@ -1715,19 +1719,39 @@ def api_pump_state():
         sig_d = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
         # Ưu tiên pump_alerts (pump đang lên) nếu chưa có confirmed top
         alert_d = pump_alerts.get(sym)
+
+        # ── Reset score nếu giá đã giảm xa khỏi đỉnh ──────────────
+        # Tránh hiển thị "Đang gần" màu vàng khi coin đã xả xong
+        effective_score = 0
+        effective_pump_pct = 0
+        is_stale = False
+        if sig_d:
+            entry_p = sig_d.get("entry_price", 0)
+            sig_score = sig_d.get("score", 0)
+            sig_pump  = sig_d.get("pump_pct", 0)
+            # Nếu giá đã về dưới entry 3% → coi signal đã hết hiệu lực
+            if entry_p > 0 and price > 0 and price < entry_p * 0.97:
+                is_stale = True
+                effective_score = 0
+                effective_pump_pct = 0
+            else:
+                effective_score = sig_score
+                effective_pump_pct = sig_pump
+
         rows.append({
             "symbol":      sym,
             "price":       price,
-            "pump_pct":    sig_d["pump_pct"]     if sig_d else (alert_d["pump_pct"]    if alert_d else 0),
-            "score":       sig_d["score"]         if sig_d else (alert_d["score"]       if alert_d else 0),
-            "is_top":      sig_d["is_pump_top"]   if sig_d else False,
-            "is_alert":    (not sig_d["is_pump_top"] and sig_d.get("is_alert", False)) if sig_d else bool(alert_d),
+            "pump_pct":    effective_pump_pct if sig_d else (alert_d["pump_pct"] if alert_d else 0),
+            "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
+            "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
+            "is_alert":    (not sig_d["is_pump_top"] and sig_d.get("is_alert", False)) if sig_d and not is_stale else bool(alert_d and not is_stale),
+            "is_stale":    is_stale,
             "rsi":         sig_d["rsi"]            if sig_d else (alert_d["rsi"]         if alert_d else 0),
             "vol_ratio":   sig_d["volume_ratio"]   if sig_d else (alert_d.get("vol_ratio", 0) if alert_d else 0),
             "entry":       sig_d["entry_price"]    if sig_d else (alert_d["price"]       if alert_d else 0),
             "sl":          sig_d["sl_price"]       if sig_d else 0,
             "tp1":         sig_d["tp1_price"]      if sig_d else 0,
-            "signals":     sig_d["signals"]        if sig_d else ([alert_d["reason"]] if alert_d else []),
+            "signals":     sig_d["signals"]        if sig_d and not is_stale else ([alert_d["reason"]] if alert_d else []),
             "ts":          sig_d["timestamp"]      if sig_d else (alert_d["ts"]          if alert_d else 0),
             "alert_reason": alert_d["reason"] if alert_d and not (sig_d and sig_d.get("is_pump_top")) else "",
         })
