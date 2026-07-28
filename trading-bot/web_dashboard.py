@@ -509,13 +509,70 @@ function renderDashboard(d) {
 
 // ── PUMP RADAR ───────────────────────────────────────────────
 let _pumpData = null;
+let _pumpRendered = false;  // track nếu đã render full lần đầu
 
 async function fetchPump() {
     try {
         const r = await fetch('/api/pump');
         _pumpData = await r.json();
-        renderPumpRadar(_pumpData);
+        if (!_pumpRendered) {
+            renderPumpRadar(_pumpData);
+            _pumpRendered = true;
+        } else {
+            patchPumpRadar(_pumpData);  // chỉ update data, không rebuild SVG
+        }
     } catch(e) {}
+}
+
+// Patch nhẹ — chỉ update giá + score + status từng coin card, không động SVG
+function patchPumpRadar(d) {
+    if (!d) return;
+    const coins    = d.coins    || [];
+    const minScore = d.min_score || 60;
+    const status   = d.status   || {};
+
+    // Update scan counter + time
+    const scanEl = document.getElementById('pump-scan-info');
+    if (scanEl) scanEl.textContent = `Scan #${status.scan_count||0} · ${status.last_scan||'--:--'}`;
+
+    // Update từng coin card
+    coins.forEach(c => {
+        const card = document.getElementById('pump-card-' + c.symbol);
+        if (!card) { _pumpRendered = false; return; }  // coin mới → trigger full re-render lần sau
+
+        const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
+        const priceEl = document.getElementById('pump-price-' + c.symbol);
+        if (priceEl && priceEl.textContent !== pStr) priceEl.textContent = pStr;
+
+        const scoreEl = document.getElementById('pump-score-' + c.symbol);
+        if (scoreEl) {
+            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
+            scoreEl.textContent = c.score + '/100';
+            scoreEl.style.color = col;
+        }
+        const barEl = document.getElementById('pump-bar-' + c.symbol);
+        if (barEl) {
+            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
+            barEl.style.width = Math.min(c.score, 100) + '%';
+            barEl.style.background = col;
+        }
+        const statusEl = document.getElementById('pump-status-' + c.symbol);
+        if (statusEl) {
+            const isAlert = c.score >= minScore;
+            const isNear  = c.score >= 40 && !isAlert;
+            statusEl.textContent = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
+        }
+    });
+
+    // Update blip positions trên SVG nếu score thay đổi
+    coins.forEach((c, i) => {
+        const blip = document.getElementById('pump-blip-' + c.symbol);
+        if (!blip) return;
+        const isAlert = c.score >= minScore;
+        const isNear  = c.score >= 40 && !isAlert;
+        const col = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a6a';
+        blip.setAttribute('fill', col);
+    });
 }
 
 async function addPumpCoin() {
@@ -524,11 +581,12 @@ async function addPumpCoin() {
     if (!sym) return;
     if (!sym.endsWith('USDT')) sym += 'USDT';
     const r = await apiPost('/api/pump/coins/add', {symbol: sym});
-    if (r.ok) { inp.value = ''; fetchPump(); }
+    if (r.ok) { inp.value = ''; _pumpRendered = false; fetchPump(); }
 }
 
 async function removePumpCoin(sym) {
     await apiPost('/api/pump/coins/remove', {symbol: sym});
+    _pumpRendered = false;
     fetchPump();
 }
 
@@ -591,7 +649,7 @@ function renderPumpRadar(d) {
         const lbl = c.symbol.replace('USDT','');
         const anim = isAlert ? `<animate attributeName="r" values="${sz};${sz+3};${sz}" dur="1.2s" repeatCount="indefinite"/>` : '';
         return `<g style="cursor:pointer" onclick="scrollToCoin('${c.symbol}')">
-          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.9">${anim}</circle>
+          <circle id="pump-blip-${c.symbol}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.9">${anim}</circle>
           <text x="${(x+sz+3).toFixed(1)}" y="${(y+4).toFixed(1)}" font-size="9" fill="${col}" opacity="0.8" font-family="monospace">${lbl}</text>
         </g>`;
     }).join('');
@@ -629,7 +687,7 @@ function renderPumpRadar(d) {
           <div style="width:9px;height:9px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;
                       animation:pulseDot 1.2s ease-in-out infinite"></div>
           <span style="color:#3fb950;font-size:14px;font-weight:700;letter-spacing:2px">PUMP RADAR</span>
-          <span style="color:#1a4a2a;font-size:11px">Scan #${scanCount} · ${lastScan}</span>
+          <span id="pump-scan-info" style="color:#1a4a2a;font-size:11px">Scan #${scanCount} · ${lastScan}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <input id="pump-coin-input" placeholder="BANKUSDT"
@@ -680,14 +738,14 @@ function renderPumpRadar(d) {
             const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
             const ageStr  = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
             return `
-            <div id="coin-${c.symbol}"
+            <div id="pump-card-${c.symbol}"
                  style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;
                         ${isAlert?'box-shadow:0 0 10px rgba(63,185,80,.15)':''}">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <div style="display:flex;align-items:center;gap:8px">
                   <span style="font-size:14px;font-weight:700;color:${col}">${name}</span>
-                  <span style="font-size:11px;color:#1a5a3a">${pStr}</span>
-                  <span style="font-size:10px;color:${col}">${status}</span>
+                  <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
+                  <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${status}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px">
                   ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
@@ -701,10 +759,10 @@ function renderPumpRadar(d) {
               <div style="margin-top:6px">
                 <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
                   <span style="color:#0d3a2a">SCORE</span>
-                  <span style="color:${col};font-weight:700">${c.score}/100</span>
+                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${c.score}/100</span>
                 </div>
                 <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
-                  <div style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
+                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
                               ${isAlert?'box-shadow:0 0 5px '+col:''}"></div>
                 </div>
               </div>
@@ -747,7 +805,7 @@ function renderPumpRadar(d) {
 }
 
 function scrollToCoin(sym) {
-    const el = document.getElementById('coin-'+sym);
+    const el = document.getElementById('pump-card-'+sym);
     if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 
