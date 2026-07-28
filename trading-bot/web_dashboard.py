@@ -27,6 +27,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trading Bot Dashboard</title>
 <style>
+/* ── Base ── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'JetBrains Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
 .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
@@ -54,109 +55,7 @@ tr:hover { background: #1c2128; }
 .price-item { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 10px; text-align: center; }
 .price-item .coin { font-size: 11px; color: #8b949e; }
 .price-item .price { font-size: 15px; font-weight: bold; color: #c9d1d9; margin-top: 2px; }
-</style>
-<style>
-/* ── Pump Radar ─────────────────────────────────────────── */
-.pump-radar-wrap {
-  background: linear-gradient(135deg, #0d1117 0%, #110a14 100%);
-  border: 1px solid #3d1a1a;
-  border-radius: 12px;
-  padding: 16px;
-  position: relative;
-  overflow: hidden;
-}
-.pump-radar-wrap::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(ellipse at top left, rgba(248,81,73,0.04) 0%, transparent 70%);
-  pointer-events: none;
-}
-.pump-header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.pump-title-block { display: flex; align-items: center; gap: 12px; }
-.pump-controls { text-align: right; }
-.pump-radar-icon { position: relative; }
-.pump-radar-icon.spinning svg { animation: radarSpin 3s linear infinite; }
-@keyframes radarSpin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-.radar-arm { transform-origin: 30px 30px; animation: armSpin 3s linear infinite; }
-@keyframes armSpin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-.pulse-dot {
-  display: inline-block;
-  width: 7px; height: 7px;
-  background: #f85149;
-  border-radius: 50%;
-  margin-left: 4px;
-  vertical-align: middle;
-  animation: pulseDot 1s ease-in-out infinite;
-}
-@keyframes pulseDot {
-  0%,100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.3; transform: scale(0.6); }
-}
-.scan-blink { animation: blinkAnim 1.2s step-end infinite; }
-@keyframes blinkAnim { 0%,100%{opacity:1} 50%{opacity:0} }
-.pump-alert-banner {
-  background: rgba(248,81,73,0.12);
-  border: 1px solid rgba(248,81,73,0.4);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #f85149;
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.pump-alert-tag {
-  background: rgba(248,81,73,0.2);
-  border: 1px solid #f85149;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 700;
-}
-.pump-coin-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px;
-}
-.pump-coin-card {
-  background: #0d1117;
-  border: 1px solid #21262d;
-  border-radius: 10px;
-  padding: 12px;
-  transition: border-color 0.3s;
-}
-.pump-coin-card:hover { border-color: #30363d; }
-.pump-coin-alert {
-  border-color: rgba(248,81,73,0.5) !important;
-  background: rgba(248,81,73,0.04) !important;
-  animation: alertPulse 2s ease-in-out infinite;
-}
-@keyframes alertPulse {
-  0%,100% { box-shadow: 0 0 0   rgba(248,81,73,0); }
-  50%      { box-shadow: 0 0 12px rgba(248,81,73,0.25); }
-}
-@media (max-width: 768px) {
-  .pump-coin-grid { grid-template-columns: repeat(2, 1fr); }
-  .pump-header-row { flex-direction: column; }
-  .pump-controls { text-align: left; }
-}
-</style>
+/* ── Controls ── */
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: 0.2s; }
 .btn-green { background: #238636; color: #fff; } .btn-green:hover { background: #2ea043; }
 .btn-red { background: #da3633; color: #fff; } .btn-red:hover { background: #f85149; }
@@ -175,6 +74,29 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .toast-ok { background: #238636; color: #fff; } .toast-err { background: #da3633; color: #fff; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 768px) { .stats { grid-template-columns: repeat(2, 1fr); } .prices-grid { grid-template-columns: repeat(2, 1fr); } }
+/* ── Pump Radar ── */
+.pump-radar-wrap { background: linear-gradient(135deg,#0d1117 0%,#110a14 100%); border: 1px solid #3d1a1a; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
+.pump-radar-wrap::before { content:''; position:absolute; inset:0; background:radial-gradient(ellipse at top left,rgba(248,81,73,.04) 0%,transparent 70%); pointer-events:none; }
+.pump-header-row { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:14px; }
+.pump-title-block { display:flex; align-items:center; gap:12px; }
+.pump-controls { text-align:right; }
+.pump-radar-icon { position:relative; }
+.pump-radar-icon.spinning svg { animation: radarSpin 3s linear infinite; }
+@keyframes radarSpin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+.radar-arm { transform-origin:30px 30px; animation:armSpin 3s linear infinite; }
+@keyframes armSpin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+.pulse-dot { display:inline-block; width:7px; height:7px; background:#f85149; border-radius:50%; margin-left:4px; vertical-align:middle; animation:pulseDot 1s ease-in-out infinite; }
+@keyframes pulseDot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.6)} }
+.scan-blink { animation:blinkAnim 1.2s step-end infinite; }
+@keyframes blinkAnim { 0%,100%{opacity:1} 50%{opacity:0} }
+.pump-alert-banner { background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.4); border-radius:8px; padding:8px 12px; font-size:12px; color:#f85149; margin-bottom:12px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.pump-alert-tag { background:rgba(248,81,73,.2); border:1px solid #f85149; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; }
+.pump-coin-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+.pump-coin-card { background:#0d1117; border:1px solid #21262d; border-radius:10px; padding:12px; transition:border-color .3s; }
+.pump-coin-card:hover { border-color:#30363d; }
+.pump-coin-alert { border-color:rgba(248,81,73,.5)!important; background:rgba(248,81,73,.04)!important; animation:alertPulse 2s ease-in-out infinite; }
+@keyframes alertPulse { 0%,100%{box-shadow:0 0 0 rgba(248,81,73,0)} 50%{box-shadow:0 0 12px rgba(248,81,73,.25)} }
+@media (max-width:768px) { .pump-coin-grid{grid-template-columns:repeat(2,1fr)} .pump-header-row{flex-direction:column} .pump-controls{text-align:left} }
 </style>
 </head>
 <body>
@@ -295,7 +217,7 @@ function renderDashboard(d) {
                 ${running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot'}
             </button>
             <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
-            <span style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
+            <span id="scan-info" style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
         </div>
         <div class="control-row" style="margin-top:8px;align-items:center;gap:12px">
             <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -367,20 +289,21 @@ function renderDashboard(d) {
 
     // Stats
     html += `<div class="stats">
-        <div class="card"><div class="label">Balance</div><div class="value blue">${fmtUsd(d.balance)}</div></div>
-        <div class="card"><div class="label">Today PnL</div><div class="value ${pnlColor(d.today_pnl)}">${fmtUsd(d.today_pnl)}</div></div>
-        <div class="card"><div class="label">Total PnL</div><div class="value ${pnlColor(d.total_pnl)}">${fmtUsd(d.total_pnl)}</div></div>
-        <div class="card"><div class="label">Unrealized</div><div class="value ${pnlColor(d.unrealized)}">${fmtUsd(d.unrealized)}</div></div>
-        <div class="card"><div class="label">Win Rate</div><div class="value">${fmt(d.win_rate,0)}%</div></div>
-        <div class="card"><div class="label">Trades</div><div class="value">${d.total_trades}</div></div>
+        <div class="card"><div class="label">Balance</div><div id="stat-balance" class="value blue">${fmtUsd(d.balance)}</div></div>
+        <div class="card"><div class="label">Today PnL</div><div id="stat-today-pnl" class="value ${pnlColor(d.today_pnl)}">${fmtUsd(d.today_pnl)}</div></div>
+        <div class="card"><div class="label">Total PnL</div><div id="stat-total-pnl" class="value ${pnlColor(d.total_pnl)}">${fmtUsd(d.total_pnl)}</div></div>
+        <div class="card"><div class="label">Unrealized</div><div id="stat-unrealized" class="value ${pnlColor(d.unrealized)}">${fmtUsd(d.unrealized)}</div></div>
+        <div class="card"><div class="label">Win Rate</div><div id="stat-winrate" class="value">${fmt(d.win_rate,0)}%</div></div>
+        <div class="card"><div class="label">Trades</div><div id="stat-trades" class="value">${d.total_trades}</div></div>
     </div>`;
 
     // Open Positions
+    html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
+        <button class="btn btn-green btn-sm" onclick="autoSetSlTpAll()" style="margin-bottom:8px">&#x1F6E1; Auto Set SL/TP ALL</button>
+        <table>
+        <tr><th>Coin</th><th>Side</th><th>Entry</th><th>Mark</th><th>PnL</th><th>%</th><th>Lev</th><th></th></tr>
+        <tbody id="positions-body">`;
     if (d.open_positions && d.open_positions.length > 0) {
-        html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
-            <button class="btn btn-green btn-sm" onclick="autoSetSlTpAll()" style="margin-bottom:8px">&#x1F6E1; Auto Set SL/TP ALL</button>
-            <table>
-            <tr><th>Coin</th><th>Side</th><th>Entry</th><th>Mark</th><th>PnL</th><th>%</th><th>Lev</th><th></th></tr>`;
         d.open_positions.forEach(p => {
             html += `<tr><td><b>${p.symbol.replace('USDT','')}</b></td><td>${sideHtml(p.side)}</td>
                 <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
@@ -389,8 +312,10 @@ function renderDashboard(d) {
                 <td><button class="btn btn-green btn-sm" onclick="autoSetSlTp('${p.symbol}')" title="Auto SL/TP">&#x1F6E1;</button>
                 <button class="btn btn-red btn-sm" onclick="closePosition('${p.symbol}')">Close</button></td></tr>`;
         });
-        html += `</table></div>`;
+    } else {
+        html += `<tr><td colspan="8" style="color:#484f58;text-align:center;padding:12px">Không có lệnh mở</td></tr>`;
     }
+    html += `</tbody></table></div>`;
 
     // Pending Orders (lệnh chờ khớp)
     if (d.pending_orders && d.pending_orders.length > 0) {
@@ -555,7 +480,7 @@ function renderDashboard(d) {
         for (const [sym, price] of Object.entries(d.prices)) {
             const name = sym.replace('USDT','');
             let pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 3 : 5);
-            html += `<div class="price-item"><div class="coin">${name}</div><div class="price">${pStr}</div></div>`;
+            html += `<div class="price-item"><div class="coin">${name}</div><div id="price-${sym}" class="price">${pStr}</div></div>`;
         }
         html += `</div></div>`;
     }
@@ -813,7 +738,7 @@ function updateClock(){document.getElementById('clock').textContent=new Date().t
 // Lưu state input để không bị reset khi refresh
 let _savedInputs = {};
 function saveInputs() {
-    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','add-coin-input'].forEach(id => {
+    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','add-coin-input','pump-coin-input'].forEach(id => {
         const el = document.getElementById(id);
         if (el) _savedInputs[id] = el.value;
     });
@@ -821,20 +746,102 @@ function saveInputs() {
 function restoreInputs() {
     for (const [id, val] of Object.entries(_savedInputs)) {
         const el = document.getElementById(id);
-        if (el && val) el.value = val;
+        if (el && val !== undefined) el.value = val;
     }
 }
 
+let _firstRender = true;
+
 async function refresh(){
     try{
-        saveInputs();
-        const r=await fetch('/api/state'); const d=await r.json();
-        document.getElementById('content').innerHTML=renderDashboard(d);
-        restoreInputs();
+        const r = await fetch('/api/state');
+        const d = await r.json();
+
+        if (_firstRender) {
+            // Lần đầu: render toàn bộ
+            saveInputs();
+            document.getElementById('content').innerHTML = renderDashboard(d);
+            restoreInputs();
+            _firstRender = false;
+        } else {
+            // Lần sau: chỉ patch các ô thay đổi — không rebuild, không mất focus
+            _patchDashboard(d);
+        }
     }
-    catch(e){ document.getElementById('content').innerHTML='<p style="color:#f85149">Connection lost...</p>'; }
+    catch(e){
+        document.getElementById('content').innerHTML='<p style="color:#f85149">Connection lost...</p>';
+        _firstRender = true;
+    }
 }
-setInterval(updateClock,1000); setInterval(refresh,2000); updateClock(); refresh();
+
+function _setText(id, val) {
+    const el = document.getElementById(id);
+    if (el && el.textContent !== val) el.textContent = val;
+}
+function _setHtml(id, val) {
+    const el = document.getElementById(id);
+    if (el && el.innerHTML !== val) el.innerHTML = val;
+}
+
+function _patchDashboard(d) {
+    // Clock — đã update riêng bởi updateClock()
+
+    // Bot status
+    const running = d.running;
+    document.getElementById('bot-status').innerHTML = running
+        ? '<span class="dot dot-green"></span> Running'
+        : '<span class="dot dot-red"></span> Paused';
+
+    // Stats cards — patch textContent không flash
+    const statIds = ['stat-balance','stat-today-pnl','stat-total-pnl','stat-unrealized','stat-winrate','stat-trades'];
+    const statVals = [
+        fmtUsd(d.balance),
+        fmtUsd(d.today_pnl),
+        fmtUsd(d.total_pnl),
+        fmtUsd(d.unrealized),
+        fmt(d.win_rate,0)+'%',
+        String(d.total_trades)
+    ];
+    statIds.forEach((id,i) => _setText(id, statVals[i]));
+
+    // Scan info
+    _setText('scan-info', `Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run?' | AI: '+d.ai_last_run:''}${d.ai_analyzing?' ⏳ AI analyzing...':''}`);
+
+    // Open positions — rebuild nhỏ hơn
+    const posEl = document.getElementById('positions-body');
+    if (posEl) {
+        let rows = '';
+        if (d.open_positions && d.open_positions.length > 0) {
+            d.open_positions.forEach(p => {
+                rows += `<tr><td><b>${p.symbol.replace('USDT','')}</b></td><td>${sideHtml(p.side)}</td>
+                    <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
+                    <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
+                    <td class="${pnlColor(p.pct)}">${fmt(p.pct,1)}%</td><td>${p.lev}x</td>
+                    <td><button class="btn btn-green btn-sm" onclick="autoSetSlTp('${p.symbol}')">&#x1F6E1;</button>
+                    <button class="btn btn-red btn-sm" onclick="closePosition('${p.symbol}')">Close</button></td></tr>`;
+            });
+        } else {
+            rows = '<tr><td colspan="8" style="color:#484f58;text-align:center">Không có lệnh mở</td></tr>';
+        }
+        if (posEl.innerHTML !== rows) posEl.innerHTML = rows;
+    }
+
+    // Giá coin — patch từng ô
+    if (d.prices) {
+        Object.entries(d.prices).forEach(([sym, price]) => {
+            const el = document.getElementById('price-'+sym);
+            if (el) {
+                const pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 3 : 5);
+                if (el.textContent !== pStr) el.textContent = pStr;
+            }
+        });
+    }
+}
+
+setInterval(updateClock,1000);
+setInterval(refresh, 2000);
+updateClock();
+refresh();
 </script>
 </body>
 </html>"""
