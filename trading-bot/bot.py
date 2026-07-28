@@ -434,92 +434,143 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
                              exchange_ref, notifier_ref):
     """
     Chạy trong thread riêng sau khi WS phát hiện spike.
-    Lấy klines 1m + 15m → chạy PumpDetector đầy đủ → vào SHORT nếu cần.
-    Tổng thời gian: ~300-600ms (1 REST call klines).
+    3 TẦNG XÁC NHẬN trước khi alert/short:
+      Tầng 1 — WS Spike   : giá tăng >= 3% (đã pass)
+      Tầng 2 — Order Book : ask wall áp đảo bid wall (dev đang xả)
+      Tầng 3 — PumpDetect : volume kiệt sức + wick rejection + RSI div
+    Cần >= 2/3 tầng pass → alert. Cần 3/3 → auto short.
     """
     import time as _t
     from pump_detector import PumpDetector, _to_df
+    from orderbook_detector import get_ob_tracker, confirm_pump_top
 
     try:
-        # Lấy klines nhanh nhất có thể
+        # Lấy order book tracker (đã chạy sẵn)
+        ob = get_ob_tracker(
+            "wss://fstream.binance.com" if not config.USE_TESTNET
+            else "wss://stream.binancefuture.com"
+        )
+        # Đảm bảo coin đang được track order book
+        ob.add_symbols([sym])
+
+        # Lấy klines
         klines_1m  = exchange_ref.get_klines(sym, "1m",  limit=60)
         klines_15m = exchange_ref.get_klines(sym, "15m", limit=30)
         df_1m  = _to_df(klines_1m)
         df_15m = _to_df(klines_15m)
 
         detector = PumpDetector(config)
-        # Override: với spike từ WS, hạ ngưỡng pump_pct xuống vì đã confirm spike
         detector.cfg["PUMP_PRICE_RISE_PCT"] = max(spike_pct * 0.7, 5.0)
-
         sig = detector.analyze(sym, df_1m, df_15m)
+        pump_score = sig.score if sig else 0
 
-        # Update pump_signals trong state để web hiển thị
-        with lock:
-            pump_watch = state.get("pump_watch_coins", [])
+        # ── 3-TẦNG XÁC NHẬN ────────────────────────────────
+        confirm = confirm_pump_top(
+            symbol     = sym,
+            spike_pct  = spike_pct,
+            pump_score = pump_score,
+            ob_tracker = ob,
+        )
 
-        if sig is None:
-            # Spike nhỏ, chưa đủ tín hiệu — vẫn alert nếu spike > CONFIRM
-            if spike_pct >= _SPIKE_CONFIRM_PCT:
-                _ws_spike_send_alert(sym, trigger_price, spike_pct,
-                                     None, notifier_ref)
+        logger.info(
+            f"[WS-3Tier] {sym}: tiers={confirm['tiers_passed']}/3 "
+            f"confidence={confirm['confidence']} | {confirm['reason']}"
+        )
+
+        # Lưu signal vào state (kể cả chưa đủ tầng — để web hiển thị)
+        if sig:
+            sig_dict = {
+                "symbol": sig.symbol, "is_pump_top": sig.is_pump_top,
+                "score": sig.score, "pump_pct": sig.pump_pct,
+                "signals": sig.signals + [f"OB={confirm['ob_score']} {confirm['ob_trend']}"],
+                "entry_price": sig.entry_price, "sl_price": sig.sl_price,
+                "tp1_price": sig.tp1_price, "tp2_price": sig.tp2_price,
+                "atr": sig.atr, "volume_ratio": sig.volume_ratio,
+                "rsi": sig.rsi, "timestamp": sig.timestamp,
+                "confidence": confirm["confidence"],
+                "tiers": confirm["tiers_passed"],
+            }
+            with lock:
+                signals = state.get("pump_signals", [])
+                idx = next((i for i, s in enumerate(signals)
+                            if s.get("symbol") == sym), None)
+                if idx is not None:
+                    signals[idx] = sig_dict
+                else:
+                    signals.append(sig_dict)
+                state["pump_signals"] = signals[-100:]
+
+        # ── ALERT: cần >= 2/3 tầng ─────────────────────────
+        should_alert = (
+            confirm["tiers_passed"] >= 2 or
+            spike_pct >= _SPIKE_CONFIRM_PCT
+        )
+
+        if should_alert:
+            _ws_spike_send_alert(
+                sym, trigger_price, spike_pct, sig, notifier_ref,
+                confirm=confirm
+            )
+        else:
+            logger.info(
+                f"[WS-3Tier] {sym}: chỉ {confirm['tiers_passed']}/3 tầng "
+                f"— bỏ qua (confidence={confirm['confidence']})"
+            )
             return
 
-        # Lưu vào state
-        sig_dict = {
-            "symbol": sig.symbol, "is_pump_top": sig.is_pump_top,
-            "score": sig.score, "pump_pct": sig.pump_pct,
-            "signals": sig.signals, "entry_price": sig.entry_price,
-            "sl_price": sig.sl_price, "tp1_price": sig.tp1_price,
-            "tp2_price": sig.tp2_price, "atr": sig.atr,
-            "volume_ratio": sig.volume_ratio, "rsi": sig.rsi,
-            "timestamp": sig.timestamp,
-        }
-        with lock:
-            signals = state.get("pump_signals", [])
-            idx = next((i for i, s in enumerate(signals)
-                        if s.get("symbol") == sym), None)
-            if idx is not None:
-                signals[idx] = sig_dict
-            else:
-                signals.append(sig_dict)
-            state["pump_signals"] = signals[-100:]
-
-        # Gửi alert nếu đủ điều kiện
-        min_score = getattr(config, "PUMP_TOP_MIN_SCORE", 60)
-        if sig.is_pump_top or spike_pct >= _SPIKE_CONFIRM_PCT:
-            _ws_spike_send_alert(sym, trigger_price, spike_pct, sig, notifier_ref)
-
-        # Auto SHORT
+        # ── AUTO SHORT: cần 3/3 tầng hoặc confidence >= 75 ─
         auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
-        if auto_short and (sig.is_pump_top or spike_pct >= _SPIKE_CONFIRM_PCT):
-            _ws_spike_do_short(sym, sig, exchange_ref, notifier_ref)
+        strong_enough = (
+            confirm["tiers_passed"] == 3 or
+            confirm["confidence"] >= 75
+        )
+        if auto_short and strong_enough and sig:
+            _ws_spike_do_short(sym, sig, exchange_ref, notifier_ref,
+                               confidence=confirm["confidence"])
 
     except Exception as e:
         logger.error(f"[WS-Spike] Full analysis {sym} error: {e}")
 
 
 def _ws_spike_send_alert(sym: str, price: float, spike_pct: float,
-                          sig, notifier_ref):
-    """Gửi Telegram alert pump spike."""
+                          sig, notifier_ref, confirm: dict = None):
+    """Gửi Telegram alert pump spike với thông tin 3-tầng."""
     try:
+        tiers    = confirm["tiers_passed"] if confirm else "?"
+        conf_pct = confirm["confidence"]   if confirm else 0
+        ob_score = confirm["ob_score"]     if confirm else 0
+        ob_trend = confirm["ob_trend"]     if confirm else ""
+        reason   = confirm["reason"]       if confirm else ""
+        tier_bar = "🟢" * (tiers if isinstance(tiers, int) else 0) + "⚫" * (3 - (tiers if isinstance(tiers, int) else 0))
+
         if sig and sig.is_pump_top:
-            notifier_ref.telegram.send(sig.to_telegram())
+            # Full signal — thêm thông tin 3-tầng vào telegram
+            base = sig.to_telegram()
+            extra = (
+                f"\n{'─'*34}\n"
+                f"📊 <b>3-TẦNG XÁC NHẬN:</b> {tier_bar} {tiers}/3\n"
+                f"🎯 Confidence: <b>{conf_pct}%</b>\n"
+                f"📖 OB Score  : {ob_score} ({ob_trend})\n"
+                f"🔍 {reason}"
+            )
+            notifier_ref.telegram.send(base + extra)
         else:
-            # Alert đơn giản không cần full signal
             score_str = f" | Score: {sig.score}/100" if sig else ""
             notifier_ref.telegram.send(
-                f"⚡ <b>PUMP SPIKE DETECTED</b>\n"
+                f"⚡ <b>PUMP SPIKE</b> {tier_bar}\n"
                 f"{'─'*30}\n"
-                f"🪙 {sym}  📈 <b>+{spike_pct:.1f}%</b> trong {_SPIKE_WINDOW_SEC}s\n"
-                f"💰 Giá: <b>${price:,.6g}</b>{score_str}\n"
-                f"⚠️ <i>Theo dõi — chưa đủ điều kiện SHORT</i>\n"
+                f"🪙 {sym}  📈 <b>+{spike_pct:.1f}%</b>\n"
+                f"💰 ${price:,.6g}{score_str}\n"
+                f"📊 Confidence: <b>{conf_pct}%</b>  OB={ob_score}\n"
+                f"🔍 {reason}\n"
+                f"⚠️ <i>Theo dõi — chưa đủ tín hiệu SHORT</i>\n"
                 f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
             )
     except Exception as e:
         logger.warning(f"[WS-Spike] Alert failed: {e}")
 
 
-def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref):
+def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: int = 0):
     """Vào SHORT ngay sau khi WS phát hiện đỉnh pump."""
     try:
         with lock:
@@ -555,18 +606,18 @@ def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref):
                 "symbol": sym, "side": "SHORT",
                 "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
                 "qty":    qty, "status": "OPEN",
-                "note":   f"ws_spike_s{sig.score}",
+                "note":   f"ws_spike_s{sig.score}_c{confidence}",
             })
 
         notifier_ref.telegram.send(
-            f"🔴 <b>WS SPIKE SHORT</b>\n"
+            f"🔴 <b>AUTO SHORT — 3-TẦNG XÁC NHẬN</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 {sym}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
+            f"🎯 Confidence: <b>{confidence}%</b>\n"
             f"💰 Entry: <b>${sig.entry_price:,.6g}</b>\n"
             f"🛑 SL   : <b>${sig.sl_price:,.6g}</b>\n"
             f"🎯 TP1  : <b>${sig.tp1_price:,.6g}</b>\n"
             f"📐 RR   : 1:{rr:.1f}   📦 Qty: {qty}\n"
-            f"⚡ <i>Triggered by WS spike detector</i>\n"
             f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
         )
         logger.info(f"[WS-Spike] SHORT placed: {sym} qty={qty} score={sig.score}")
@@ -2273,6 +2324,20 @@ if __name__ == "__main__":
         state["pump_signals"]      = []
         state["pump_scan_status"]  = {"scanning": False, "last_scan": "--:--", "scan_count": 0}
         state["_pump_tick"]        = 0
+
+    # Khởi động Order Book Tracker cho pump coins
+    try:
+        from orderbook_detector import get_ob_tracker
+        _ob_base_ws = "wss://fstream.binance.com" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
+        _ob = get_ob_tracker(_ob_base_ws)
+        _pump_coins_init = list(getattr(config, "PUMP_WATCH_COINS", []))
+        if _pump_coins_init:
+            _ob.add_symbols(_pump_coins_init)
+            logger.info(f"[OB] Tracker started for {_pump_coins_init}")
+        print(f"✅ OrderBook Tracker started ({len(_pump_coins_init)} coins)", flush=True)
+    except Exception as _e:
+        print(f"⚠️ OrderBook Tracker failed: {_e}", flush=True)
+        logger.warning(f"[OB] Tracker init failed: {_e}")
 
     # Khởi động LiqHeatmapCache (REST API — có data ngay lập tức)
     try:

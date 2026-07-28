@@ -161,9 +161,9 @@ RSI_DIV_LOOKBACK = 10
 DECEL_CANDLES = 3
 
 # Score tối thiểu để xác nhận đỉnh pump (0-100)
-# 60 = cần đủ 60/100 điểm từ 6 tín hiệu mới gửi SHORT alert
-# Tăng lên 70-75 nếu muốn chắc hơn (ít signal hơn)
-PUMP_TOP_MIN_SCORE = 60
+# 65 = cần đủ 65/100 điểm từ 6 tín hiệu mới gửi SHORT alert
+# Nâng lên 65 (từ 60) để lọc bớt false positive
+PUMP_TOP_MIN_SCORE = 65
 
 # Cooldown: không spam signal cho cùng 1 coin (giây)
 PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
