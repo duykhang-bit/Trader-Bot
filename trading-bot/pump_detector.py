@@ -42,7 +42,7 @@ DEFAULT_CFG = {
     "WICK_REJECT_RATIO":        1.8,    # bóng trên >= 1.8× thân nến
     "RSI_DIV_LOOKBACK":         10,     # số nến nhìn lại tìm RSI peak trước
     "DECEL_CANDLES":            3,      # số nến cuối đo đà giảm tốc
-    "PUMP_TOP_MIN_SCORE":       60,     # tổng điểm >= 60 → xác nhận đỉnh
+    "PUMP_TOP_MIN_SCORE":       75,     # tổng điểm >= 75 → xác nhận đỉnh (tăng từ 60 để tránh vào sớm)
     "PUMP_SIGNAL_COOLDOWN_S":   300,    # 5 phút không spam cùng coin
 }
 
@@ -166,7 +166,12 @@ class PumpDetector:
         tp1_price = current_price - (current_price - pump_low) * 0.382        # 38.2% fib
         tp2_price = current_price - (current_price - pump_low) * 0.618        # 61.8% fib
 
-        is_top = score >= self.cfg["PUMP_TOP_MIN_SCORE"]
+        is_top = (
+            score >= self.cfg["PUMP_TOP_MIN_SCORE"]
+            and rsi >= 72              # RSI phải thực sự overbought
+            and pump_pct >= 20.0       # Pump phải đủ mạnh >= 20% mới tin
+            and current_price >= pump_high * 0.97  # Giá vẫn còn gần đỉnh (chưa đảo chiều quá sớm)
+        )
 
         if is_top:
             self._cooldown[symbol] = now
