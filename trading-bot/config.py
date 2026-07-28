@@ -170,16 +170,8 @@ PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
 
 # Danh sách coin đặc biệt cần theo dõi pump (ngoài watchlist thường)
 # Thêm coin kiểu BANK, LAB, v.v. mà dev hay bơm vào đây
-PUMP_WATCH_COINS = [
-    "BANKUSDT",
-    "LABUSDT",
-    "SIRENUSDT",
-    "MAGMAUSDT",
-    "SPCXUSDT",
-    "VANRYUSDT",
-    "TLMUSDT",
-    "BELUSDT",
-]
+# ← Để trống, tự add qua web dashboard
+PUMP_WATCH_COINS = []
 
 # Interval quét pump riêng (giây) — chạy nhanh hơn main loop
 # 30s để bắt đỉnh kịp thời, không phải đợi 60s main loop

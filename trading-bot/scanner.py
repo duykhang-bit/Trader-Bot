@@ -625,14 +625,9 @@ def run_pump_scan(exchange, config, notifier=None) -> list:
         return []
     _pump_last_scan = now
 
-    # Gom danh sách coin cần quét:
-    # 1. PUMP_WATCH_COINS (coin dev hay bơm — ưu tiên cao nhất)
-    # 2. FIXED_COINS / WATCHLIST hiện tại
+    # Chỉ quét PUMP_WATCH_COINS — coin dev hay bơm mà mày add vào web
+    # KHÔNG gộp FIXED_COINS/WATCHLIST vào đây (tránh coin lạ tự xuất hiện)
     watch = list(getattr(config, "PUMP_WATCH_COINS", []))
-    fixed = list(getattr(config, "FIXED_COINS", WATCHLIST))
-    for s in fixed:
-        if s not in watch:
-            watch.append(s)
 
     if not getattr(config, "PUMP_DETECTOR_ENABLED", True):
         return []

@@ -1490,7 +1490,14 @@ def api_pump_state():
     # Build coin rows với pump score nếu có
     rows = []
     for sym in watch:
+        # Lấy giá từ state prices (WebSocket realtime) — ưu tiên hơn pump_signals
         price = prices.get(sym, 0)
+        # Nếu không có trong prices (coin mới add chưa được track), fetch trực tiếp
+        if price == 0 and _exchange:
+            try:
+                price = _exchange.get_ticker_price(sym) or 0
+            except Exception:
+                price = 0
         # Tìm signal gần nhất cho coin này
         sig = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
         rows.append({
@@ -1527,6 +1534,15 @@ def api_pump_add_coin():
         return jsonify({"ok": False, "msg": "Thiếu symbol"})
     if not symbol.endswith("USDT"):
         symbol += "USDT"
+
+    # Validate coin tồn tại trên Binance Futures trước khi add
+    if _exchange:
+        try:
+            test_price = _exchange.get_ticker_price(symbol)
+            if not test_price or test_price <= 0:
+                return jsonify({"ok": False, "msg": f"❌ {symbol} không tồn tại trên Binance Futures"})
+        except Exception as e:
+            return jsonify({"ok": False, "msg": f"❌ {symbol} không hợp lệ: coin này không trade trên Futures"})
 
     with _lock:
         watch = _state.get("pump_watch_coins", [])
