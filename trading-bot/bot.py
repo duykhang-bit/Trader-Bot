@@ -857,6 +857,15 @@ def price_updater(exchange):
                     new_prices[sym] = exchange.get_ticker_price(sym)
                 except Exception:
                     pass
+            # Cập nhật giá pump coins (không có trong WATCHLIST)
+            with lock:
+                pump_coins_extra = [s for s in state.get("pump_watch_coins", [])
+                                    if s not in WATCHLIST]
+            for sym in pump_coins_extra:
+                try:
+                    new_prices[sym] = exchange.get_ticker_price(sym)
+                except Exception:
+                    pass
             consecutive_errors = 0
 
             # Lấy tất cả positions đang mở từ Binance

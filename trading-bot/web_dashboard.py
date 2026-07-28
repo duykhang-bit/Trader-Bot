@@ -1717,14 +1717,10 @@ def _api_pump_state_inner():
     # Build coin rows với pump score nếu có
     rows = []
     for sym in watch:
-        # Lấy giá từ state prices (WebSocket realtime) — ưu tiên hơn pump_signals
+        # Lấy giá từ state prices (WebSocket realtime)
+        # WS đã subscribe cả pump_watch_coins trong price_ws_streamer
+        # nên prices dict luôn có giá mới nhất cho pump coins
         price = prices.get(sym, 0)
-        # Nếu không có trong prices (coin mới add chưa được track), fetch trực tiếp
-        if price == 0 and _exchange:
-            try:
-                price = _exchange.get_ticker_price(sym) or 0
-            except Exception:
-                price = 0
         # Tìm signal gần nhất cho coin này
         sig_d = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
         # Ưu tiên pump_alerts (pump đang lên) nếu chưa có confirmed top
