@@ -203,6 +203,11 @@ class PumpDetector:
         if pump_pct < alert_threshold:
             return None
 
+        # Giá phải còn trong 20% đỉnh pump — nếu đã rớt xa thì là pump cũ
+        current_price_check = df_1m["close"].iloc[-1]
+        if pump_high > 0 and current_price_check < pump_high * 0.80:
+            return None
+
         # Step 2: Kiểm tra volume surge
         vol = df_1m["volume"]
         vol_ma20 = calculate_volume_ma(vol, 20).iloc[-1]
@@ -301,6 +306,11 @@ class PumpDetector:
             pump_high = ws_high_override
 
         if pump_pct < self.cfg["PUMP_PRICE_RISE_PCT"]:
+            return None
+
+        # Giá phải còn trong 20% của đỉnh pump
+        # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang pump
+        if pump_high > 0 and current_price < pump_high * 0.80:
             return None
 
         logger.info(f"[PumpDetector] {symbol}: pump +{pump_pct:.1f}% | checking top...")
