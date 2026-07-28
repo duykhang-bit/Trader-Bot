@@ -218,7 +218,7 @@ function renderDashboard(d) {
     // Control Panel
     html += `<div class="section"><h2>&#x2699; Controls</h2>
         <div class="control-row">
-            <button class="btn ${running ? 'btn-red' : 'btn-green'}" onclick="toggleBot()">
+            <button id="toggle-bot-btn" class="btn ${running ? 'btn-red' : 'btn-green'}" onclick="toggleBot()">
                 ${running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot'}
             </button>
             <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
@@ -932,11 +932,18 @@ function _setHtml(id, val) {
 function _patchDashboard(d) {
     // Clock — đã update riêng bởi updateClock()
 
-    // Bot status
+    // Bot status dot
     const running = d.running;
     document.getElementById('bot-status').innerHTML = running
         ? '<span class="dot dot-green"></span> Running'
         : '<span class="dot dot-red"></span> Paused';
+
+    // Nút Pause/Start Bot
+    const toggleBtn = document.getElementById('toggle-bot-btn');
+    if (toggleBtn) {
+        toggleBtn.className = 'btn ' + (running ? 'btn-red' : 'btn-green');
+        toggleBtn.innerHTML = running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot';
+    }
 
     // Stats cards — patch textContent không flash
     const statIds = ['stat-balance','stat-today-pnl','stat-total-pnl','stat-unrealized','stat-winrate','stat-trades'];
