@@ -527,13 +527,26 @@ async function fetchPump() {
 // Patch nhẹ — chỉ update giá + score + status từng coin card, không động SVG
 function patchPumpRadar(d) {
     if (!d) return;
-    const coins    = d.coins    || [];
-    const minScore = d.min_score || 60;
-    const status   = d.status   || {};
+    const coins      = d.coins      || [];
+    const minScore   = d.min_score  || 60;
+    const status     = d.status     || {};
+    const autoShort  = d.auto_short || false;
+    const softShort  = d.soft_short || false;
 
     // Update scan counter + time
     const scanEl = document.getElementById('pump-scan-info');
     if (scanEl) scanEl.textContent = `Scan #${status.scan_count||0} · ${status.last_scan||'--:--'}`;
+
+    // Update AUTO SHORT checkboxes
+    const asCb = document.getElementById('pump-auto-short');
+    if (asCb) asCb.checked = autoShort;
+    const ssCb = document.getElementById('pump-soft-short');
+    if (ssCb) ssCb.checked = softShort;
+    const ssLbl = document.getElementById('pump-soft-label');
+    if (ssLbl) {
+        ssLbl.textContent = softShort ? '🟡 Nhẹ (bật)' : '🟡 Nhẹ (tắt)';
+        ssLbl.style.color = softShort ? '#d29922' : '#2a5a3a';
+    }
 
     // Update từng coin card
     let needFullRender = false;
@@ -627,6 +640,21 @@ async function pumpManualShort(sym) {
 async function toggleAutoShort(enabled) {
     const r = await apiPost('/api/pump/toggle_auto', {enabled: enabled});
     if (r && r.msg) toast(r.msg, r.ok);
+    // Nếu bật hard mode → tắt soft mode checkbox
+    if (enabled) {
+        const cb = document.getElementById('pump-soft-short');
+        if (cb) cb.checked = false;
+    }
+}
+
+async function toggleSoftShort(enabled) {
+    const r = await apiPost('/api/pump/toggle_soft', {enabled: enabled});
+    if (r && r.msg) toast(r.msg, r.ok);
+    // Nếu bật soft mode → tắt hard mode checkbox
+    if (enabled) {
+        const cb = document.getElementById('pump-auto-short');
+        if (cb) cb.checked = false;
+    }
 }
 
 function scoreColor(s) {
@@ -644,6 +672,7 @@ function renderPumpRadar(d) {
     const coins     = d.coins    || [];
     const history   = d.history  || [];
     const autoShort = d.auto_short || false;
+    const softShort = d.soft_short || false;
     const minScore  = d.min_score  || 60;
     const scanning  = status.scanning   || false;
     const scanCount = status.scan_count || 0;
@@ -715,6 +744,11 @@ function renderPumpRadar(d) {
             <input type="checkbox" id="pump-auto-short" ${autoShort?'checked':''}
                    onchange="toggleAutoShort(this.checked)" style="accent-color:#f85149">
             <span style="color:${autoShort?'#f85149':'#2a5a3a'}">${autoShort?'🔴 AUTO SHORT':'⏸ Alert only'}</span>
+          </label>
+          <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:4px">
+            <input type="checkbox" id="pump-soft-short" ${softShort?'checked':''}
+                   onchange="toggleSoftShort(this.checked)" style="accent-color:#d29922">
+            <span id="pump-soft-label" style="color:${softShort?'#d29922':'#2a5a3a'}">${softShort?'🟡 Nhẹ (bật)':'🟡 Nhẹ (tắt)'}</span>
           </label>
         </div>
       </div>
@@ -1591,11 +1625,12 @@ def api_pump_state():
         })
 
     return jsonify({
-        "ok":       True,
-        "status":   status,
-        "coins":    rows,
-        "history":  signals[-20:],   # 20 tín hiệu gần nhất
+        "ok":         True,
+        "status":     status,
+        "coins":      rows,
+        "history":    signals[-20:],
         "auto_short": getattr(_config, "PUMP_AUTO_SHORT", False),
+        "soft_short": getattr(_config, "PUMP_AUTO_SHORT_SOFT", False),
         "min_score":  getattr(_config, "PUMP_TOP_MIN_SCORE", 60),
     })
 
@@ -1678,11 +1713,33 @@ def api_pump_toggle_auto():
     try:
         import config as _cfg
         _cfg.PUMP_AUTO_SHORT = enabled
+        # Tắt soft mode khi bật hard mode
+        if enabled:
+            _cfg.PUMP_AUTO_SHORT_SOFT = False
     except Exception:
         pass
-    msg = "🔴 AUTO SHORT bật — bot sẽ tự vào lệnh khi phát hiện đỉnh pump" if enabled \
+    msg = "🔴 AUTO SHORT (Mạnh) bật — score≥75, pump≥20%, RSI≥72" if enabled \
           else "⏸ AUTO SHORT tắt — chỉ gửi Telegram alert"
     logger.info(f"[PumpRadar] PUMP_AUTO_SHORT = {enabled}")
+    return jsonify({"ok": True, "msg": msg, "enabled": enabled})
+
+
+@app.route("/api/pump/toggle_soft", methods=["POST"])
+def api_pump_toggle_soft():
+    """Bật/tắt PUMP_AUTO_SHORT_SOFT — ngưỡng nhẹ hơn cho coin thường."""
+    data    = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    try:
+        import config as _cfg
+        _cfg.PUMP_AUTO_SHORT_SOFT = enabled
+        # Tắt hard mode khi bật soft mode
+        if enabled:
+            _cfg.PUMP_AUTO_SHORT = False
+    except Exception:
+        pass
+    msg = "🟡 AUTO SHORT (Nhẹ) bật — score≥60, pump≥15%, RSI≥65 — coin thường" if enabled \
+          else "⏸ AUTO SHORT (Nhẹ) tắt"
+    logger.info(f"[PumpRadar] PUMP_AUTO_SHORT_SOFT = {enabled}")
     return jsonify({"ok": True, "msg": msg, "enabled": enabled})
 
 

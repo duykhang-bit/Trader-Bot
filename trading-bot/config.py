@@ -182,6 +182,11 @@ PUMP_SCAN_INTERVAL_SECONDS = 30
 # False → chỉ gửi Telegram alert, mày quyết định vào tay
 PUMP_AUTO_SHORT = False
 
+# AUTO SHORT nhẹ — dùng ngưỡng thấp hơn (score>=60, pump>=15%, RSI>=65)
+# Bật khi muốn bot bắt pump ở coin thường (ít pump hơn coin dev)
+# Không dùng chung với PUMP_AUTO_SHORT
+PUMP_AUTO_SHORT_SOFT = False
+
 
 # ============================================================
 # AI ANALYSIS (TradingAgents) CONFIG

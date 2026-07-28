@@ -1571,8 +1571,19 @@ def pump_scan_engine(exchange, notifier):
 
             # Lấy config dynamic
             auto_short   = getattr(config, "PUMP_AUTO_SHORT", False)
+            soft_short   = getattr(config, "PUMP_AUTO_SHORT_SOFT", False)
             min_score    = getattr(config, "PUMP_TOP_MIN_SCORE", 60)
             slow_interval = getattr(config, "PUMP_SCAN_INTERVAL_SECONDS", 30)
+
+            # Soft mode dùng ngưỡng thấp hơn
+            if soft_short and not auto_short:
+                detector.cfg["PUMP_TOP_MIN_SCORE"] = 60
+                detector.cfg["PUMP_PRICE_RISE_PCT"] = 15.0
+                _soft_rsi_min = 65
+            else:
+                detector.cfg["PUMP_TOP_MIN_SCORE"] = getattr(config, "PUMP_TOP_MIN_SCORE", 75)
+                detector.cfg["PUMP_PRICE_RISE_PCT"] = getattr(config, "PUMP_PRICE_RISE_PCT", 20.0)
+                _soft_rsi_min = 72
 
             # Interval thông minh:
             # - Có pump coins → 5s (cần bắt đỉnh trong vài giây)
@@ -1779,8 +1790,8 @@ def pump_scan_engine(exchange, notifier):
                 # Sync pump_watch_coins → config
                 config.PUMP_WATCH_COINS = list(state.get("pump_watch_coins", []))
 
-            # ── AUTO SHORT nếu bật ──────────────────────────
-            if auto_short and confirmed_this_round:
+            # ── AUTO SHORT nếu bật (hard hoặc soft mode) ──────────────────────────────
+            if (auto_short or soft_short) and confirmed_this_round:
                 with lock:
                     n_open = len(state.get("open_positions", []))
                 if n_open >= config.MAX_OPEN_POSITIONS:
