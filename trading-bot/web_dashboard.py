@@ -1684,43 +1684,49 @@ def api_pump_state():
 @app.route("/api/pump/coins/add", methods=["POST"])
 def api_pump_add_coin():
     """Thêm coin vào danh sách pump watch (quét riêng, nhanh hơn)."""
-    data   = request.get_json() or {}
-    symbol = data.get("symbol", "").upper().strip()
-    if not symbol:
-        return jsonify({"ok": False, "msg": "Thiếu symbol"})
-    if not symbol.endswith("USDT"):
-        symbol += "USDT"
-
-    # Validate coin tồn tại trên Binance Futures trước khi add
-    if _exchange:
-        try:
-            test_price = _exchange.get_ticker_price(symbol)
-            if not test_price or test_price <= 0:
-                return jsonify({"ok": False, "msg": f"❌ {symbol} không tồn tại trên Binance Futures"})
-        except Exception as e:
-            return jsonify({"ok": False, "msg": f"❌ {symbol} không hợp lệ: coin này không trade trên Futures"})
-
-    with _lock:
-        watch = _state.get("pump_watch_coins", [])
-        if symbol in watch:
-            return jsonify({"ok": False, "msg": f"⚠️ {symbol} đã có trong Pump Radar rồi"})
-        watch.append(symbol)
-        _state["pump_watch_coins"] = watch
-
-    # Sync vào config memory để pump_scan_engine đọc
     try:
-        import config as _cfg
-        if not hasattr(_cfg, "PUMP_WATCH_COINS"):
-            _cfg.PUMP_WATCH_COINS = []
-        if symbol not in _cfg.PUMP_WATCH_COINS:
-            _cfg.PUMP_WATCH_COINS.append(symbol)
-    except Exception:
-        pass
+        data   = request.get_json() or {}
+        symbol = data.get("symbol", "").upper().strip()
+        if not symbol:
+            return jsonify({"ok": False, "msg": "Thiếu symbol"})
+        if not symbol.endswith("USDT"):
+            symbol += "USDT"
 
-    # Lưu vào config.py file
-    _save_pump_coins_to_config(watch)
-    logger.info(f"[PumpRadar] Added pump coin: {symbol}")
-    return jsonify({"ok": True, "msg": f"Đã thêm {symbol} vào Pump Radar ✅"})
+        # Validate coin tồn tại trên Binance Futures
+        if _exchange:
+            try:
+                test_price = _exchange.get_ticker_price(symbol)
+                if not test_price or float(test_price) <= 0:
+                    return jsonify({"ok": False, "msg": f"❌ {symbol} không tồn tại trên Binance Futures"})
+            except Exception:
+                return jsonify({"ok": False, "msg": f"❌ {symbol} không có trên Futures — chỉ có Spot"})
+
+        if _state is None or _lock is None:
+            return jsonify({"ok": False, "msg": "Bot chưa khởi động"})
+
+        with _lock:
+            watch = _state.get("pump_watch_coins", [])
+            if symbol in watch:
+                return jsonify({"ok": False, "msg": f"⚠️ {symbol} đã có trong Pump Radar rồi"})
+            watch.append(symbol)
+            _state["pump_watch_coins"] = watch
+
+        try:
+            import config as _cfg
+            if not hasattr(_cfg, "PUMP_WATCH_COINS"):
+                _cfg.PUMP_WATCH_COINS = []
+            if symbol not in _cfg.PUMP_WATCH_COINS:
+                _cfg.PUMP_WATCH_COINS.append(symbol)
+        except Exception:
+            pass
+
+        _save_pump_coins_to_config(watch)
+        logger.info(f"[PumpRadar] Added pump coin: {symbol}")
+        return jsonify({"ok": True, "msg": f"Đã thêm {symbol} vào Pump Radar ✅"})
+
+    except Exception as e:
+        logger.error(f"[PumpRadar] add_coin error: {e}")
+        return jsonify({"ok": False, "msg": f"Lỗi: {str(e)[:100]}"})
 
 
 @app.route("/api/pump/coins/remove", methods=["POST"])
