@@ -1688,9 +1688,25 @@ def pump_scan_engine(exchange, notifier):
                     pump_pct  = sig_dict.get("pump_pct", 0)
                     score     = sig_dict.get("score", 0)
 
-                    # Dấu hiệu pump lại: giá đang tăng lên (pump_pct > 5%) và score >= 30
-                    # Tức là coin đã xuống rồi bắt đầu tăng lại
-                    should_exit = pump_pct >= 5.0 and score >= 30
+                    # Điều kiện đóng SHORT sớm khi có dấu hiệu pump lên lại:
+                    # - Đang có lời (giá < entry): đóng ngay khi pump_pct >= 3% hoặc score >= 25
+                    # - Chưa có lời / đang lỗ ít: đóng khi pump_pct >= 7% và score >= 40 (tránh noise)
+                    try:
+                        cur_price = exchange.get_ticker_price(symbol)
+                        pos_entry = next(
+                            (float(p.get("entryPrice", 0)) for p in open_positions
+                             if p["symbol"] == symbol), 0
+                        )
+                        in_profit = pos_entry > 0 and cur_price < pos_entry
+
+                        if in_profit:
+                            # Đang có lời → nhạy hơn, bắt đảo chiều sớm
+                            should_exit = pump_pct >= 3.0 or score >= 25
+                        else:
+                            # Chưa có lời → cần tín hiệu mạnh hơn mới đóng
+                            should_exit = pump_pct >= 7.0 and score >= 40
+                    except Exception:
+                        should_exit = pump_pct >= 5.0 and score >= 30
 
                     if should_exit:
                         try:
@@ -1725,13 +1741,14 @@ def pump_scan_engine(exchange, notifier):
                                         break
 
                             icon = "✅" if pnl >= 0 else "⚠️"
+                            profit_tag = "Chốt lời" if pnl >= 0 else "Cắt lỗ sớm"
                             notifier.telegram.send(
-                                f"🔄 <b>PUMP REVERSAL EXIT</b>\n"
+                                f"🔄 <b>PUMP REVERSAL EXIT — {profit_tag}</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━\n"
-                                f"🪙 {symbol} đang pump lại +{pump_pct:.1f}%\n"
+                                f"🪙 {symbol} có dấu hiệu pump lên lại +{pump_pct:.1f}%\n"
                                 f"⚡ Đóng SHORT ngay trước khi bị squeeze\n"
                                 f"💰 Entry: ${entry:.6f} → Close: ${close_price:.6f}\n"
-                                f"{icon} PnL: ${pnl:+.2f}\n"
+                                f"{icon} PnL: <b>${pnl:+.2f}</b>\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
                             logger.info(
