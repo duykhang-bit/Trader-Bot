@@ -1757,6 +1757,30 @@ def api_pump_remove_coin():
     return jsonify({"ok": True, "msg": f"Đã xóa {symbol} khỏi Pump Radar"})
 
 
+def _save_pump_coins_to_config(coins: list):
+    """Ghi PUMP_WATCH_COINS vào config.py."""
+    import os, re
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_block = "PUMP_WATCH_COINS = [\n"
+        for c in coins:
+            new_block += f'    "{c}",\n'
+        new_block += "]"
+        content = re.sub(
+            r'PUMP_WATCH_COINS\s*=\s*\[.*?\]',
+            new_block,
+            content,
+            flags=re.DOTALL
+        )
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[PumpRadar] Config saved: PUMP_WATCH_COINS = {coins}")
+    except Exception as e:
+        logger.error(f"[PumpRadar] Save config failed: {e}")
+
+
 @app.route("/api/pump/toggle_auto", methods=["POST"])
 def api_pump_toggle_auto():
     """Bật/tắt PUMP_AUTO_SHORT."""
