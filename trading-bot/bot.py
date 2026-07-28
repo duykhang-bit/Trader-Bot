@@ -1664,16 +1664,17 @@ def pump_scan_engine(exchange, notifier):
                         logger.debug(f"[PumpEngine] fixed {symbol}: {e}")
 
             # ── PUMP REVERSAL EXIT ──────────────────────────
-            # Nếu đang giữ SHORT từ pump, coin đó bắt đầu pump lên lại
-            # → đóng SHORT ngay, không chờ SL hit
+            # Chỉ áp dụng cho lệnh SHORT do pump engine vào (không đụng lệnh thường)
             try:
                 with lock:
                     open_positions = list(state.get("open_positions", []))
+                    # Chỉ những coin pump engine đã vào lệnh
+                    pump_trade_syms = set(state.get("pump_trade_symbols", set()))
                     pump_shorts = {
                         p["symbol"]
                         for p in open_positions
-                        if (p.get("_side") == "SHORT" or float(p.get("positionAmt", 0)) < 0)
-                        and p["symbol"] in pump_coins  # chỉ áp dụng cho pump coins
+                        if float(p.get("positionAmt", 0)) < 0  # đang SHORT
+                        and p["symbol"] in pump_trade_syms      # do pump engine vào
                     }
 
                 for symbol in pump_shorts:
@@ -1739,6 +1740,8 @@ def pump_scan_engine(exchange, notifier):
                                             "pnl_pct": round((entry - close_price) / entry * 100, 2),
                                         })
                                         break
+                                # Xóa khỏi pump_trade_symbols sau khi đã đóng
+                                state.get("pump_trade_symbols", set()).discard(symbol)
 
                             icon = "✅" if pnl >= 0 else "⚠️"
                             profit_tag = "Chốt lời" if pnl >= 0 else "Cắt lỗ sớm"
@@ -1852,6 +1855,9 @@ def pump_scan_engine(exchange, notifier):
                                 "qty": qty, "status": "OPEN",
                                 "note": f"pump_short_s{sig.score}",
                             })
+                            # Track lệnh này là do pump engine vào → dùng cho reversal exit
+                            pump_trades = state.setdefault("pump_trade_symbols", set())
+                            pump_trades.add(symbol)
 
                         notifier.telegram.send(
                             f"🔴 <b>AUTO SHORT — PUMP TOP</b>\n"
