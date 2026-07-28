@@ -1782,6 +1782,37 @@ def pump_scan_engine(exchange, notifier):
                 state.setdefault("pump_scan_status", {})
                 state["pump_scan_status"]["scanning"] = True
 
+            # ── Dọn signal cũ: xóa nếu giá đã giảm và pump% < ngưỡng alert ──
+            # Tránh trường hợp signal cũ còn hiện mãi trên web dù coin đã về bình thường
+            with lock:
+                current_prices = dict(state.get("prices", {}))
+                clean_signals  = []
+                for sig in state.get("pump_signals", []):
+                    sym_s      = sig.get("symbol", "")
+                    pump_pct_s = sig.get("pump_pct", 0)
+                    sig_ts     = sig.get("timestamp", 0)
+                    cur_p      = current_prices.get(sym_s, 0)
+                    entry_p    = sig.get("entry_price", 0)
+
+                    # Xóa nếu:
+                    # 1. Signal cũ hơn 30 phút VÀ không phải confirmed top
+                    # 2. Hoặc giá đã giảm về dưới entry - 5% (pump đã xả sâu)
+                    age_min = (time.time() - sig_ts) / 60 if sig_ts else 999
+                    is_top  = sig.get("is_pump_top", False)
+
+                    price_dropped = (cur_p > 0 and entry_p > 0
+                                     and cur_p < entry_p * 0.95)
+                    expired = age_min > 30 and not is_top
+
+                    if price_dropped or expired:
+                        logger.debug(f"[PumpEngine] Clear stale signal: {sym_s} "
+                                     f"age={age_min:.0f}m price_dropped={price_dropped}")
+                        # Cũng xóa pump_alerts nếu có
+                        state.get("pump_alerts", {}).pop(sym_s, None)
+                        continue
+                    clean_signals.append(sig)
+                state["pump_signals"] = clean_signals
+
             confirmed_this_round = []
 
             # ── Quét từng pump coin riêng lẻ (nhanh, không bị block) ──
