@@ -750,35 +750,6 @@ function scrollToCoin(sym) {
     const el = document.getElementById('coin-'+sym);
     if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
 }
-          <div>
-            <div style="font-size:16px;font-weight:700;color:#f85149;letter-spacing:1px">
-              🎯 PUMP RADAR
-            </div>
-            <div style="font-size:11px;color:#8b949e;margin-top:2px">
-              Scan #${scanCount} · ${lastScan}
-              ${scanning ? '<span class="pulse-dot"></span>' : ''}
-            </div>
-          </div>
-        </div>
-
-        <!-- Controls -->
-        <div class="pump-controls">
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-            <input id="pump-coin-input" placeholder="BANKUSDT..."
-                   style="width:130px;font-size:12px"
-                   onkeydown="if(event.key==='Enter')addPumpCoin()">
-            <button class="btn btn-red btn-sm" onclick="addPumpCoin()">+ Add Coin</button>
-          </div>
-          <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="pump-auto-short" ${autoShort ? 'checked' : ''}
-                   onchange="toggleAutoShort(this.checked)"
-                   style="width:14px;height:14px;accent-color:#f85149">
-            <span style="color:${autoShort?'#f85149':'#8b949e'}">
-              ${autoShort ? '🔴 AUTO SHORT bật' : '⏸ AUTO SHORT tắt (chỉ alert)'}
-            </span>
-          </label>
-        </div>
-      </div>
 
 // Pump radar auto-refresh riêng — nhanh hơn main (2s)
 setInterval(fetchPump, 2000);
