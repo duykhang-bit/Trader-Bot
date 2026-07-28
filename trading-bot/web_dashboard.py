@@ -56,7 +56,107 @@ tr:hover { background: #1c2128; }
 .price-item .price { font-size: 15px; font-weight: bold; color: #c9d1d9; margin-top: 2px; }
 </style>
 <style>
-/* Controls */
+/* ── Pump Radar ─────────────────────────────────────────── */
+.pump-radar-wrap {
+  background: linear-gradient(135deg, #0d1117 0%, #110a14 100%);
+  border: 1px solid #3d1a1a;
+  border-radius: 12px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.pump-radar-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at top left, rgba(248,81,73,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+.pump-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.pump-title-block { display: flex; align-items: center; gap: 12px; }
+.pump-controls { text-align: right; }
+.pump-radar-icon { position: relative; }
+.pump-radar-icon.spinning svg { animation: radarSpin 3s linear infinite; }
+@keyframes radarSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.radar-arm { transform-origin: 30px 30px; animation: armSpin 3s linear infinite; }
+@keyframes armSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.pulse-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  background: #f85149;
+  border-radius: 50%;
+  margin-left: 4px;
+  vertical-align: middle;
+  animation: pulseDot 1s ease-in-out infinite;
+}
+@keyframes pulseDot {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.3; transform: scale(0.6); }
+}
+.scan-blink { animation: blinkAnim 1.2s step-end infinite; }
+@keyframes blinkAnim { 0%,100%{opacity:1} 50%{opacity:0} }
+.pump-alert-banner {
+  background: rgba(248,81,73,0.12);
+  border: 1px solid rgba(248,81,73,0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #f85149;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pump-alert-tag {
+  background: rgba(248,81,73,0.2);
+  border: 1px solid #f85149;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.pump-coin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.pump-coin-card {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 12px;
+  transition: border-color 0.3s;
+}
+.pump-coin-card:hover { border-color: #30363d; }
+.pump-coin-alert {
+  border-color: rgba(248,81,73,0.5) !important;
+  background: rgba(248,81,73,0.04) !important;
+  animation: alertPulse 2s ease-in-out infinite;
+}
+@keyframes alertPulse {
+  0%,100% { box-shadow: 0 0 0   rgba(248,81,73,0); }
+  50%      { box-shadow: 0 0 12px rgba(248,81,73,0.25); }
+}
+@media (max-width: 768px) {
+  .pump-coin-grid { grid-template-columns: repeat(2, 1fr); }
+  .pump-header-row { flex-direction: column; }
+  .pump-controls { text-align: left; }
+}
+</style>
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: 0.2s; }
 .btn-green { background: #238636; color: #fff; } .btn-green:hover { background: #2ea043; }
 .btn-red { background: #da3633; color: #fff; } .btn-red:hover { background: #f85149; }
@@ -208,6 +308,16 @@ function renderDashboard(d) {
                 &#x1F5D1; Huỷ tất cả lệnh chờ ngay
             </button>
         </div>
+    </div>`;
+
+    // ── PUMP RADAR SECTION ──────────────────────────────────
+    html += `<div class="section" style="padding:0;border-color:#3d1a1a">
+      <div id="pump-radar-root" style="padding:16px">
+        <div style="text-align:center;padding:24px;color:#484f58">
+          <div style="font-size:28px;margin-bottom:6px">📡</div>
+          <div>Đang tải Pump Radar...</div>
+        </div>
+      </div>
     </div>`;
 
     // Watchlist Management
@@ -466,6 +576,237 @@ function renderDashboard(d) {
     html += `<div class="footer">Auto-refresh 1s</div>`;
     return html;
 }
+
+// ── PUMP RADAR ───────────────────────────────────────────────
+let _pumpData = null;
+
+async function fetchPump() {
+    try {
+        const r = await fetch('/api/pump');
+        _pumpData = await r.json();
+        renderPumpRadar(_pumpData);
+    } catch(e) {}
+}
+
+async function addPumpCoin() {
+    const inp = document.getElementById('pump-coin-input');
+    let sym = (inp.value || '').trim().toUpperCase();
+    if (!sym) return;
+    if (!sym.endsWith('USDT')) sym += 'USDT';
+    const r = await apiPost('/api/pump/coins/add', {symbol: sym});
+    if (r.ok) { inp.value = ''; fetchPump(); }
+}
+
+async function removePumpCoin(sym) {
+    await apiPost('/api/pump/coins/remove', {symbol: sym});
+    fetchPump();
+}
+
+async function toggleAutoShort(enabled) {
+    const r = await apiPost('/api/pump/toggle_auto', {enabled: enabled});
+    if (r && r.msg) toast(r.msg, r.ok);
+}
+
+function scoreColor(s) {
+    if (s >= 80) return '#f85149';
+    if (s >= 60) return '#ff9500';
+    if (s >= 40) return '#d29922';
+    return '#8b949e';
+}
+
+function renderPumpRadar(d) {
+    const el = document.getElementById('pump-radar-root');
+    if (!el || !d) return;
+
+    const status  = d.status  || {};
+    const coins   = d.coins   || [];
+    const history = d.history || [];
+    const autoShort = d.auto_short || false;
+    const minScore  = d.min_score  || 60;
+    const scanning  = status.scanning || false;
+    const scanCount = status.scan_count || 0;
+    const lastScan  = status.last_scan  || '--:--';
+
+    // Đếm coin đang cảnh báo
+    const alertCoins = coins.filter(c => c.score >= minScore);
+
+    let html = `
+    <div class="pump-radar-wrap">
+
+      <!-- Header row -->
+      <div class="pump-header-row">
+        <div class="pump-title-block">
+          <div class="pump-radar-icon ${scanning ? 'spinning' : ''}">
+            <svg viewBox="0 0 60 60" width="54" height="54">
+              <circle cx="30" cy="30" r="28" fill="none" stroke="#1a2744" stroke-width="2"/>
+              <circle cx="30" cy="30" r="20" fill="none" stroke="#0d2137" stroke-width="1.5"/>
+              <circle cx="30" cy="30" r="12" fill="none" stroke="#0d2137" stroke-width="1.5"/>
+              <circle cx="30" cy="30" r="3" fill="#f85149"/>
+              <!-- Sweep arm -->
+              <line x1="30" y1="30" x2="30" y2="3" stroke="#f85149" stroke-width="2"
+                    stroke-linecap="round" opacity="0.9"
+                    class="${scanning ? 'radar-arm' : ''}" />
+              <!-- Blip dots -->
+              ${coins.filter(c=>c.score>0).map((_,i)=>{
+                const angle = (i * 137.5) % 360;
+                const rad   = (angle * Math.PI) / 180;
+                const r2    = 8 + (i % 3) * 7;
+                const x2    = 30 + r2 * Math.sin(rad);
+                const y2    = 30 - r2 * Math.cos(rad);
+                const col   = scoreColor(coins[i].score);
+                const sz    = coins[i].score >= minScore ? 3.5 : 2;
+                return `<circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.85"/>`;
+              }).join('')}
+            </svg>
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#f85149;letter-spacing:1px">
+              🎯 PUMP RADAR
+            </div>
+            <div style="font-size:11px;color:#8b949e;margin-top:2px">
+              Scan #${scanCount} · ${lastScan}
+              ${scanning ? '<span class="pulse-dot"></span>' : ''}
+            </div>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="pump-controls">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <input id="pump-coin-input" placeholder="BANKUSDT..."
+                   style="width:130px;font-size:12px"
+                   onkeydown="if(event.key==='Enter')addPumpCoin()">
+            <button class="btn btn-red btn-sm" onclick="addPumpCoin()">+ Add Coin</button>
+          </div>
+          <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="pump-auto-short" ${autoShort ? 'checked' : ''}
+                   onchange="toggleAutoShort(this.checked)"
+                   style="width:14px;height:14px;accent-color:#f85149">
+            <span style="color:${autoShort?'#f85149':'#8b949e'}">
+              ${autoShort ? '🔴 AUTO SHORT bật' : '⏸ AUTO SHORT tắt (chỉ alert)'}
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Alert banner nếu có đỉnh -->
+      ${alertCoins.length > 0 ? `
+      <div class="pump-alert-banner">
+        ⚠️ <b>${alertCoins.length} ĐỈNH PUMP PHÁT HIỆN</b>:
+        ${alertCoins.map(c=>`<span class="pump-alert-tag">${c.symbol.replace('USDT','')} score=${c.score}</span>`).join(' ')}
+      </div>` : ''}
+
+      <!-- Coin grid -->
+      <div class="pump-coin-grid">
+        ${coins.length === 0 ? `
+          <div style="grid-column:1/-1;text-align:center;padding:32px;color:#484f58">
+            <div style="font-size:32px;margin-bottom:8px">📡</div>
+            <div>Chưa có coin nào.<br>Thêm coin dev hay bơm vào đây để quét nhanh.</div>
+          </div>` : coins.map(c => {
+            const name    = c.symbol.replace('USDT','');
+            const isAlert = c.score >= minScore;
+            const pStr    = c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6);
+            const scorePct= c.score;
+            const barFill = Math.max(0, Math.min(100, scorePct));
+            const col     = scoreColor(c.score);
+            const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
+            const ageStr  = ageSec !== null && ageSec < 3600
+                            ? (ageSec < 60 ? `${ageSec}s ago` : `${Math.floor(ageSec/60)}m ago`)
+                            : '';
+            return `
+            <div class="pump-coin-card ${isAlert ? 'pump-coin-alert' : ''}">
+              <!-- Top row -->
+              <div style="display:flex;justify-content:space-between;align-items:start">
+                <div>
+                  <div style="font-size:15px;font-weight:700;color:${isAlert?'#f85149':'#c9d1d9'}">
+                    ${isAlert ? '🚨' : '📡'} ${name}
+                  </div>
+                  <div style="font-size:12px;color:#8b949e;margin-top:1px">${pStr}</div>
+                </div>
+                <button onclick="removePumpCoin('${c.symbol}')"
+                        style="background:none;border:none;color:#484f58;cursor:pointer;font-size:16px;line-height:1"
+                        title="Xóa khỏi radar">×</button>
+              </div>
+
+              <!-- Score bar -->
+              <div style="margin:8px 0 4px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+                  <span style="color:#8b949e">PUMP SCORE</span>
+                  <span style="color:${col};font-weight:700">${scorePct}/100</span>
+                </div>
+                <div style="background:#0d1117;border-radius:4px;height:6px;overflow:hidden">
+                  <div style="width:${barFill}%;height:100%;background:${col};
+                              border-radius:4px;transition:width 0.5s;
+                              ${isAlert?'box-shadow:0 0 6px '+col:''}"></div>
+                </div>
+              </div>
+
+              <!-- Stats row -->
+              <div style="display:flex;gap:8px;font-size:11px;margin-top:6px;flex-wrap:wrap">
+                ${c.pump_pct > 0 ? `<span style="color:#f85149">📈 +${c.pump_pct.toFixed(1)}%</span>` : ''}
+                ${c.rsi > 0      ? `<span style="color:${c.rsi>70?'#f85149':c.rsi<30?'#3fb950':'#8b949e'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
+                ${c.vol_ratio > 0? `<span style="color:#58a6ff">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
+                ${ageStr         ? `<span style="color:#484f58">${ageStr}</span>` : ''}
+              </div>
+
+              <!-- Alert details -->
+              ${isAlert && c.entry > 0 ? `
+              <div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">
+                <div style="color:#f85149;font-weight:600;margin-bottom:4px">SHORT SIGNAL ▼</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px">
+                  <span style="color:#8b949e">Entry:</span>
+                  <span style="color:#c9d1d9;font-weight:600">$${c.entry.toPrecision(5)}</span>
+                  <span style="color:#8b949e">SL:</span>
+                  <span style="color:#f85149">$${c.sl.toPrecision(5)}</span>
+                  <span style="color:#8b949e">TP1:</span>
+                  <span style="color:#3fb950">$${c.tp1.toPrecision(5)}</span>
+                </div>
+                ${c.signals && c.signals.length > 0 ? `
+                <div style="margin-top:6px;padding:6px;background:#0d1117;border-radius:4px;font-size:10px;color:#8b949e">
+                  ${c.signals.slice(0,3).join('<br>')}
+                </div>` : ''}
+              </div>` : ''}
+
+              <!-- Scanning indicator -->
+              ${c.score === 0 ? `
+              <div style="margin-top:8px;font-size:10px;color:#484f58;display:flex;align-items:center;gap:4px">
+                <span class="scan-blink">▶</span> Đang quét...
+              </div>` : ''}
+            </div>`;
+        }).join('')}
+      </div>
+
+      <!-- Signal history -->
+      ${history.filter(h=>h.is_pump_top).length > 0 ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">
+        <div style="font-size:12px;color:#8b949e;margin-bottom:8px">📋 Lịch sử tín hiệu gần nhất:</div>
+        <table style="font-size:11px">
+          <tr><th>Coin</th><th>Pump%</th><th>Score</th><th>Entry</th><th>SL</th><th>TP1</th><th>Thời gian</th></tr>
+          ${history.filter(h=>h.is_pump_top).slice(-8).reverse().map(h=>{
+            const t = new Date(h.timestamp*1000);
+            const tStr = t.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+            const name = (h.symbol||'').replace('USDT','');
+            return `<tr>
+              <td><b style="color:#f85149">${name}</b></td>
+              <td style="color:#f85149">+${(h.pump_pct||0).toFixed(1)}%</td>
+              <td><span style="color:${scoreColor(h.score||0)}">${h.score||0}</span></td>
+              <td>$${(h.entry_price||0).toPrecision(4)}</td>
+              <td style="color:#f85149">$${(h.sl_price||0).toPrecision(4)}</td>
+              <td style="color:#3fb950">$${(h.tp1_price||0).toPrecision(4)}</td>
+              <td style="color:#484f58">${tStr}</td>
+            </tr>`;
+          }).join('')}
+        </table>
+      </div>` : ''}
+
+    </div>`;
+
+    el.innerHTML = html;
+}
+
+// Pump radar auto-refresh riêng — nhanh hơn main (2s)
+setInterval(fetchPump, 2000);
+fetchPump();
 
 function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString()}
 
@@ -1081,6 +1422,149 @@ def api_settings():
     return jsonify({"ok": True, "msg": f"Updated: {', '.join(msgs)}"})
 
 
+@app.route("/api/pump", methods=["GET"])
+def api_pump_state():
+    """Trả về trạng thái pump radar: danh sách coin đang theo dõi + signals gần nhất."""
+    if _state is None:
+        return jsonify({"ok": False})
+    with _lock:
+        watch   = list(_state.get("pump_watch_coins", []))
+        signals = list(_state.get("pump_signals", []))
+        status  = dict(_state.get("pump_scan_status", {}))
+        prices  = dict(_state.get("prices", {}))
+
+    # Build coin rows với pump score nếu có
+    rows = []
+    for sym in watch:
+        price = prices.get(sym, 0)
+        # Tìm signal gần nhất cho coin này
+        sig = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
+        rows.append({
+            "symbol":      sym,
+            "price":       price,
+            "pump_pct":    sig["pump_pct"]    if sig else 0,
+            "score":       sig["score"]       if sig else 0,
+            "is_top":      sig["is_pump_top"] if sig else False,
+            "rsi":         sig["rsi"]         if sig else 0,
+            "vol_ratio":   sig["volume_ratio"] if sig else 0,
+            "entry":       sig["entry_price"] if sig else 0,
+            "sl":          sig["sl_price"]    if sig else 0,
+            "tp1":         sig["tp1_price"]   if sig else 0,
+            "signals":     sig["signals"]     if sig else [],
+            "ts":          sig["timestamp"]   if sig else 0,
+        })
+
+    return jsonify({
+        "ok":       True,
+        "status":   status,
+        "coins":    rows,
+        "history":  signals[-20:],   # 20 tín hiệu gần nhất
+        "auto_short": getattr(_config, "PUMP_AUTO_SHORT", False),
+        "min_score":  getattr(_config, "PUMP_TOP_MIN_SCORE", 60),
+    })
+
+
+@app.route("/api/pump/coins/add", methods=["POST"])
+def api_pump_add_coin():
+    """Thêm coin vào danh sách pump watch (quét riêng, nhanh hơn)."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "msg": "Thiếu symbol"})
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
+    with _lock:
+        watch = _state.get("pump_watch_coins", [])
+        if symbol in watch:
+            return jsonify({"ok": False, "msg": f"{symbol} đã có trong danh sách"})
+        watch.append(symbol)
+        _state["pump_watch_coins"] = watch
+
+    # Sync vào config memory để pump_scan_engine đọc
+    try:
+        import config as _cfg
+        if not hasattr(_cfg, "PUMP_WATCH_COINS"):
+            _cfg.PUMP_WATCH_COINS = []
+        if symbol not in _cfg.PUMP_WATCH_COINS:
+            _cfg.PUMP_WATCH_COINS.append(symbol)
+    except Exception:
+        pass
+
+    # Lưu vào config.py file
+    _save_pump_coins_to_config(watch)
+    logger.info(f"[PumpRadar] Added pump coin: {symbol}")
+    return jsonify({"ok": True, "msg": f"Đã thêm {symbol} vào Pump Radar ✅"})
+
+
+@app.route("/api/pump/coins/remove", methods=["POST"])
+def api_pump_remove_coin():
+    """Xóa coin khỏi danh sách pump watch."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+
+    with _lock:
+        watch = _state.get("pump_watch_coins", [])
+        if symbol not in watch:
+            return jsonify({"ok": False, "msg": f"{symbol} không có trong danh sách"})
+        watch.remove(symbol)
+        _state["pump_watch_coins"] = watch
+        # Xóa signals cũ của coin này
+        _state["pump_signals"] = [s for s in _state.get("pump_signals", [])
+                                   if s.get("symbol") != symbol]
+
+    try:
+        import config as _cfg
+        if hasattr(_cfg, "PUMP_WATCH_COINS") and symbol in _cfg.PUMP_WATCH_COINS:
+            _cfg.PUMP_WATCH_COINS.remove(symbol)
+    except Exception:
+        pass
+
+    _save_pump_coins_to_config(watch)
+    logger.info(f"[PumpRadar] Removed pump coin: {symbol}")
+    return jsonify({"ok": True, "msg": f"Đã xóa {symbol} khỏi Pump Radar"})
+
+
+@app.route("/api/pump/toggle_auto", methods=["POST"])
+def api_pump_toggle_auto():
+    """Bật/tắt PUMP_AUTO_SHORT."""
+    data    = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    try:
+        import config as _cfg
+        _cfg.PUMP_AUTO_SHORT = enabled
+    except Exception:
+        pass
+    msg = "🔴 AUTO SHORT bật — bot sẽ tự vào lệnh khi phát hiện đỉnh pump" if enabled \
+          else "⏸ AUTO SHORT tắt — chỉ gửi Telegram alert"
+    logger.info(f"[PumpRadar] PUMP_AUTO_SHORT = {enabled}")
+    return jsonify({"ok": True, "msg": msg, "enabled": enabled})
+
+
+def _save_pump_coins_to_config(coins: list):
+    """Ghi PUMP_WATCH_COINS vào config.py."""
+    import os, re
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_block = "PUMP_WATCH_COINS = [\n"
+        for c in coins:
+            new_block += f'    "{c}",\n'
+        new_block += "]"
+        content = re.sub(
+            r'PUMP_WATCH_COINS\s*=\s*\[.*?\]',
+            new_block,
+            content,
+            flags=re.DOTALL
+        )
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[PumpRadar] Config saved: PUMP_WATCH_COINS = {coins}")
+    except Exception as e:
+        logger.error(f"[PumpRadar] Save config failed: {e}")
+
+
 def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     """Start web dashboard in background thread."""
     global _state, _lock, _config, _exchange
@@ -1093,6 +1577,13 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     from scanner import WATCHLIST
     with lock:
         state["_watchlist"] = list(WATCHLIST)
+        # Khởi tạo pump watch list nếu chưa có
+        if "pump_watch_coins" not in state:
+            state["pump_watch_coins"] = list(getattr(config, "PUMP_WATCH_COINS", []))
+        if "pump_signals" not in state:
+            state["pump_signals"] = []   # list PumpSignal gần nhất
+        if "pump_scan_status" not in state:
+            state["pump_scan_status"] = {"scanning": False, "last_scan": "--:--", "scan_count": 0}
 
     def run():
         log = logging.getLogger("werkzeug")

@@ -12,6 +12,7 @@ from indicators import (
     get_mtf_trend, is_volatile_coin, get_pullback_signal,
     get_smart_entry_signal, compute_signal_score,
 )
+from pump_detector import PumpDetector, PumpSignal, scan_for_pump_tops
 
 logger = logging.getLogger(__name__)
 
@@ -601,13 +602,52 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
 scan_market._last_candidates = []
 
 # ── Pending watch: coin pass MTF nhưng 1m chưa trigger ──────
-# {symbol: {"signal": "LONG"/"SHORT", "score": float,
-#            "bias": str, "ts": float, "retry": int,
-#            "df_15m": df, "df_1m": df}}
-# Tồn tại tối đa 10 phút (10 lần scan × 60s), sau đó tự xóa
 _pending_watch: dict = {}
 _PENDING_TTL       = 600   # giây — 10 phút
 _PENDING_MAX_RETRY = 10    # tối đa 10 lần retry
+
+# ── Pump scan state ──────────────────────────────────────────
+_pump_last_scan: float = 0   # timestamp lần quét pump gần nhất
+
+
+def run_pump_scan(exchange, config, notifier=None) -> list:
+    """
+    Quét PUMP_WATCH_COINS + FIXED_COINS tìm đỉnh pump để SHORT.
+    Trả về list PumpSignal confirmed.
+
+    Gọi từ pump_scan_engine thread trong bot.py (mỗi 30s).
+    """
+    global _pump_last_scan
+
+    interval = getattr(config, "PUMP_SCAN_INTERVAL_SECONDS", 30)
+    now = time.time()
+    if now - _pump_last_scan < interval:
+        return []
+    _pump_last_scan = now
+
+    # Gom danh sách coin cần quét:
+    # 1. PUMP_WATCH_COINS (coin dev hay bơm — ưu tiên cao nhất)
+    # 2. FIXED_COINS / WATCHLIST hiện tại
+    watch = list(getattr(config, "PUMP_WATCH_COINS", []))
+    fixed = list(getattr(config, "FIXED_COINS", WATCHLIST))
+    for s in fixed:
+        if s not in watch:
+            watch.append(s)
+
+    if not getattr(config, "PUMP_DETECTOR_ENABLED", True):
+        return []
+
+    logger.info(f"[PumpScan] Scanning {len(watch)} coins for pump tops...")
+
+    from pump_detector import scan_for_pump_tops
+    results = scan_for_pump_tops(exchange, watch, config, notifier)
+
+    if results:
+        logger.info(f"[PumpScan] Found {len(results)} pump top(s): "
+                    f"{[r.symbol for r in results]}")
+    return results
+
+
 def _klines_to_df(klines: list) -> pd.DataFrame:
     df = pd.DataFrame(klines, columns=[
         "open_time", "open", "high", "low", "close", "volume",

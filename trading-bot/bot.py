@@ -49,7 +49,7 @@ except:
 import config
 from exchange import BinanceFutures
 from indicators import calculate_atr, get_signal
-from scanner import scan_market, WATCHLIST, _klines_to_df, _pending_watch
+from scanner import scan_market, run_pump_scan, WATCHLIST, _klines_to_df, _pending_watch
 from notifier import Notifier
 from liquidation_tracker import LiquidationTracker
 from liq_strategy import LiqStrategy, SplitPosition
@@ -353,6 +353,227 @@ def dashboard_updater():
 # ============================================================
 # THREAD 1a: Giá realtime qua WebSocket (cập nhật mỗi 100ms)
 # ============================================================
+# THREAD 1a: Giá realtime qua WebSocket (cập nhật mỗi 100ms)
+# + PUMP SPIKE DETECTOR gắn thẳng vào WS — phát hiện trong < 1s
+# ============================================================
+
+# ── Pump spike tracker — theo dõi % thay đổi giá theo thời gian ──
+# {symbol: {"prices": [deque of (ts, price)], "alerted": bool, "alert_ts": float}}
+_pump_spike_tracker: dict = {}
+_SPIKE_WINDOW_SEC   = 10    # cửa sổ 10 giây để tính % tăng
+_SPIKE_MIN_PCT      = 3.0   # tăng >= 3% trong 10s → nghi ngờ pump
+_SPIKE_CONFIRM_PCT  = 6.0   # tăng >= 6% → xác nhận luôn, không cần indicators
+_SPIKE_COOLDOWN_SEC = 120   # 2 phút không spam cùng coin
+
+
+def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
+    """
+    Được gọi từ WS on_message mỗi khi nhận tick giá.
+    Nếu phát hiện spike bất thường → lấy klines 1m (async) rồi chạy PumpDetector.
+    Cực kỳ nhẹ: chỉ lưu price + tính % change, không block WS thread.
+    """
+    from collections import deque
+    import time as _t
+
+    now = _t.time()
+
+    # Khởi tạo tracker cho coin mới
+    if sym not in _pump_spike_tracker:
+        _pump_spike_tracker[sym] = {
+            "prices":   deque(maxlen=60),   # tối đa 60 tick (~60s)
+            "alerted":  False,
+            "alert_ts": 0.0,
+        }
+
+    tracker = _pump_spike_tracker[sym]
+    tracker["prices"].append((now, price))
+
+    # Lấy giá cách đây SPIKE_WINDOW_SEC giây
+    cutoff = now - _SPIKE_WINDOW_SEC
+    old_ticks = [(ts, p) for ts, p in tracker["prices"] if ts <= cutoff]
+    if not old_ticks:
+        return   # Chưa đủ dữ liệu lịch sử
+
+    oldest_price = old_ticks[-1][1]   # giá cũ nhất trong cửa sổ
+    if oldest_price <= 0:
+        return
+
+    pct_change = (price - oldest_price) / oldest_price * 100
+
+    # Không đủ spike
+    if pct_change < _SPIKE_MIN_PCT:
+        # Reset alert flag khi giá bình thường trở lại
+        if pct_change < _SPIKE_MIN_PCT * 0.5:
+            tracker["alerted"] = False
+        return
+
+    # Cooldown — không spam
+    if now - tracker["alert_ts"] < _SPIKE_COOLDOWN_SEC:
+        return
+
+    # Đánh dấu đã alert để tránh duplicate trong cùng spike
+    tracker["alerted"] = True
+    tracker["alert_ts"] = now
+
+    logger.info(
+        f"[WS-PumpSpike] {sym}: +{pct_change:.1f}% trong {_SPIKE_WINDOW_SEC}s "
+        f"@ ${price:.6g} — triggering full analysis..."
+    )
+
+    # Spawn thread riêng để lấy klines + chạy PumpDetector
+    # KHÔNG block WS on_message
+    import threading as _th
+    _th.Thread(
+        target=_ws_spike_full_analysis,
+        args=(sym, price, pct_change, exchange_ref, notifier_ref),
+        daemon=True
+    ).start()
+
+
+def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
+                             exchange_ref, notifier_ref):
+    """
+    Chạy trong thread riêng sau khi WS phát hiện spike.
+    Lấy klines 1m + 15m → chạy PumpDetector đầy đủ → vào SHORT nếu cần.
+    Tổng thời gian: ~300-600ms (1 REST call klines).
+    """
+    import time as _t
+    from pump_detector import PumpDetector, _to_df
+
+    try:
+        # Lấy klines nhanh nhất có thể
+        klines_1m  = exchange_ref.get_klines(sym, "1m",  limit=60)
+        klines_15m = exchange_ref.get_klines(sym, "15m", limit=30)
+        df_1m  = _to_df(klines_1m)
+        df_15m = _to_df(klines_15m)
+
+        detector = PumpDetector(config)
+        # Override: với spike từ WS, hạ ngưỡng pump_pct xuống vì đã confirm spike
+        detector.cfg["PUMP_PRICE_RISE_PCT"] = max(spike_pct * 0.7, 5.0)
+
+        sig = detector.analyze(sym, df_1m, df_15m)
+
+        # Update pump_signals trong state để web hiển thị
+        with lock:
+            pump_watch = state.get("pump_watch_coins", [])
+
+        if sig is None:
+            # Spike nhỏ, chưa đủ tín hiệu — vẫn alert nếu spike > CONFIRM
+            if spike_pct >= _SPIKE_CONFIRM_PCT:
+                _ws_spike_send_alert(sym, trigger_price, spike_pct,
+                                     None, notifier_ref)
+            return
+
+        # Lưu vào state
+        sig_dict = {
+            "symbol": sig.symbol, "is_pump_top": sig.is_pump_top,
+            "score": sig.score, "pump_pct": sig.pump_pct,
+            "signals": sig.signals, "entry_price": sig.entry_price,
+            "sl_price": sig.sl_price, "tp1_price": sig.tp1_price,
+            "tp2_price": sig.tp2_price, "atr": sig.atr,
+            "volume_ratio": sig.volume_ratio, "rsi": sig.rsi,
+            "timestamp": sig.timestamp,
+        }
+        with lock:
+            signals = state.get("pump_signals", [])
+            idx = next((i for i, s in enumerate(signals)
+                        if s.get("symbol") == sym), None)
+            if idx is not None:
+                signals[idx] = sig_dict
+            else:
+                signals.append(sig_dict)
+            state["pump_signals"] = signals[-100:]
+
+        # Gửi alert nếu đủ điều kiện
+        min_score = getattr(config, "PUMP_TOP_MIN_SCORE", 60)
+        if sig.is_pump_top or spike_pct >= _SPIKE_CONFIRM_PCT:
+            _ws_spike_send_alert(sym, trigger_price, spike_pct, sig, notifier_ref)
+
+        # Auto SHORT
+        auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
+        if auto_short and (sig.is_pump_top or spike_pct >= _SPIKE_CONFIRM_PCT):
+            _ws_spike_do_short(sym, sig, exchange_ref, notifier_ref)
+
+    except Exception as e:
+        logger.error(f"[WS-Spike] Full analysis {sym} error: {e}")
+
+
+def _ws_spike_send_alert(sym: str, price: float, spike_pct: float,
+                          sig, notifier_ref):
+    """Gửi Telegram alert pump spike."""
+    try:
+        if sig and sig.is_pump_top:
+            notifier_ref.telegram.send(sig.to_telegram())
+        else:
+            # Alert đơn giản không cần full signal
+            score_str = f" | Score: {sig.score}/100" if sig else ""
+            notifier_ref.telegram.send(
+                f"⚡ <b>PUMP SPIKE DETECTED</b>\n"
+                f"{'─'*30}\n"
+                f"🪙 {sym}  📈 <b>+{spike_pct:.1f}%</b> trong {_SPIKE_WINDOW_SEC}s\n"
+                f"💰 Giá: <b>${price:,.6g}</b>{score_str}\n"
+                f"⚠️ <i>Theo dõi — chưa đủ điều kiện SHORT</i>\n"
+                f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+            )
+    except Exception as e:
+        logger.warning(f"[WS-Spike] Alert failed: {e}")
+
+
+def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref):
+    """Vào SHORT ngay sau khi WS phát hiện đỉnh pump."""
+    try:
+        with lock:
+            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                         if abs(float(p.get("positionAmt", 0))) > 0}
+            n_open = len(state.get("open_positions", []))
+
+        if sym in open_syms or n_open >= config.MAX_OPEN_POSITIONS:
+            return
+
+        exchange_ref.set_leverage(sym, config.LEVERAGE)
+        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / sig.entry_price
+        try:
+            step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
+            qty = max(round(int(qty / step) * step, decimals), step)
+        except Exception:
+            qty = round(qty, 3)
+
+        if qty * sig.entry_price < 5.0:
+            return
+
+        exchange_ref.place_market_order(sym, "SELL", qty)
+        import time as _t; _t.sleep(0.3)
+        try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
+        except Exception as e: logger.error(f"[WS-Spike] SL {sym}: {e}")
+        try: exchange_ref.place_take_profit_order(sym, "BUY", qty, sig.tp1_price)
+        except Exception as e: logger.error(f"[WS-Spike] TP {sym}: {e}")
+
+        rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
+        with lock:
+            state["trade_log"].append({
+                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": "SHORT",
+                "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
+                "qty":    qty, "status": "OPEN",
+                "note":   f"ws_spike_s{sig.score}",
+            })
+
+        notifier_ref.telegram.send(
+            f"🔴 <b>WS SPIKE SHORT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {sym}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
+            f"💰 Entry: <b>${sig.entry_price:,.6g}</b>\n"
+            f"🛑 SL   : <b>${sig.sl_price:,.6g}</b>\n"
+            f"🎯 TP1  : <b>${sig.tp1_price:,.6g}</b>\n"
+            f"📐 RR   : 1:{rr:.1f}   📦 Qty: {qty}\n"
+            f"⚡ <i>Triggered by WS spike detector</i>\n"
+            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(f"[WS-Spike] SHORT placed: {sym} qty={qty} score={sig.score}")
+    except Exception as e:
+        logger.error(f"[WS-Spike] Short {sym} failed: {e}")
+
+
 def price_ws_streamer():
     """WebSocket stream giá realtime từ Binance — nhanh hơn REST 30 lần"""
     import websocket as ws_lib
@@ -364,15 +585,30 @@ def price_ws_streamer():
     base_ws = "wss://fstream.binance.com" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
     url = f"{base_ws}/stream?streams={streams}"
 
+    # Đặt exchange/notifier reference cho spike checker
+    _ws_exchange_ref  = [None]
+    _ws_notifier_ref  = [None]
+
     def on_message(wsapp, message):
         try:
-            data = _json.loads(message)
+            data    = _json.loads(message)
             payload = data.get("data", {})
-            sym = payload.get("s", "")
-            mark = float(payload.get("p", 0))
+            sym     = payload.get("s", "")
+            mark    = float(payload.get("p", 0))
             if sym and mark > 0:
                 with lock:
                     state["prices"][sym] = mark
+
+                # ── PUMP SPIKE CHECK — chạy mỗi tick, cực nhẹ ──
+                # Chỉ check coin trong pump_watch_coins (mày add vào web)
+                with lock:
+                    pump_watch = set(state.get("pump_watch_coins", []))
+                if sym in pump_watch:
+                    exc = _ws_exchange_ref[0]
+                    noti = _ws_notifier_ref[0]
+                    if exc and noti:
+                        _ws_pump_spike_check(sym, mark, exc, noti)
+
         except Exception:
             pass
 
@@ -384,6 +620,21 @@ def price_ws_streamer():
 
     while state["running"]:
         try:
+            # Lấy exchange/notifier từ state (được set sau khi bot start)
+            with lock:
+                _ws_exchange_ref[0]  = state.get("_exchange")
+                _ws_notifier_ref[0]  = state.get("_notifier")
+
+            # Rebuild stream URL mỗi lần reconnect (watchlist có thể thay đổi)
+            with lock:
+                pump_watch = list(state.get("pump_watch_coins", []))
+            all_syms = list(dict.fromkeys(
+                [s.lower() for s in WATCHLIST] +
+                [s.lower() for s in pump_watch]
+            ))
+            streams = "/".join([f"{s}@markPrice@1s" for s in all_syms])
+            url = f"{base_ws}/stream?streams={streams}"
+
             wsapp = ws_lib.WebSocketApp(
                 url,
                 on_message=on_message,
@@ -1099,6 +1350,222 @@ def scan_engine(exchange, notifier):
 
         time.sleep(config.LOOP_INTERVAL_SECONDS)
 
+# ============================================================
+# THREAD 2c: Pump Scan Engine — quét đỉnh pump để SHORT
+# Chạy song song với scan_engine, interval riêng
+# - Có pump coins → quét mỗi 5s (bắt đỉnh kịp thời)
+# - Không có pump coins → quét mỗi 30s (tiết kiệm API)
+# ============================================================
+def pump_scan_engine(exchange, notifier):
+    """
+    Mỗi PUMP_SCAN_INTERVAL_SECONDS (30s) hoặc 5s nếu có pump coins:
+    1. Quét PUMP_WATCH_COINS + FIXED_COINS
+    2. Nếu phát hiện đỉnh pump → gửi Telegram ngay
+    3. Nếu config cho phép auto-short → vào lệnh SHORT luôn
+    """
+    # Đợi 10s cho bot ổn định trước
+    time.sleep(10)
+    logger.info("[PumpEngine] Started — watching for pump tops...")
+
+    from pump_detector import PumpDetector, _to_df
+
+    detector = PumpDetector(config)
+
+    while state["running"]:
+        try:
+            # Lấy danh sách pump coins từ state (web có thể add/remove)
+            with lock:
+                pump_coins = list(state.get("pump_watch_coins", []))
+
+            # Lấy config dynamic
+            auto_short   = getattr(config, "PUMP_AUTO_SHORT", False)
+            min_score    = getattr(config, "PUMP_TOP_MIN_SCORE", 60)
+            slow_interval = getattr(config, "PUMP_SCAN_INTERVAL_SECONDS", 30)
+
+            # Interval thông minh:
+            # - Có pump coins → 5s (cần bắt đỉnh trong vài giây)
+            # - Không có    → 30s (tiết kiệm API)
+            interval = 5 if pump_coins else slow_interval
+
+            # Update trạng thái scanning cho web dashboard
+            with lock:
+                state.setdefault("pump_scan_status", {})
+                state["pump_scan_status"]["scanning"] = True
+
+            confirmed_this_round = []
+
+            # ── Quét từng pump coin riêng lẻ (nhanh, không bị block) ──
+            for symbol in pump_coins:
+                try:
+                    klines_1m  = exchange.get_klines(symbol, "1m",  limit=200)
+                    klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+                    df_1m      = _to_df(klines_1m)
+                    df_15m     = _to_df(klines_15m)
+
+                    sig = detector.analyze(symbol, df_1m, df_15m)
+                    if sig is None:
+                        continue
+
+                    # Lưu signal vào state để web hiển thị (kể cả chưa đủ score)
+                    sig_dict = {
+                        "symbol":       sig.symbol,
+                        "is_pump_top":  sig.is_pump_top,
+                        "score":        sig.score,
+                        "pump_pct":     sig.pump_pct,
+                        "signals":      sig.signals,
+                        "entry_price":  sig.entry_price,
+                        "sl_price":     sig.sl_price,
+                        "tp1_price":    sig.tp1_price,
+                        "tp2_price":    sig.tp2_price,
+                        "atr":          sig.atr,
+                        "volume_ratio": sig.volume_ratio,
+                        "rsi":          sig.rsi,
+                        "timestamp":    sig.timestamp,
+                    }
+                    with lock:
+                        signals = state.get("pump_signals", [])
+                        # Cập nhật hoặc thêm mới
+                        existing = next((i for i, s in enumerate(signals)
+                                         if s.get("symbol") == symbol), None)
+                        if existing is not None:
+                            signals[existing] = sig_dict
+                        else:
+                            signals.append(sig_dict)
+                        # Giới hạn 100 entry
+                        state["pump_signals"] = signals[-100:]
+
+                    if sig.is_pump_top:
+                        confirmed_this_round.append(sig)
+                        logger.info(
+                            f"[PumpEngine] TOP: {symbol} score={sig.score} "
+                            f"+{sig.pump_pct:.1f}%"
+                        )
+                        # Telegram alert ngay
+                        try:
+                            notifier.telegram.send(sig.to_telegram())
+                        except Exception as te:
+                            logger.warning(f"[PumpEngine] Telegram failed: {te}")
+
+                except Exception as e:
+                    logger.debug(f"[PumpEngine] {symbol} scan error: {e}")
+
+            # ── Cũng quét FIXED_COINS nhưng chậm hơn (mỗi slow_interval) ──
+            # Chỉ chạy khi interval == slow_interval (không có pump coins)
+            # hoặc mỗi 6 vòng (30s) khi đang chạy 5s
+            with lock:
+                _scan_tick = state.get("_pump_tick", 0) + 1
+                state["_pump_tick"] = _scan_tick
+
+            fixed_coins = [c for c in list(getattr(config, "FIXED_COINS", WATCHLIST))
+                           if c not in pump_coins]
+            should_scan_fixed = (_scan_tick % max(1, slow_interval // interval) == 0)
+
+            if should_scan_fixed and fixed_coins:
+                for symbol in fixed_coins:
+                    try:
+                        klines_1m  = exchange.get_klines(symbol, "1m",  limit=200)
+                        klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+                        df_1m      = _to_df(klines_1m)
+                        df_15m     = _to_df(klines_15m)
+                        sig = detector.analyze(symbol, df_1m, df_15m)
+                        if sig and sig.is_pump_top:
+                            confirmed_this_round.append(sig)
+                            logger.info(f"[PumpEngine] Fixed coin TOP: {symbol} score={sig.score}")
+                            try:
+                                notifier.telegram.send(sig.to_telegram())
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"[PumpEngine] fixed {symbol}: {e}")
+
+            # ── Update scan status cho web ──────────────────
+            with lock:
+                st = state.setdefault("pump_scan_status", {})
+                st["scanning"]   = False
+                st["last_scan"]  = datetime.now().strftime("%H:%M:%S")
+                st["scan_count"] = st.get("scan_count", 0) + 1
+                # Sync pump_watch_coins → config
+                config.PUMP_WATCH_COINS = list(state.get("pump_watch_coins", []))
+
+            # ── AUTO SHORT nếu bật ──────────────────────────
+            if auto_short and confirmed_this_round:
+                with lock:
+                    n_open = len(state.get("open_positions", []))
+                if n_open >= config.MAX_OPEN_POSITIONS:
+                    confirmed_this_round = []
+
+                for sig in confirmed_this_round:
+                    symbol = sig.symbol
+                    try:
+                        # Kiểm tra không có position / pending
+                        with lock:
+                            open_syms = {
+                                p["symbol"] for p in state.get("open_positions", [])
+                                if abs(float(p.get("positionAmt", 0))) > 0
+                            }
+                        if symbol in open_syms:
+                            continue
+                        try:
+                            pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                            if any(o["symbol"] == symbol and not o.get("reduceOnly")
+                                   for o in pending_orders):
+                                continue
+                        except Exception:
+                            pass
+
+                        exchange.set_leverage(symbol, config.LEVERAGE)
+                        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / sig.entry_price
+                        try:
+                            step, max_qty, decimals, min_notional = exchange.get_qty_precision(symbol)
+                            qty = max(round(int(qty / step) * step, decimals), step)
+                        except Exception:
+                            qty = round(qty, 3)
+
+                        if qty * sig.entry_price < 5.0:
+                            continue
+
+                        exchange.place_market_order(symbol, "SELL", qty)
+                        time.sleep(0.5)
+
+                        try: exchange.place_stop_loss_order(symbol, "BUY", qty, sig.sl_price)
+                        except Exception as e: logger.error(f"[PumpEngine] SL {symbol}: {e}")
+                        try: exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
+                        except Exception as e: logger.error(f"[PumpEngine] TP {symbol}: {e}")
+
+                        rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
+                        with lock:
+                            state["trade_log"].append({
+                                "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": symbol, "side": "SHORT",
+                                "entry":  sig.entry_price,
+                                "sl": sig.sl_price, "tp": sig.tp1_price,
+                                "qty": qty, "status": "OPEN",
+                                "note": f"pump_short_s{sig.score}",
+                            })
+
+                        notifier.telegram.send(
+                            f"🔴 <b>AUTO SHORT — PUMP TOP</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
+                            f"💰 Entry : <b>${sig.entry_price:,.6g}</b>\n"
+                            f"🛑 SL    : <b>${sig.sl_price:,.6g}</b>\n"
+                            f"🎯 TP1   : <b>${sig.tp1_price:,.6g}</b>\n"
+                            f"📐 RR    : 1:{rr:.1f}   📦 Qty: {qty}\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[PumpEngine] SHORT placed: {symbol} score={sig.score}")
+
+                    except Exception as e:
+                        logger.error(f"[PumpEngine] Short {symbol} failed: {e}")
+
+        except Exception as e:
+            logger.error(f"[PumpEngine] Loop error: {e}", exc_info=True)
+            with lock:
+                state.setdefault("pump_scan_status", {})["scanning"] = False
+
+        time.sleep(interval)
+
+
 # THREAD 4: Liquidation Strategy Engine
 # Mỗi 30s: phân tích liq data → vào 2 lệnh split nếu có setup
 # Mỗi 5s : monitor các lệnh split đang chờ khớp + theo dõi SL/TP
@@ -1800,6 +2267,13 @@ if __name__ == "__main__":
     liq_tracker.start()
     state["liq_tracker"] = liq_tracker
 
+    # Khởi tạo pump state
+    with lock:
+        state["pump_watch_coins"]  = list(getattr(config, "PUMP_WATCH_COINS", []))
+        state["pump_signals"]      = []
+        state["pump_scan_status"]  = {"scanning": False, "last_scan": "--:--", "scan_count": 0}
+        state["_pump_tick"]        = 0
+
     # Khởi động LiqHeatmapCache (REST API — có data ngay lập tức)
     try:
         from liq_heatmap_api import LiqHeatmapCache
@@ -1935,6 +2409,8 @@ if __name__ == "__main__":
         _t3.start()
         _t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
         _t5.start()
+        _t_pump = threading.Thread(target=pump_scan_engine, args=(exchange, notifier), daemon=True)
+        _t_pump.start()
         _t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
         _t7.start()
         # Restart Telegram command handler
@@ -1976,6 +2452,10 @@ if __name__ == "__main__":
 
     t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
     t3.start()
+
+    # Pump scan thread — phát hiện đỉnh pump để SHORT (mỗi 30s)
+    t_pump = threading.Thread(target=pump_scan_engine, args=(exchange, notifier), daemon=True)
+    t_pump.start()
 
     # Liq strategy thread
     t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)

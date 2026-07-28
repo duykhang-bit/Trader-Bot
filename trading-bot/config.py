@@ -131,6 +131,67 @@ LIQ_SETUP_TIMEOUT_HOURS = 6
 
 
 # ============================================================
+# PUMP DETECTOR CONFIG
+# ============================================================
+
+# Bật/tắt pump detector (scan đỉnh pump để SHORT)
+PUMP_DETECTOR_ENABLED = True
+
+# % tăng tối thiểu từ đáy để coi là "đang pump"
+# 15 = coin phải tăng ít nhất 15% từ đáy → mới bắt đầu check đỉnh
+PUMP_PRICE_RISE_PCT = 15.0
+
+# Số nến 1m nhìn lại để tìm đáy gần nhất
+PUMP_LOOKBACK_CANDLES = 20
+
+# Volume exhaustion: volume nến hiện tại <= X% đỉnh volume đợt pump → kiệt sức
+# 0.45 = volume hiện tại <= 45% đỉnh → dấu hiệu xả hàng xong
+VOL_EXHAUST_RATIO = 0.45
+
+# Số nến cuối để tính volume trung bình khi check exhaustion
+VOL_EXHAUST_CANDLES = 5
+
+# Wick rejection: bóng nến trên >= X lần thân nến → bị reject mạnh
+WICK_REJECT_RATIO = 1.8
+
+# RSI divergence: số nến nhìn lại để tìm RSI peak trước
+RSI_DIV_LOOKBACK = 10
+
+# Price deceleration: số nến cuối để đo đà giảm tốc
+DECEL_CANDLES = 3
+
+# Score tối thiểu để xác nhận đỉnh pump (0-100)
+# 60 = cần đủ 60/100 điểm từ 6 tín hiệu mới gửi SHORT alert
+# Tăng lên 70-75 nếu muốn chắc hơn (ít signal hơn)
+PUMP_TOP_MIN_SCORE = 60
+
+# Cooldown: không spam signal cho cùng 1 coin (giây)
+PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
+
+# Danh sách coin đặc biệt cần theo dõi pump (ngoài watchlist thường)
+# Thêm coin kiểu BANK, LAB, v.v. mà dev hay bơm vào đây
+PUMP_WATCH_COINS = [
+    "BANKUSDT",
+    "LABUSDT",
+    "SIRENUSDT",
+    "MAGMAUSDT",
+    "SPCXUSDT",
+    "VANRYUSDT",
+    "TLMUSDT",
+    "BELUSDT",
+]
+
+# Interval quét pump riêng (giây) — chạy nhanh hơn main loop
+# 30s để bắt đỉnh kịp thời, không phải đợi 60s main loop
+PUMP_SCAN_INTERVAL_SECONDS = 30
+
+# Tự động vào SHORT khi phát hiện đỉnh pump
+# True  → bot TỰ vào lệnh SHORT (nguy hiểm, dùng khi đã test kỹ)
+# False → chỉ gửi Telegram alert, mày quyết định vào tay
+PUMP_AUTO_SHORT = False
+
+
+# ============================================================
 # AI ANALYSIS (TradingAgents) CONFIG
 # ============================================================
 
