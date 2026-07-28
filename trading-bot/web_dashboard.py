@@ -527,6 +527,24 @@ async function removePumpCoin(sym) {
     fetchPump();
 }
 
+async function pumpManualShort(sym) {
+    // Lấy giá hiện tại từ state
+    const price = (_pumpData && _pumpData.coins)
+        ? ((_pumpData.coins.find(c=>c.symbol===sym)||{}).price || 0)
+        : 0;
+    const priceStr = price > 0 ? ` @ $${price.toPrecision(5)}` : '';
+    if (!confirm(`SHORT tay ${sym}${priceStr}?\n\nDùng MAX_ORDER_USDT + LEVERAGE từ config.`)) return;
+    const r = await apiPost('/api/order', {
+        symbol: sym,
+        side:   'SHORT',
+        usdt:   0,   // 0 = dùng MAX_ORDER_USDT từ config
+        sl:     0,
+        tp:     0,
+        leverage: 0  // 0 = dùng LEVERAGE từ config
+    });
+    if (r.ok) fetchPump();
+}
+
 async function toggleAutoShort(enabled) {
     const r = await apiPost('/api/pump/toggle_auto', {enabled: enabled});
     if (r && r.msg) toast(r.msg, r.ok);
@@ -668,6 +686,9 @@ function renderPumpRadar(d) {
                 </div>
                 <div style="display:flex;align-items:center;gap:6px">
                   ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
+                  <button onclick="pumpManualShort('${c.symbol}')"
+                          style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:4px;
+                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▼ SHORT</button>
                   <button onclick="removePumpCoin('${c.symbol}')"
                           style="background:none;border:none;color:#1a4a3a;cursor:pointer;font-size:15px;padding:0">×</button>
                 </div>
@@ -1220,6 +1241,11 @@ def api_place_order():
     sl = float(data.get("sl", 0))
     tp = float(data.get("tp", 0))
     leverage = int(data.get("leverage", getattr(_config, "LEVERAGE", 10)))
+    # 0 = dùng config mặc định
+    if usdt <= 0:
+        usdt = float(getattr(_config, "MAX_ORDER_USDT", 15))
+    if leverage <= 0:
+        leverage = int(getattr(_config, "LEVERAGE", 10))
 
     if not symbol or side not in ("LONG", "SHORT") or usdt <= 0:
         return jsonify({"ok": False, "msg": "Invalid params"})
