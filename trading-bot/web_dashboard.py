@@ -887,9 +887,9 @@ function renderPumpRadar(d) {
                 </div>
                 <div style="display:flex;align-items:center;gap:5px">
                   ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
-                  <button onclick="pumpManualLong('${c.symbol}')"
+                  ${isAlert ? `<button onclick="pumpManualLong('${c.symbol}')"
                           style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:4px;
-                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▲ LONG</button>
+                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▲ LONG</button>` : ''}
                   <button onclick="pumpManualShort('${c.symbol}')"
                           style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:4px;
                                  padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▼ SHORT</button>
