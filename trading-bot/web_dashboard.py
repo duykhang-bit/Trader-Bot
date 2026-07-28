@@ -1698,6 +1698,15 @@ def api_pump_state():
     """Trả về trạng thái pump radar: danh sách coin đang theo dõi + signals gần nhất."""
     if _state is None:
         return jsonify({"ok": False})
+    try:
+        return _api_pump_state_inner()
+    except Exception as e:
+        logger.error(f"[api/pump] Error: {e}", exc_info=True)
+        return jsonify({"ok": True, "status": {}, "coins": [], "history": [],
+                        "auto_short": False, "soft_short": False, "min_score": 60,
+                        "pump_alerts": {}, "error": str(e)})
+
+def _api_pump_state_inner():
     with _lock:
         watch   = list(_state.get("pump_watch_coins", []))
         signals = list(_state.get("pump_signals", []))
@@ -1744,7 +1753,7 @@ def api_pump_state():
                 effective_pump_pct = sig_pump
 
         # Xóa pump_alert nếu stale — tránh hiện "Đang pump!" khi giá đã giảm
-        if is_stale and sym in pump_alerts:
+        if is_stale:
             pump_alerts.pop(sym, None)
         # Cũng check alert_d: nếu giá đã giảm > 5% từ giá alert → stale alert
         if alert_d and price > 0:
