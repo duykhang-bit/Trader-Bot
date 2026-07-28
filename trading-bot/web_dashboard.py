@@ -589,7 +589,7 @@ function patchPumpRadar(d) {
     let needFullRender = false;
     coins.forEach(c => {
         const card = document.getElementById('pump-card-' + c.symbol);
-        if (!card) { needFullRender = true; return; }  // coin mới → đánh dấu nhưng không reset ngay
+        if (!card) { needFullRender = true; return; }
 
         const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
         const priceEl = document.getElementById('pump-price-' + c.symbol);
@@ -597,21 +597,34 @@ function patchPumpRadar(d) {
 
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
-            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a');
             scoreEl.textContent = c.score + '/100';
             scoreEl.style.color = col;
         }
         const barEl = document.getElementById('pump-bar-' + c.symbol);
         if (barEl) {
-            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a');
             barEl.style.width = Math.min(c.score, 100) + '%';
             barEl.style.background = col;
         }
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
-            const isAlert = c.score >= minScore;
-            const isNear  = c.score >= 40 && !isAlert;
-            statusEl.textContent = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
+            if (c.is_top)        statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
+            else if (c.is_alert) statusEl.textContent = '🚀 Đang pump!';
+            else if (c.score >= minScore) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
+            else if (c.score >= 40)       statusEl.textContent = '🟡 Đang gần';
+            else                          statusEl.textContent = '⚫ Đang quét';
+        }
+
+        // Cập nhật pump alert banner bên dưới card nếu có
+        const alertEl = document.getElementById('pump-alert-' + c.symbol);
+        if (alertEl) {
+            if (c.is_alert && c.alert_reason) {
+                alertEl.style.display = 'block';
+                alertEl.textContent   = '🚀 ' + c.alert_reason;
+            } else {
+                alertEl.style.display = 'none';
+            }
         }
     });
 
@@ -670,6 +683,18 @@ async function pumpManualShort(sym) {
         sl:     0,
         tp:     0,
         leverage: 0  // 0 = dùng LEVERAGE từ config
+    });
+    if (r.ok) fetchPump();
+}
+
+async function pumpManualLong(sym) {
+    const price = (_pumpData && _pumpData.coins)
+        ? ((_pumpData.coins.find(c=>c.symbol===sym)||{}).price || 0)
+        : 0;
+    const priceStr = price > 0 ? ` @ $${price.toPrecision(5)}` : '';
+    if (!confirm(`▲ LONG tay ${sym}${priceStr}?\n\nSL/TP tự động từ chart.\nDùng MAX_ORDER_USDT + LEVERAGE từ config.`)) return;
+    const r = await apiPost('/api/pump/coins/manual_long', {
+        symbol: sym, usdt: 0, leverage: 0
     });
     if (r.ok) fetchPump();
 }
@@ -815,27 +840,52 @@ function renderPumpRadar(d) {
             </div>` :
           coins.map(c => {
             const name    = c.symbol.replace('USDT','');
-            const isAlert = c.score >= minScore;
-            const isNear  = c.score >= 40 && !isAlert;
-            const col     = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a4a';
-            const bg      = isAlert ? 'rgba(63,185,80,.08)' : isNear ? 'rgba(210,153,34,.05)' : 'transparent';
-            const bdr     = isAlert ? '1px solid rgba(63,185,80,.4)' : isNear ? '1px solid rgba(210,153,34,.3)' : '1px solid #0d2020';
-            const pStr    = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const status  = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
-            const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
-            const ageStr  = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
+            const isTop   = c.is_top;
+            const isAlert = c.is_alert && !isTop;
+            const isNear  = c.score >= 40 && !isTop && !isAlert;
+
+            // Màu theo trạng thái:
+            // isTop   → đỏ (đỉnh pump, cần SHORT)
+            // isAlert → xanh lá (đang pump, có thể LONG)
+            // isNear  → vàng (gần ngưỡng)
+            // default → tối
+            const col = isTop   ? '#f85149'
+                      : isAlert ? '#3fb950'
+                      : isNear  ? '#d29922'
+                      :           '#2d5a4a';
+            const bg  = isTop   ? 'rgba(248,81,73,.08)'
+                      : isAlert ? 'rgba(63,185,80,.08)'
+                      : isNear  ? 'rgba(210,153,34,.05)'
+                      :           'transparent';
+            const bdr = isTop   ? '1px solid rgba(248,81,73,.4)'
+                      : isAlert ? '1px solid rgba(63,185,80,.4)'
+                      : isNear  ? '1px solid rgba(210,153,34,.3)'
+                      :           '1px solid #0d2020';
+            const shadow = isTop   ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
+                         : isAlert ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
+                         :           '';
+
+            const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
+            const statusTxt = isTop   ? '🔴 Đỉnh — Vào SHORT!'
+                            : isAlert ? '🚀 Đang pump!'
+                            : isNear  ? '🟡 Đang gần'
+                            :           '⚫ Đang quét';
+            const ageSec = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
+            const ageStr = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
             return `
             <div id="pump-card-${c.symbol}"
-                 style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;
-                        ${isAlert?'box-shadow:0 0 10px rgba(63,185,80,.15)':''}">
+                 style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;${shadow}">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <div style="display:flex;align-items:center;gap:8px">
                   <span style="font-size:14px;font-weight:700;color:${col}">${name}</span>
                   <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
-                  <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${status}</span>
+                  <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${statusTxt}</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:6px">
+                <div style="display:flex;align-items:center;gap:5px">
                   ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
+                  <button onclick="pumpManualLong('${c.symbol}')"
+                          style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:4px;
+                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▲ LONG</button>
                   <button onclick="pumpManualShort('${c.symbol}')"
                           style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:4px;
                                  padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▼ SHORT</button>
@@ -850,18 +900,25 @@ function renderPumpRadar(d) {
                 </div>
                 <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
                   <div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
-                              ${isAlert?'box-shadow:0 0 5px '+col:''}"></div>
+                              ${(isTop||isAlert)?'box-shadow:0 0 5px '+col:''}"></div>
                 </div>
               </div>
               <div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">
-                ${c.pump_pct > 0 ? `<span style="color:#d29922">↑${c.pump_pct.toFixed(1)}%</span>` : ''}
-                ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
+                ${c.pump_pct > 0 ? `<span style="color:${isAlert?'#3fb950':'#d29922'}">↑${c.pump_pct.toFixed(1)}%</span>` : ''}
+                ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':c.rsi>60?'#d29922':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
                 ${c.vol_ratio > 0 ? `<span style="color:#1a5a7a">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
-                ${isAlert && c.entry > 0 ? `
-                  <span style="color:#3fb950;font-weight:600">Entry $${c.entry.toPrecision(4)}</span>
+                ${isTop && c.entry > 0 ? `
+                  <span style="color:#f85149;font-weight:600">Entry $${c.entry.toPrecision(4)}</span>
                   <span style="color:#f85149">SL $${c.sl.toPrecision(4)}</span>
                   <span style="color:#3fb950">TP $${c.tp1.toPrecision(4)}</span>` : ''}
               </div>
+              ${isAlert && c.alert_reason ? `
+              <div id="pump-alert-${c.symbol}"
+                   style="margin-top:6px;padding:4px 8px;background:rgba(63,185,80,.1);
+                          border:1px solid rgba(63,185,80,.3);border-radius:4px;
+                          font-size:10px;color:#3fb950;line-height:1.4">
+                🚀 ${c.alert_reason}
+              </div>` : `<div id="pump-alert-${c.symbol}" style="display:none"></div>`}
             </div>`;
           }).join('')}
         </div>
@@ -1641,6 +1698,7 @@ def api_pump_state():
         signals = list(_state.get("pump_signals", []))
         status  = dict(_state.get("pump_scan_status", {}))
         prices  = dict(_state.get("prices", {}))
+        pump_alerts = dict(_state.get("pump_alerts", {}))  # {symbol: {...}}
 
     # Build coin rows với pump score nếu có
     rows = []
@@ -1654,20 +1712,24 @@ def api_pump_state():
             except Exception:
                 price = 0
         # Tìm signal gần nhất cho coin này
-        sig = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
+        sig_d = next((s for s in reversed(signals) if s.get("symbol") == sym), None)
+        # Ưu tiên pump_alerts (pump đang lên) nếu chưa có confirmed top
+        alert_d = pump_alerts.get(sym)
         rows.append({
             "symbol":      sym,
             "price":       price,
-            "pump_pct":    sig["pump_pct"]    if sig else 0,
-            "score":       sig["score"]       if sig else 0,
-            "is_top":      sig["is_pump_top"] if sig else False,
-            "rsi":         sig["rsi"]         if sig else 0,
-            "vol_ratio":   sig["volume_ratio"] if sig else 0,
-            "entry":       sig["entry_price"] if sig else 0,
-            "sl":          sig["sl_price"]    if sig else 0,
-            "tp1":         sig["tp1_price"]   if sig else 0,
-            "signals":     sig["signals"]     if sig else [],
-            "ts":          sig["timestamp"]   if sig else 0,
+            "pump_pct":    sig_d["pump_pct"]     if sig_d else (alert_d["pump_pct"]    if alert_d else 0),
+            "score":       sig_d["score"]         if sig_d else (alert_d["score"]       if alert_d else 0),
+            "is_top":      sig_d["is_pump_top"]   if sig_d else False,
+            "is_alert":    (not sig_d["is_pump_top"] and sig_d.get("is_alert", False)) if sig_d else bool(alert_d),
+            "rsi":         sig_d["rsi"]            if sig_d else (alert_d["rsi"]         if alert_d else 0),
+            "vol_ratio":   sig_d["volume_ratio"]   if sig_d else (alert_d.get("vol_ratio", 0) if alert_d else 0),
+            "entry":       sig_d["entry_price"]    if sig_d else (alert_d["price"]       if alert_d else 0),
+            "sl":          sig_d["sl_price"]       if sig_d else 0,
+            "tp1":         sig_d["tp1_price"]      if sig_d else 0,
+            "signals":     sig_d["signals"]        if sig_d else ([alert_d["reason"]] if alert_d else []),
+            "ts":          sig_d["timestamp"]      if sig_d else (alert_d["ts"]          if alert_d else 0),
+            "alert_reason": alert_d["reason"] if alert_d and not (sig_d and sig_d.get("is_pump_top")) else "",
         })
 
     return jsonify({
@@ -1678,6 +1740,7 @@ def api_pump_state():
         "auto_short": getattr(_config, "PUMP_AUTO_SHORT", False),
         "soft_short": getattr(_config, "PUMP_AUTO_SHORT_SOFT", False),
         "min_score":  getattr(_config, "PUMP_TOP_MIN_SCORE", 60),
+        "pump_alerts": pump_alerts,
     })
 
 
@@ -1798,6 +1861,63 @@ def api_pump_toggle_auto():
           else "⏸ AUTO SHORT tắt — chỉ gửi Telegram alert"
     logger.info(f"[PumpRadar] PUMP_AUTO_SHORT = {enabled}")
     return jsonify({"ok": True, "msg": msg, "enabled": enabled})
+
+
+@app.route("/api/pump/coins/manual_long", methods=["POST"])
+def api_pump_manual_long():
+    """Vào lệnh LONG tay từ Pump Radar — dùng MAX_ORDER_USDT + LEVERAGE từ config."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "msg": "Thiếu symbol"})
+    if _exchange is None:
+        return jsonify({"ok": False, "msg": "Exchange not connected"})
+
+    try:
+        usdt     = float(data.get("usdt", 0)) or float(getattr(_config, "MAX_ORDER_USDT", 15))
+        leverage = int(data.get("leverage", 0)) or int(getattr(_config, "LEVERAGE", 10))
+
+        price = _exchange.get_ticker_price(symbol)
+        if not price or float(price) <= 0:
+            return jsonify({"ok": False, "msg": f"Không lấy được giá {symbol}"})
+
+        # Tính qty
+        from qty_utils import calc_qty_precise
+        qty, _info = calc_qty_precise(_exchange, symbol, usdt, leverage, price)
+
+        # Smart entry (SL/TP tự động từ chart)
+        from smart_entry import find_optimal_entry, place_smart_order
+        entry_info = find_optimal_entry(_exchange, symbol, "LONG", _config)
+
+        result = place_smart_order(
+            _exchange, symbol, "LONG", qty, entry_info, _config,
+            bot_state=_state, bot_lock=_lock
+        )
+
+        with _lock:
+            from datetime import datetime as _dt
+            _state["trade_log"].append({
+                "time":   _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": "LONG",
+                "entry":  result["price"],
+                "sl":     entry_info.get("sl", 0),
+                "tp":     entry_info.get("tp", 0),
+                "qty":    qty, "status": "OPEN",
+                "note":   f"pump_manual_long_{result['type'].lower()}",
+            })
+
+        order_type = "LIMIT (chờ khớp)" if result["type"] == "LIMIT" else "MARKET"
+        sl_str = f" SL=${entry_info['sl']:.4f}" if entry_info.get("sl") else ""
+        tp_str = f" TP=${entry_info['tp']:.4f}" if entry_info.get("tp") else ""
+        logger.info(f"[PumpLONG] {symbol} @ ${result['price']:.4f} [{order_type}] qty={qty}{sl_str}{tp_str}")
+        return jsonify({
+            "ok":  True,
+            "msg": f"▲ LONG {symbol} @ ${result['price']:.4f} [{order_type}] qty={qty}{sl_str}{tp_str}"
+        })
+
+    except Exception as e:
+        logger.error(f"[PumpLONG] {symbol} failed: {e}")
+        return jsonify({"ok": False, "msg": str(e)[:200]})
 
 
 @app.route("/api/pump/toggle_soft", methods=["POST"])

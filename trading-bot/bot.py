@@ -380,13 +380,20 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
     # Khởi tạo tracker cho coin mới
     if sym not in _pump_spike_tracker:
         _pump_spike_tracker[sym] = {
-            "prices":   deque(maxlen=60),   # tối đa 60 tick (~60s)
-            "alerted":  False,
-            "alert_ts": 0.0,
+            "prices":    deque(maxlen=60),
+            "alerted":   False,
+            "alert_ts":  0.0,
+            "ws_high":   0.0,   # đỉnh cao nhất đã thấy qua WS (realtime)
+            "ws_high_ts": 0.0,  # timestamp khi đạt đỉnh
         }
 
     tracker = _pump_spike_tracker[sym]
     tracker["prices"].append((now, price))
+
+    # Cập nhật đỉnh động realtime
+    if price > tracker["ws_high"]:
+        tracker["ws_high"]    = price
+        tracker["ws_high_ts"] = now
 
     # Lấy giá cách đây SPIKE_WINDOW_SEC giây
     cutoff = now - _SPIKE_WINDOW_SEC
@@ -461,7 +468,10 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
 
         detector = PumpDetector(config)
         detector.cfg["PUMP_PRICE_RISE_PCT"] = max(spike_pct * 0.7, 5.0)
-        sig = detector.analyze(sym, df_1m, df_15m)
+
+        # Lấy đỉnh realtime từ WS tracker nếu có — chính xác hơn klines
+        ws_high = _pump_spike_tracker.get(sym, {}).get("ws_high", 0.0)
+        sig = detector.analyze(sym, df_1m, df_15m, ws_high_override=ws_high)
         pump_score = sig.score if sig else 0
 
         # ── 3-TẦNG XÁC NHẬN ────────────────────────────────
@@ -1783,6 +1793,65 @@ def pump_scan_engine(exchange, notifier):
                     df_15m     = _to_df(klines_15m)
 
                     sig = detector.analyze(symbol, df_1m, df_15m, ob_tracker=ob_tracker)
+
+                    # ── PUMP ALERT: coin đang pump nhưng chưa đủ điều kiện SHORT ──
+                    # Chạy song song với analyze() — check ngưỡng thấp hơn
+                    try:
+                        from pump_detector import PumpDetector as _PD
+                        alert_sig = detector.check_pump_rising(
+                            symbol, df_1m, df_15m,
+                            alert_cooldown=state.setdefault("_pump_alert_cd", {})
+                        )
+                        if alert_sig is not None:
+                            # Lưu alert vào state để web hiển thị
+                            alert_dict = {
+                                "symbol":       alert_sig.symbol,
+                                "is_pump_top":  False,
+                                "is_alert":     True,           # flag phân biệt alert vs confirmed
+                                "score":        alert_sig.score,
+                                "pump_pct":     alert_sig.pump_pct,
+                                "signals":      [alert_sig.reason],
+                                "entry_price":  alert_sig.price,
+                                "sl_price":     0,
+                                "tp1_price":    0,
+                                "tp2_price":    0,
+                                "atr":          0,
+                                "volume_ratio": alert_sig.volume_ratio,
+                                "rsi":          alert_sig.rsi,
+                                "timestamp":    alert_sig.timestamp,
+                            }
+                            with lock:
+                                sigs = state.get("pump_signals", [])
+                                idx  = next((i for i, s in enumerate(sigs)
+                                             if s.get("symbol") == symbol), None)
+                                # Chỉ ghi alert nếu chưa có confirmed top cho coin này
+                                if idx is None:
+                                    sigs.append(alert_dict)
+                                elif not sigs[idx].get("is_pump_top", False):
+                                    sigs[idx] = alert_dict
+                                state["pump_signals"] = sigs[-100:]
+
+                                # Lưu riêng pump_alerts để web hiển thị banner
+                                pa = state.setdefault("pump_alerts", {})
+                                pa[symbol] = {
+                                    "pump_pct":    alert_sig.pump_pct,
+                                    "price":       alert_sig.price,
+                                    "rsi":         alert_sig.rsi,
+                                    "vol_ratio":   alert_sig.volume_ratio,
+                                    "score":       alert_sig.score,
+                                    "reason":      alert_sig.reason,
+                                    "ts":          alert_sig.timestamp,
+                                }
+
+                            # Telegram alert
+                            try:
+                                notifier.telegram.send(alert_sig.to_telegram())
+                                logger.info(f"[PumpAlert] Alert sent: {symbol} +{alert_sig.pump_pct:.1f}%")
+                            except Exception as te:
+                                logger.warning(f"[PumpAlert] Telegram failed: {te}")
+                    except Exception as _ae:
+                        logger.debug(f"[PumpAlert] {symbol}: {_ae}")
+
                     if sig is None:
                         continue
 
@@ -1790,6 +1859,7 @@ def pump_scan_engine(exchange, notifier):
                     sig_dict = {
                         "symbol":       sig.symbol,
                         "is_pump_top":  sig.is_pump_top,
+                        "is_alert":     False,
                         "score":        sig.score,
                         "pump_pct":     sig.pump_pct,
                         "signals":      sig.signals,
@@ -1804,7 +1874,7 @@ def pump_scan_engine(exchange, notifier):
                     }
                     with lock:
                         signals = state.get("pump_signals", [])
-                        # Cập nhật hoặc thêm mới
+                        # Cập nhật hoặc thêm mới — confirmed top ghi đè alert
                         existing = next((i for i, s in enumerate(signals)
                                          if s.get("symbol") == symbol), None)
                         if existing is not None:
@@ -1813,6 +1883,10 @@ def pump_scan_engine(exchange, notifier):
                             signals.append(sig_dict)
                         # Giới hạn 100 entry
                         state["pump_signals"] = signals[-100:]
+
+                        # Xóa pump_alert khi đã có confirmed top
+                        if sig.is_pump_top:
+                            state.get("pump_alerts", {}).pop(symbol, None)
 
                     if sig.is_pump_top:
                         confirmed_this_round.append(sig)
@@ -1999,7 +2073,7 @@ def pump_scan_engine(exchange, notifier):
                         try:
                             current_price = exchange.get_ticker_price(symbol)
                         except Exception:
-                            current_price = sig.entry_price  # fallback nếu fail
+                            current_price = sig.entry_price
                         if not current_price or current_price <= 0:
                             current_price = sig.entry_price
 
@@ -2013,7 +2087,46 @@ def pump_scan_engine(exchange, notifier):
                         if qty * current_price < 5.0:
                             continue
 
-                        exchange.place_market_order(symbol, "SELL", qty)
+                        entry_type = getattr(sig, "entry_type", "MARKET")
+
+                        if entry_type == "LIMIT":
+                            # Đặt LIMIT tại sig.entry_price (99.5% đỉnh)
+                            # Nếu giá đã dưới entry_price → dùng MARKET ngay
+                            if current_price <= sig.entry_price:
+                                exchange.place_market_order(symbol, "SELL", qty)
+                                order_tag = "MARKET (đã dưới limit)"
+                            else:
+                                exchange.place_limit_order(symbol, "SELL", qty, sig.entry_price)
+                                order_tag = f"LIMIT @ ${sig.entry_price:.6g}"
+                                logger.info(f"[PumpEngine] LIMIT SHORT placed: {symbol} @ {sig.entry_price:.6g}")
+                                # Lưu vào state để theo dõi fill
+                                with lock:
+                                    state.setdefault("pump_limit_orders", {})[symbol] = {
+                                        "entry_price": sig.entry_price,
+                                        "sl_price":    sig.sl_price,
+                                        "tp1_price":   sig.tp1_price,
+                                        "qty":         qty,
+                                        "ts":          time.time(),
+                                    }
+                                # Gửi Telegram thông báo đặt lệnh chờ
+                                try:
+                                    notifier.telegram.send(
+                                        f"⏳ <b>LIMIT SHORT ĐẶT SẴN</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%\n"
+                                        f"📌 Chờ giá quay về <b>${sig.entry_price:.6g}</b>\n"
+                                        f"🛑 SL: <b>${sig.sl_price:.6g}</b>\n"
+                                        f"🎯 TP: <b>${sig.tp1_price:.6g}</b>\n"
+                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                                except Exception:
+                                    pass
+                                # Skip SL/TP setup — sẽ đặt sau khi lệnh fill
+                                continue
+                        else:
+                            exchange.place_market_order(symbol, "SELL", qty)
+                            order_tag = "MARKET"
+
                         time.sleep(0.8)  # đợi lệnh fill trước khi đặt SL/TP
 
                         # Đặt SL với retry 3 lần — không có SL là nguy hiểm
@@ -2058,7 +2171,7 @@ def pump_scan_engine(exchange, notifier):
                             f"🔴 <b>AUTO SHORT — PUMP TOP</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
-                            f"💰 Entry : <b>${sig.entry_price:,.6g}</b>\n"
+                            f"💰 Entry : <b>${sig.entry_price:,.6g}</b>  [{order_tag}]\n"
                             f"🛑 SL    : <b>${sig.sl_price:,.6g}</b>\n"
                             f"🎯 TP1   : <b>${sig.tp1_price:,.6g}</b>\n"
                             f"📐 RR    : 1:{rr:.1f}   📦 Qty: {qty}\n"
@@ -2330,6 +2443,70 @@ def limit_order_monitor(exchange, notifier):
             # ── A. Check pending orders (mỗi 5s) ──
             with lock:
                 pending = dict(state.get("pending_smart_orders", {}))
+                pump_limits = dict(state.get("pump_limit_orders", {}))
+
+            # ── A0. Check pump LIMIT SHORT orders ──────────────────
+            if pump_limits:
+                for sym, info in list(pump_limits.items()):
+                    try:
+                        # Timeout 10 phút — nếu không khớp thì huỷ
+                        if time.time() - info["ts"] > 600:
+                            try:
+                                exchange.cancel_all_orders(sym)
+                            except Exception:
+                                pass
+                            with lock:
+                                state.get("pump_limit_orders", {}).pop(sym, None)
+                            logger.info(f"[PumpLimit] {sym} LIMIT expired, cancelled")
+                            continue
+
+                        # Kiểm tra có position chưa (lệnh đã fill)
+                        all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+                        pos = next((p for p in all_pos
+                                    if p["symbol"] == sym
+                                    and float(p.get("positionAmt", 0)) < 0), None)  # SHORT = âm
+
+                        if pos:
+                            # Lệnh đã fill → đặt SL/TP ngay
+                            qty      = abs(float(pos["positionAmt"]))
+                            sl_price = info["sl_price"]
+                            tp_price = info["tp1_price"]
+
+                            time.sleep(0.5)
+                            try:
+                                exchange.place_stop_loss_order(sym, "BUY", qty, sl_price)
+                                logger.info(f"[PumpLimit] SL placed: {sym} @ {sl_price}")
+                            except Exception as e:
+                                logger.error(f"[PumpLimit] SL failed {sym}: {e}")
+                            try:
+                                exchange.place_take_profit_order(sym, "BUY", qty, tp_price)
+                                logger.info(f"[PumpLimit] TP placed: {sym} @ {tp_price}")
+                            except Exception as e:
+                                logger.error(f"[PumpLimit] TP failed {sym}: {e}")
+
+                            fill_price = float(pos.get("entryPrice", info["entry_price"]))
+                            notifier.telegram.send(
+                                f"🔴 <b>PUMP LIMIT FILLED!</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🪙 {sym} SHORT\n"
+                                f"💰 Fill: <b>${fill_price:.6g}</b>\n"
+                                f"🛑 SL set: <b>${sl_price:.6g}</b>\n"
+                                f"🎯 TP set: <b>${tp_price:.6g}</b>\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            with lock:
+                                state.get("pump_limit_orders", {}).pop(sym, None)
+                                state["trade_log"].append({
+                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "symbol": sym, "side": "SHORT",
+                                    "entry":  fill_price,
+                                    "sl":     sl_price, "tp": tp_price,
+                                    "qty":    qty, "status": "OPEN",
+                                    "note":   "pump_limit_filled",
+                                })
+
+                    except Exception as e:
+                        logger.debug(f"[PumpLimit] Monitor {sym}: {e}")
 
             if pending:
                 for order_id, info in list(pending.items()):
@@ -2782,6 +2959,9 @@ if __name__ == "__main__":
     with lock:
         state["pump_watch_coins"]  = list(getattr(config, "PUMP_WATCH_COINS", []))
         state["pump_signals"]      = []
+        state["pump_alerts"]       = {}   # {symbol: {pump_pct, price, rsi, ...}}
+        state["_pump_alert_cd"]    = {}   # cooldown dict cho pump alerts
+        state["pump_limit_orders"] = {}   # {symbol: {entry_price, sl_price, tp1_price, qty, ts}}
         state["pump_scan_status"]  = {"scanning": False, "last_scan": "--:--", "scan_count": 0}
         state["_pump_tick"]        = 0
 

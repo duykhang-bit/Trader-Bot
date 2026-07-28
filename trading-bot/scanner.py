@@ -610,10 +610,15 @@ _PENDING_MAX_RETRY = 10    # tối đa 10 lần retry
 _pump_last_scan: float = 0   # timestamp lần quét pump gần nhất
 
 
-def run_pump_scan(exchange, config, notifier=None) -> list:
+def run_pump_scan(exchange, config, notifier=None) -> dict:
     """
-    Quét PUMP_WATCH_COINS + FIXED_COINS tìm đỉnh pump để SHORT.
-    Trả về list PumpSignal confirmed.
+    Quét PUMP_WATCH_COINS tìm đỉnh pump (SHORT) và pump đang lên (ALERT).
+
+    Trả về dict:
+        {
+            "confirmed": [PumpSignal, ...],   # đỉnh pump xác nhận → SHORT
+            "alerts":    [PumpAlertSignal, ...],  # pump đang lên → thông báo
+        }
 
     Gọi từ pump_scan_engine thread trong bot.py (mỗi 30s).
     """
@@ -622,25 +627,26 @@ def run_pump_scan(exchange, config, notifier=None) -> list:
     interval = getattr(config, "PUMP_SCAN_INTERVAL_SECONDS", 30)
     now = time.time()
     if now - _pump_last_scan < interval:
-        return []
+        return {"confirmed": [], "alerts": []}
     _pump_last_scan = now
 
-    # Chỉ quét PUMP_WATCH_COINS — coin dev hay bơm mà mày add vào web
-    # KHÔNG gộp FIXED_COINS/WATCHLIST vào đây (tránh coin lạ tự xuất hiện)
     watch = list(getattr(config, "PUMP_WATCH_COINS", []))
 
     if not getattr(config, "PUMP_DETECTOR_ENABLED", True):
-        return []
+        return {"confirmed": [], "alerts": []}
 
-    logger.info(f"[PumpScan] Scanning {len(watch)} coins for pump tops...")
+    logger.info(f"[PumpScan] Scanning {len(watch)} coins for pump tops + alerts...")
 
-    from pump_detector import scan_for_pump_tops
-    results = scan_for_pump_tops(exchange, watch, config, notifier)
+    from pump_detector import scan_for_pump_tops, scan_for_pump_alerts
+    confirmed = scan_for_pump_tops(exchange, watch, config, notifier)
+    alerts    = scan_for_pump_alerts(exchange, watch, config, notifier)
 
-    if results:
-        logger.info(f"[PumpScan] Found {len(results)} pump top(s): "
-                    f"{[r.symbol for r in results]}")
-    return results
+    if confirmed:
+        logger.info(f"[PumpScan] Confirmed tops: {[r.symbol for r in confirmed]}")
+    if alerts:
+        logger.info(f"[PumpScan] Pump alerts: {[r.symbol for r in alerts]}")
+
+    return {"confirmed": confirmed, "alerts": alerts}
 
 
 def _klines_to_df(klines: list) -> pd.DataFrame:

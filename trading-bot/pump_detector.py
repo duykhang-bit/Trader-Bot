@@ -48,7 +48,43 @@ DEFAULT_CFG = {
 
 
 # ─────────────────────────────────────────────────────────────
-# DATA CLASS
+# DATA CLASS — PUMP ALERT (pump đang lên, chưa đủ điều kiện SHORT)
+# ─────────────────────────────────────────────────────────────
+@dataclass
+class PumpAlertSignal:
+    """
+    Tín hiệu coin đang pump nhưng chưa đủ điều kiện SHORT.
+    Gửi thông báo để trader tự quyết định vào LONG (đang đà) hay chờ SHORT.
+    """
+    symbol:      str
+    pump_pct:    float    # % tăng từ đáy trong cửa sổ PUMP_LOOKBACK_CANDLES
+    price:       float    # giá hiện tại
+    rsi:         float
+    volume_ratio: float   # vol hiện tại / MA20
+    score:       int      # 0-100, score pump top (chưa đủ để SHORT)
+    reason:      str      # mô tả ngắn tại sao chưa SHORT
+    timestamp:   float = field(default_factory=time.time)
+
+    def to_telegram(self) -> str:
+        bar = "█" * (self.pump_pct // 5 if self.pump_pct < 50 else 10)
+        bar = bar[:10].ljust(10, "░")
+        return (
+            f"🚀 <b>PUMP ALERT — Đang bơm!</b>\n"
+            f"{'─'*30}\n"
+            f"🪙 Coin    : <b>{self.symbol}</b>\n"
+            f"📈 Pump    : <b>+{self.pump_pct:.1f}%</b> từ đáy\n"
+            f"💰 Giá HT  : <b>${self.price:,.6g}</b>\n"
+            f"📊 RSI     : {self.rsi:.1f}  |  Vol: {self.volume_ratio:.1f}×\n"
+            f"📉 Score   : {self.score}/100 (cần ≥ ngưỡng SHORT)\n"
+            f"{'─'*30}\n"
+            f"⚠️ <i>{self.reason}</i>\n"
+            f"💡 Có thể: ▲ LONG theo đà  hoặc  ⏳ Chờ đỉnh để SHORT\n"
+            f"⏰ {__import__('datetime').datetime.fromtimestamp(self.timestamp).strftime('%H:%M:%S')}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+# DATA CLASS — PUMP SIGNAL (đỉnh pump, SHORT)
 # ─────────────────────────────────────────────────────────────
 @dataclass
 class PumpSignal:
@@ -59,7 +95,8 @@ class PumpSignal:
     pump_pct:     float         # % giá tăng từ đáy
     signals:      List[str]     # danh sách tín hiệu kích hoạt
     entry_price:  float         # giá entry đề xuất
-    sl_price:     float         # SL = đỉnh + 1.5% buffer
+    entry_type:   str           # "LIMIT" hoặc "MARKET"
+    sl_price:     float         # SL = đỉnh thật + ATR buffer
     tp1_price:    float         # TP1 = 38.2% Fibonacci retracement
     tp2_price:    float         # TP2 = 61.8% Fibonacci retracement
     atr:          float
@@ -71,6 +108,7 @@ class PumpSignal:
         score_bar = "█" * (self.score // 10) + "░" * (10 - self.score // 10)
         sigs = "\n".join(f"  • {s}" for s in self.signals)
         rr = abs(self.entry_price - self.tp1_price) / abs(self.entry_price - self.sl_price) if abs(self.entry_price - self.sl_price) > 0 else 0
+        sl_pct = abs(self.sl_price - self.entry_price) / self.entry_price * 100 if self.entry_price > 0 else 0
         return (
             f"🚨 <b>PUMP TOP — SHORT SIGNAL</b>\n"
             f"{'─'*34}\n"
@@ -78,8 +116,8 @@ class PumpSignal:
             f"📈 Pump   : <b>+{self.pump_pct:.1f}%</b> từ đáy\n"
             f"📊 Score  : <b>{self.score}/100</b>  [{score_bar}]\n"
             f"{'─'*34}\n"
-            f"🔴 Entry  : <b>${self.entry_price:,.6g}</b>\n"
-            f"🛑 SL     : <b>${self.sl_price:,.6g}</b>  (+1.5%)\n"
+            f"🔴 Entry  : <b>${self.entry_price:,.6g}</b>  [{self.entry_type}]\n"
+            f"🛑 SL     : <b>${self.sl_price:,.6g}</b>  (+{sl_pct:.1f}% từ đỉnh)\n"
             f"🎯 TP1    : <b>${self.tp1_price:,.6g}</b>  (38.2%)\n"
             f"🎯 TP2    : <b>${self.tp2_price:,.6g}</b>  (61.8%)\n"
             f"📐 RR     : 1:{rr:.1f}\n"
@@ -88,7 +126,7 @@ class PumpSignal:
             f"{'─'*34}\n"
             f"🔍 <b>Tín hiệu:</b>\n{sigs}\n"
             f"{'─'*34}\n"
-            f"⚠️ <i>Dev pump — dùng size nhỏ, SL chặt</i>"
+            f"⚠️ <i>Dev pump — dùng size nhỏ, SL theo ATR</i>"
         )
 
 
@@ -122,21 +160,121 @@ class PumpDetector:
         return cfg
 
     # ── Public ────────────────────────────────────────────────
+
+    def check_pump_rising(self,
+                          symbol: str,
+                          df_1m:  pd.DataFrame,
+                          df_15m: Optional[pd.DataFrame] = None,
+                          alert_cooldown: dict = None) -> Optional["PumpAlertSignal"]:
+        """
+        Phát hiện coin đang pump lên nhưng CHƯA đủ điều kiện SHORT.
+        Dùng để gửi thông báo sớm cho trader tự quyết định:
+          - Vào LONG theo đà
+          - Chờ đỉnh để SHORT
+
+        Điều kiện kích hoạt alert (thấp hơn nhiều so với SHORT):
+          - Pump >= PUMP_PRICE_RISE_PCT * 0.5  (ví dụ: 10% thay vì 20%)
+          - Volume surge >= 1.5x MA20
+          - Chưa phải đỉnh (RSI < 72 hoặc score < min_score)
+
+        Args:
+            symbol:         ký hiệu coin
+            df_1m:          DataFrame 1m
+            df_15m:         DataFrame 15m (tùy chọn)
+            alert_cooldown: dict {symbol: ts} để tránh spam (mutable, pass ref)
+
+        Returns:
+            PumpAlertSignal nếu đủ điều kiện alert, None nếu không
+        """
+        if df_1m is None or len(df_1m) < 20:
+            return None
+
+        now = time.time()
+
+        # Cooldown riêng cho alert (ít nhất 5 phút)
+        if alert_cooldown is not None:
+            last = alert_cooldown.get(f"alert_{symbol}", 0)
+            if now - last < 300:
+                return None
+
+        # Step 1: Tính pump %
+        pump_pct, pump_low, pump_high = self._detect_pump_move(df_1m)
+        alert_threshold = self.cfg["PUMP_PRICE_RISE_PCT"] * 0.5  # 50% ngưỡng SHORT
+        if pump_pct < alert_threshold:
+            return None
+
+        # Step 2: Kiểm tra volume surge
+        vol = df_1m["volume"]
+        vol_ma20 = calculate_volume_ma(vol, 20).iloc[-1]
+        vol_cur  = vol.iloc[-1]
+        vol_ratio = vol_cur / vol_ma20 if vol_ma20 > 0 else 1.0
+
+        # Volume phải tăng (ít nhất 1.3x) để xác nhận đây là pump thật
+        if vol_ratio < 1.3:
+            return None
+
+        # Step 3: Tính score pump top để biết còn xa ngưỡng SHORT bao nhiêu
+        score, signals = self._score_pump_top(df_1m, df_15m, pump_high)
+
+        # Nếu đã đủ điểm SHORT → không alert (sẽ được xử lý bởi analyze())
+        min_score = self.cfg["PUMP_TOP_MIN_SCORE"]
+        rsi = calculate_rsi(df_1m["close"], 14).iloc[-1]
+        current_price = df_1m["close"].iloc[-1]
+
+        # Đã là đỉnh rồi → không alert ở đây nữa
+        is_top = (
+            score >= min_score
+            and rsi >= 72
+            and pump_pct >= 20.0
+            and current_price >= pump_high * 0.97
+        )
+        if is_top:
+            return None
+
+        # Step 4: Xây dựng reason text
+        reasons = []
+        if pump_pct >= self.cfg["PUMP_PRICE_RISE_PCT"]:
+            reasons.append(f"Pump +{pump_pct:.1f}% (đủ ngưỡng, chờ đỉnh)")
+        else:
+            reasons.append(f"Pump +{pump_pct:.1f}% (chưa tới {self.cfg['PUMP_PRICE_RISE_PCT']:.0f}%)")
+
+        if score < min_score:
+            reasons.append(f"Score {score}/{min_score} (cần thêm {min_score - score}đ)")
+        if rsi < 72:
+            reasons.append(f"RSI {rsi:.0f} (cần ≥72 để SHORT)")
+
+        reason_str = " | ".join(reasons) if reasons else f"Pump +{pump_pct:.1f}% | Vol {vol_ratio:.1f}×"
+
+        # Ghi nhận cooldown
+        if alert_cooldown is not None:
+            alert_cooldown[f"alert_{symbol}"] = now
+
+        return PumpAlertSignal(
+            symbol      = symbol,
+            pump_pct    = round(pump_pct, 2),
+            price       = round(current_price, 8),
+            rsi         = round(rsi, 1),
+            volume_ratio= round(vol_ratio, 2),
+            score       = min(score, 100),
+            reason      = reason_str,
+            timestamp   = now,
+        )
+
     def analyze(self,
                 symbol:  str,
                 df_1m:   pd.DataFrame,
                 df_15m:  Optional[pd.DataFrame] = None,
-                ob_tracker = None) -> Optional[PumpSignal]:  # ob_tracker: OrderBookTracker
+                ob_tracker = None,
+                ws_high_override: float = 0.0) -> Optional[PumpSignal]:
         """
         Phân tích coin có đang ở đỉnh pump không.
 
         Args:
-            symbol:  ví dụ "BANKUSDT"
-            df_1m:   DataFrame 1m (tối thiểu 50 nến)
-            df_15m:  DataFrame 15m (tùy chọn, dùng để HTF confirm)
-
-        Returns:
-            PumpSignal hoặc None
+            symbol:           ví dụ "BANKUSDT"
+            df_1m:            DataFrame 1m (tối thiểu 50 nến)
+            df_15m:           DataFrame 15m (tùy chọn)
+            ob_tracker:       OrderBookTracker (tùy chọn)
+            ws_high_override: đỉnh realtime từ WS — chính xác hơn klines
         """
         if df_1m is None or len(df_1m) < 30:
             return None
@@ -148,6 +286,12 @@ class PumpDetector:
 
         # Step 1: Có đang pump không?
         pump_pct, pump_low, pump_high = self._detect_pump_move(df_1m)
+
+        # Ưu tiên đỉnh WS realtime nếu cao hơn đỉnh từ klines
+        # WS cập nhật mỗi giây → chính xác hơn klines 1m
+        if ws_high_override > pump_high:
+            pump_high = ws_high_override
+
         if pump_pct < self.cfg["PUMP_PRICE_RISE_PCT"]:
             return None
 
@@ -178,20 +322,57 @@ class PumpDetector:
         vol_ma  = calculate_volume_ma(df_1m["volume"], 20).iloc[-1]
         vol_ratio = df_1m["volume"].iloc[-1] / vol_ma if vol_ma > 0 else 1.0
 
-        sl_price  = pump_high * 1.015                                          # SL 1.5% trên đỉnh
+        # ── SL dùng ATR nhưng có hard cap ───────────────────────────
+        # - Tối thiểu 1.5% từ đỉnh (để không bị giật nhỏ xuyên thủng)
+        # - Tối đa 3.0% từ đỉnh (hard cap — nếu xuyên qua 3% là pump vẫn còn sức)
+        # - Dùng ATR×1.5 làm base, rồi clamp vào [1.5%, 3.0%]
+        atr_pct      = (atr / pump_high * 100) if pump_high > 0 else 1.5
+        sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))  # clamp [1.5%, 3.0%]
+        sl_price      = pump_high * (1 + sl_buffer_pct / 100)
+
         tp1_price = current_price - (current_price - pump_low) * 0.382        # 38.2% fib
         tp2_price = current_price - (current_price - pump_low) * 0.618        # 61.8% fib
 
+        # ── Xác nhận đảo chiều thật: cần >= 2 nến 1m quay đầu ──────
+        # Lý do: đây là điều kiện QUAN TRỌNG NHẤT để tránh entry sớm.
+        # Nếu giá vẫn đang pump lên → dù SL rộng bao nhiêu cũng thua.
+        # Cần thấy giá ĐÃ tạo lower high: nến sau thấp hơn nến trước.
+        reversal_confirmed = self._confirm_reversal(df_1m, pump_high)
+
+        # ── Entry type: LIMIT tại đỉnh hoặc MARKET sau xác nhận ─────
+        # Nếu giá còn gần đỉnh (trong 1%) → dùng LIMIT sát đỉnh
+        #   → bắt đúng đỉnh khi giá quay đầu xuống lần đầu
+        # Nếu giá đã xuống > 1% từ đỉnh + reversal confirmed → MARKET
+        #   → vào ngay khi có xác nhận chắc chắn
+        near_top_pct   = (pump_high - current_price) / pump_high * 100 if pump_high > 0 else 99
+        use_limit_top  = near_top_pct <= 1.0   # giá còn trong 1% đỉnh → dùng LIMIT
+        use_market     = reversal_confirmed and near_top_pct > 1.0
+
         is_top = (
             score >= self.cfg["PUMP_TOP_MIN_SCORE"]
-            and rsi >= 72              # RSI phải thực sự overbought
-            and pump_pct >= 20.0       # Pump phải đủ mạnh >= 20% mới tin
-            and current_price >= pump_high * 0.97  # Giá vẫn còn gần đỉnh (chưa đảo chiều quá sớm)
+            and rsi >= 72
+            and pump_pct >= 20.0
+            and (use_limit_top or use_market)  # LIMIT gần đỉnh HOẶC MARKET sau xác nhận
         )
 
         if is_top:
             self._cooldown[symbol] = now
-            logger.info(f"[PumpDetector] {symbol}: TOP CONFIRMED score={score} | {signals}")
+            logger.info(
+                f"[PumpDetector] {symbol}: TOP CONFIRMED score={score} "
+                f"entry={'LIMIT@top' if use_limit_top else 'MARKET'} "
+                f"SL={sl_price:.6g} (+{sl_buffer_pct:.1f}%) | {signals}"
+            )
+
+        # Entry price + type
+        if use_limit_top:
+            # LIMIT sát đỉnh: đặt lệnh tại 99.5% của đỉnh → chờ giá quay đầu về
+            limit_entry = round(pump_high * 0.995, 8)
+            final_entry = limit_entry
+            final_entry_type = "LIMIT"
+        else:
+            # MARKET sau xác nhận đảo chiều
+            final_entry = round(current_price, 8)
+            final_entry_type = "MARKET"
 
         return PumpSignal(
             symbol       = symbol,
@@ -199,7 +380,8 @@ class PumpDetector:
             score        = min(score, 100),
             pump_pct     = pump_pct,
             signals      = signals,
-            entry_price  = round(current_price, 8),
+            entry_price  = final_entry,
+            entry_type   = final_entry_type,
             sl_price     = round(sl_price, 8),
             tp1_price    = round(tp1_price, 8),
             tp2_price    = round(tp2_price, 8),
@@ -399,6 +581,57 @@ class PumpDetector:
             return 6,  f"🟠 Suspicious pump: +{price_chg:.1f}% vol thấp ({vol_mult:.1f}×)"
         return 0, ""
 
+    # ── Xác nhận đảo chiều thật (BẮT BUỘC trước khi SHORT) ──
+    def _confirm_reversal(self, df: pd.DataFrame, pump_high: float) -> bool:
+        """
+        Kiểm tra giá đã thật sự đảo chiều chưa.
+        Cần ĐỦ 2 trong 4 điều kiện:
+
+          1. Lower high liên tiếp: high[-1] < high[-2] < high[-3]
+          2. Close xuống >= 1.5% từ đỉnh pump
+          3. Nến đỏ to (thân >= 60% range) trong 2 nến gần nhất
+          4. Volume xác nhận: vol nến đỏ >= 1.2× vol nến xanh liền trước
+             → có người thật sự xả, không chỉ thiếu người mua
+        """
+        if len(df) < 5:
+            return False
+
+        conditions_met = 0
+
+        # 1. Lower high 3 nến liên tiếp
+        h1 = df["high"].iloc[-1]
+        h2 = df["high"].iloc[-2]
+        h3 = df["high"].iloc[-3]
+        if h1 < h2 and h2 < h3:
+            conditions_met += 1
+
+        # 2. Close đã xuống ít nhất 1.5% từ đỉnh pump
+        close_now = df["close"].iloc[-1]
+        if pump_high > 0 and close_now <= pump_high * 0.985:
+            conditions_met += 1
+
+        # 3. Nến đỏ to trong 2 nến gần nhất
+        for i in [-1, -2]:
+            row  = df.iloc[i]
+            o, h, l, c = row["open"], row["high"], row["low"], row["close"]
+            body = o - c
+            rng  = h - l
+            if rng > 0 and body >= rng * 0.6 and c < o:
+                conditions_met += 1
+                break
+
+        # 4. Volume xác nhận xả: nến đỏ gần nhất có vol >= 1.2× nến xanh liền trước
+        for i in range(-1, -4, -1):
+            row = df.iloc[i]
+            if row["close"] < row["open"]:          # nến đỏ
+                prev = df.iloc[i - 1]
+                if prev["close"] > prev["open"]:    # nến xanh liền trước
+                    if row["volume"] >= prev["volume"] * 1.2:
+                        conditions_met += 1
+                break  # chỉ tìm nến đỏ gần nhất
+
+        return conditions_met >= 2
+
     # ── Tín hiệu 6: HTF Rejection 15m (10đ) ─────────────────
     def _htf_rejection(self, df_15m: pd.DataFrame) -> Tuple[int, str]:
         """Giá đang ở BB upper / quá xa EMA50 / RSI OB trên 15m."""
@@ -448,8 +681,56 @@ def _to_df(klines: list) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────
-# SCANNER HELPER — gọi từ pump_scan_engine trong bot.py
+# SCANNER HELPERS — gọi từ pump_scan_engine trong bot.py
 # ─────────────────────────────────────────────────────────────
+
+# Shared cooldown dict cho pump alerts — tránh spam
+_pump_alert_cooldown: dict = {}
+
+
+def scan_for_pump_alerts(exchange,
+                          symbols: List[str],
+                          config,
+                          notifier=None) -> List[PumpAlertSignal]:
+    """
+    Quét danh sách coin, tìm coin đang PUMP LÊN nhưng chưa đủ điều kiện SHORT.
+    Gửi Telegram thông báo để trader tự quyết định vào LONG hay chờ SHORT.
+    Trả về danh sách PumpAlertSignal.
+    """
+    detector = PumpDetector(config)
+    alerts   = []
+
+    for symbol in symbols:
+        try:
+            klines_1m  = exchange.get_klines(symbol, "1m",  limit=200)
+            klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+            df_1m      = _to_df(klines_1m)
+            df_15m     = _to_df(klines_15m)
+
+            alert = detector.check_pump_rising(symbol, df_1m, df_15m,
+                                               alert_cooldown=_pump_alert_cooldown)
+            if alert is None:
+                continue
+
+            logger.info(
+                f"[PumpAlert] {symbol}: +{alert.pump_pct:.1f}% "
+                f"score={alert.score} rsi={alert.rsi:.0f} vol={alert.volume_ratio:.1f}×"
+            )
+            alerts.append(alert)
+
+            if notifier:
+                try:
+                    notifier.telegram.send(alert.to_telegram())
+                    logger.info(f"[PumpAlert] Alert sent: {symbol}")
+                except Exception as e:
+                    logger.warning(f"[PumpAlert] Telegram failed: {e}")
+
+        except Exception as e:
+            logger.debug(f"[PumpAlert] {symbol} error: {e}")
+
+    return alerts
+
+
 def scan_for_pump_tops(exchange,
                         symbols: List[str],
                         config,
