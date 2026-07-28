@@ -20,6 +20,11 @@ _lock = None
 _config = None
 _exchange = None
 
+# Cache pending orders — chỉ fetch Binance mỗi 10 giây thay vì mỗi 2s
+_pending_orders_cache = []
+_pending_orders_last_fetch = 0
+_PENDING_ORDERS_TTL = 10  # giây
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -804,23 +809,7 @@ async function refresh(){
         const r = await fetch('/api/state');
         const d = await r.json();
 
-        // Nếu bot tắt → dừng auto-refresh, hiện overlay "Bot Paused"
-        if (!d.running) {
-            _refreshPaused = true;
-            document.getElementById('bot-status').innerHTML =
-                '<span class="dot dot-red"></span> Paused';
-            // Chỉ update status + scan info, không rebuild layout
-            const si = document.getElementById('scan-info');
-            if (si) si.textContent = `Scan #${d.scan_no} | Last: ${d.last_scan}`;
-            return;
-        }
-
-        // Bot đang chạy → resume nếu vừa bật lại
-        if (_refreshPaused) {
-            _refreshPaused = false;
-            _firstRender = true;  // rebuild lại 1 lần khi resume
-        }
-
+        // Luôn render dashboard dù bot đang paused hay running
         if (_firstRender) {
             saveInputs();
             document.getElementById('content').innerHTML = renderDashboard(d);
@@ -828,6 +817,13 @@ async function refresh(){
             _firstRender = false;
         } else {
             _patchDashboard(d);
+        }
+
+        // Update trạng thái pause/resume để quản lý _refreshPaused flag
+        if (!d.running) {
+            _refreshPaused = true;
+        } else if (_refreshPaused) {
+            _refreshPaused = false;
         }
     }
     catch(e){
@@ -945,22 +941,27 @@ def api_state():
             "entry": float(p.get("entryPrice",0)), "mark": p.get("_mark",0),
             "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
 
-    # Pending orders (lệnh chờ khớp)
+    # Pending orders (lệnh chờ khớp) — cache 10s để tránh rate limit
     pending_orders = []
-    try:
-        if _exchange:
-            all_orders = _exchange._get("/fapi/v1/openOrders", signed=True)
-            for o in all_orders:
-                pending_orders.append({
+    global _pending_orders_cache, _pending_orders_last_fetch
+    import time as _time
+    now_ts = _time.time()
+    if now_ts - _pending_orders_last_fetch > _PENDING_ORDERS_TTL:
+        try:
+            if _exchange:
+                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True)
+                _pending_orders_cache = [{
                     "symbol": o.get("symbol", ""),
                     "side": o.get("side", ""),
                     "type": o.get("type", ""),
                     "qty": float(o.get("origQty", 0)),
                     "price": float(o.get("price", 0) or o.get("stopPrice", 0)),
                     "order_id": str(o.get("orderId", "")),
-                })
-    except Exception:
-        pass
+                } for o in all_orders]
+                _pending_orders_last_fetch = now_ts
+        except Exception:
+            pass
+    pending_orders = _pending_orders_cache
 
     recent = sorted(closed, key=lambda t: t.get("time",""), reverse=True)[:15]
     trades_fmt = [{"symbol":t.get("symbol",""),"side":t.get("side",""),"entry":t.get("entry",0),
