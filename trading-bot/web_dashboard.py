@@ -882,7 +882,7 @@ function renderPumpRadar(d) {
                  style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;${shadow}">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:14px;font-weight:700;color:${col}">${name}</span>
+                  <span style="font-size:12px;font-weight:700;color:${col}">${name}</span>
                   <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
                   <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${statusTxt}</span>
                 </div>
@@ -1722,7 +1722,6 @@ def api_pump_state():
         alert_d = pump_alerts.get(sym)
 
         # ── Reset score nếu giá đã giảm xa khỏi đỉnh ──────────────
-        # Tránh hiển thị "Đang gần" màu vàng khi coin đã xả xong
         effective_score = 0
         effective_pump_pct = 0
         is_stale = False
@@ -1733,9 +1732,6 @@ def api_pump_state():
             sig_ts    = sig_d.get("timestamp", 0)
             age_min   = (time.time() - sig_ts) / 60 if sig_ts else 999
 
-            # Stale nếu:
-            # 1. Giá đã về dưới entry 3% (pump xả về dưới điểm detect)
-            # 2. Hoặc signal cũ hơn 15 phút và không phải confirmed top
             price_dropped  = entry_p > 0 and price > 0 and price < entry_p * 0.97
             timed_out      = age_min > 15 and not sig_d.get("is_pump_top", False)
             is_stale       = price_dropped or timed_out
@@ -1746,6 +1742,17 @@ def api_pump_state():
             else:
                 effective_score    = sig_score
                 effective_pump_pct = sig_pump
+
+        # Xóa pump_alert nếu stale — tránh hiện "Đang pump!" khi giá đã giảm
+        if is_stale and sym in pump_alerts:
+            pump_alerts.pop(sym, None)
+        # Cũng check alert_d: nếu giá đã giảm > 5% từ giá alert → stale alert
+        if alert_d and price > 0:
+            alert_price = alert_d.get("price", 0)
+            alert_ts    = alert_d.get("ts", 0)
+            alert_age   = (time.time() - alert_ts) / 60 if alert_ts else 999
+            if (alert_price > 0 and price < alert_price * 0.95) or alert_age > 15:
+                alert_d = None  # bỏ qua alert cũ này
 
         rows.append({
             "symbol":      sym,
