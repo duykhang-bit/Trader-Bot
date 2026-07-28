@@ -1225,6 +1225,26 @@ def position_reversal_monitor(exchange, notifier):
                     if len(signals) < 2:
                         continue
 
+                    # Kiểm tra config có bật không
+                    if not getattr(config, "REVERSAL_MONITOR_ENABLED", True):
+                        continue
+
+                    alert_only = getattr(config, "REVERSAL_ALERT_ONLY", False)
+
+                    if alert_only:
+                        # Chỉ gửi alert, không đóng
+                        notifier.telegram.send(
+                            f"⚠️ <b>REVERSAL ALERT</b> (chưa đóng)\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"🪙 {symbol} {side} | Lời {pnl_pct:.1f}%\n"
+                            f"📍 Entry: ${entry:.4f} | Mark: ${mark_price:.4f}\n"
+                            f"⚠️ Dấu hiệu đảo chiều:\n"
+                            + "\n".join([f"  • {s}" for s in signals]) + "\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[ReversalMon] ALERT ONLY {symbol}: {signals}")
+                        continue
+
                     # ── Đóng position ────────────────────────
                     qty      = abs(amt)
                     close_side = "BUY" if side == "SHORT" else "SELL"

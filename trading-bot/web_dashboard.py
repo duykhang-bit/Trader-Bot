@@ -145,6 +145,16 @@ async function toggleOrphan(enabled) {
     await apiPost('/api/set_auto_cancel', {enabled: enabled});
     refresh();
 }
+async function toggleReversalMonitor(mode) {
+    // mode: 'off' | 'alert' | 'auto'
+    let payload = {};
+    if (mode === 'off')   payload = {enabled: false, alert_only: false};
+    if (mode === 'alert') payload = {enabled: true,  alert_only: true};
+    if (mode === 'auto')  payload = {enabled: true,  alert_only: false};
+    const r = await apiPost('/api/reversal_monitor', payload);
+    if (r && r.msg) toast(r.msg, r.ok);
+    refresh();
+}
 async function cancelAllPending() {
     if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
     await apiPost('/api/cancel_all_pending');
@@ -224,16 +234,34 @@ function renderDashboard(d) {
             <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
             <span id="scan-info" style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
         </div>
-        <div class="control-row" style="margin-top:8px;align-items:center;gap:12px">
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
             <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
                 <input type="checkbox" id="toggle-orphan" ${d.auto_cancel_orphan ? 'checked' : ''}
                     onchange="toggleOrphan(this.checked)"
                     style="width:14px;height:14px;cursor:pointer">
-                <span>🧹 Tự động huỷ lệnh entry chờ không có vị thế</span>
+                <span>&#x1F9F9; Tự động huỷ lệnh entry chờ không có vị thế</span>
             </label>
             <button class="btn btn-red btn-sm" onclick="cancelAllPending()" style="margin-left:8px">
                 &#x1F5D1; Huỷ tất cả lệnh chờ ngay
             </button>
+        </div>
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:#8b949e">&#x1F504; Reversal Monitor:</span>
+            ${(() => {
+                const en  = d.reversal_monitor_enabled;
+                const al  = d.reversal_alert_only;
+                const mode = !en ? 'off' : (al ? 'alert' : 'auto');
+                return `
+                <button class="btn btn-sm ${mode==='auto'  ? 'btn-green' : ''}" onclick="toggleReversalMonitor('auto')"
+                        style="${mode==='auto'  ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Tự đóng</button>
+                <button class="btn btn-sm ${mode==='alert' ? 'btn-blue'  : ''}" onclick="toggleReversalMonitor('alert')"
+                        style="${mode==='alert' ? '' : 'background:#21262d;color:#8b949e'}">&#x1F514; Chỉ alert</button>
+                <button class="btn btn-sm ${mode==='off'   ? 'btn-red'   : ''}" onclick="toggleReversalMonitor('off')"
+                        style="${mode==='off'   ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${mode==='auto'?'#3fb950':mode==='alert'?'#58a6ff':'#f85149'}">
+                    ${mode==='auto'?'Đang tự chốt lời khi đảo chiều':mode==='alert'?'Chỉ gửi alert':'Đã tắt'}
+                </span>`;
+            })()}
         </div>
     </div>`;
 
@@ -1119,6 +1147,8 @@ def api_state():
             "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
             "leverage": getattr(_config, "LEVERAGE", 10),
         },
+        "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
+        "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
@@ -1750,7 +1780,31 @@ def api_pump_toggle_soft():
     return jsonify({"ok": True, "msg": msg, "enabled": enabled})
 
 
-def _save_pump_coins_to_config(coins: list):
+@app.route("/api/reversal_monitor", methods=["POST"])
+def api_reversal_monitor():
+    """Bật/tắt Position Reversal Monitor."""
+    data       = request.get_json() or {}
+    enabled    = data.get("enabled")     # True/False/None
+    alert_only = data.get("alert_only")  # True/False/None
+    try:
+        import config as _cfg
+        if enabled is not None:
+            _cfg.REVERSAL_MONITOR_ENABLED = bool(enabled)
+        if alert_only is not None:
+            _cfg.REVERSAL_ALERT_ONLY = bool(alert_only)
+    except Exception:
+        pass
+    mode = "tắt" if not getattr(_config, "REVERSAL_MONITOR_ENABLED", True) else \
+           ("chỉ alert" if getattr(_config, "REVERSAL_ALERT_ONLY", False) else "tự động đóng")
+    return jsonify({
+        "ok": True,
+        "msg": f"Reversal Monitor: {mode}",
+        "enabled":    getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
+        "alert_only": getattr(_config, "REVERSAL_ALERT_ONLY", False),
+    })
+
+
+
     """Ghi PUMP_WATCH_COINS vào config.py."""
     import os, re
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")

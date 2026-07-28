@@ -73,8 +73,14 @@ MAX_OPEN_POSITIONS = 6
 MAX_ORDER_USDT     = 15.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
-MAX_LOSS_PER_POSITION = 20.0   # Lỗ tối đa $20/lệnh → tự đóng ngay (tăng lên để không kích hoạt trước SL Binance)
-MAX_LOSS_PCT_PER_POSITION = 0.20  # Lỗ tối đa 20% margin → tự đóng (backup check theo %)
+MAX_LOSS_PER_POSITION = 20.0
+MAX_LOSS_PCT_PER_POSITION = 0.20
+
+# Bật/tắt Position Reversal Monitor — tự động chốt lời khi phát hiện đảo chiều
+# True  = bot tự đóng khi có 2/3 tín hiệu đảo chiều
+# False = chỉ cảnh báo Telegram, không tự đóng
+REVERSAL_MONITOR_ENABLED = True
+REVERSAL_ALERT_ONLY      = False   # True = chỉ alert, không đóng lệnh
 
 # --- Strategy ---
 MIN_SCORE           = 50.0
