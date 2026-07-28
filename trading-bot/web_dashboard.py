@@ -524,56 +524,6 @@ async function fetchPump() {
     } catch(e) {}
 }
 
-// Patch nhẹ — chỉ update giá + score + status từng coin card, không động SVG
-function patchPumpRadar(d) {
-    if (!d) return;
-    const coins    = d.coins    || [];
-    const minScore = d.min_score || 60;
-    const status   = d.status   || {};
-
-    // Update scan counter + time
-    const scanEl = document.getElementById('pump-scan-info');
-    if (scanEl) scanEl.textContent = `Scan #${status.scan_count||0} · ${status.last_scan||'--:--'}`;
-
-    // Update từng coin card
-    coins.forEach(c => {
-        const card = document.getElementById('pump-card-' + c.symbol);
-        if (!card) { _pumpRendered = false; return; }  // coin mới → trigger full re-render lần sau
-
-        const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-        const priceEl = document.getElementById('pump-price-' + c.symbol);
-        if (priceEl && priceEl.textContent !== pStr) priceEl.textContent = pStr;
-
-        const scoreEl = document.getElementById('pump-score-' + c.symbol);
-        if (scoreEl) {
-            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
-            scoreEl.textContent = c.score + '/100';
-            scoreEl.style.color = col;
-        }
-        const barEl = document.getElementById('pump-bar-' + c.symbol);
-        if (barEl) {
-            const col = c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a';
-            barEl.style.width = Math.min(c.score, 100) + '%';
-            barEl.style.background = col;
-        }
-        const statusEl = document.getElementById('pump-status-' + c.symbol);
-        if (statusEl) {
-            const isAlert = c.score >= minScore;
-            const isNear  = c.score >= 40 && !isAlert;
-            statusEl.textContent = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
-        }
-    });
-
-    // Update blip positions trên SVG nếu score thay đổi
-    coins.forEach((c, i) => {
-        const blip = document.getElementById('pump-blip-' + c.symbol);
-        if (!blip) return;
-        const isAlert = c.score >= minScore;
-        const isNear  = c.score >= 40 && !isAlert;
-        const col = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a6a';
-        blip.setAttribute('fill', col);
-    });
-}
 
 async function addPumpCoin() {
     const inp = document.getElementById('pump-coin-input');
@@ -623,185 +573,137 @@ function scoreColor(s) {
 function renderPumpRadar(d) {
     const el = document.getElementById('pump-radar-root');
     if (!el || !d) return;
+    // Build SVG shell only ONCE so animation never resets
+    if (!document.getElementById('pump-radar-svg-wrap')) {
+        const CX=110,CY=110,R=85;
+        const sweepX=(CX+R*Math.sin(Math.PI*0.3)).toFixed(0);
+        const sweepY=(CY-R*Math.cos(Math.PI*0.3)).toFixed(0);
+        el.innerHTML=`<div style="background:#060d14;border:1px solid #1a3a2a;border-radius:12px;padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:9px;height:9px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;animation:pulseDot 1.2s ease-in-out infinite"></div>
+              <span style="color:#3fb950;font-size:14px;font-weight:700;letter-spacing:2px">PUMP RADAR</span>
+              <span id="pump-scan-info" style="color:#1a4a2a;font-size:11px">--</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input id="pump-coin-input" placeholder="BANKUSDT" style="width:110px;font-size:11px;background:#060d14;border-color:#1a3a2a;color:#3fb950" onkeydown="if(event.key==='Enter')addPumpCoin()">
+              <button class="btn btn-sm" onclick="addPumpCoin()" style="background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">+ Add</button>
+              <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="pump-auto-short" style="accent-color:#f85149" onchange="toggleAutoShort(this.checked)">
+                <span id="pump-auto-label" style="color:#2a5a3a">&#9208; Alert only</span>
+              </label>
+            </div>
+          </div>
+          <div id="pump-alert-banner"></div>
+          <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+            <div id="pump-radar-svg-wrap" style="flex-shrink:0;text-align:center">
+              <svg width="220" height="220" viewBox="0 0 220 220" style="background:#060d14;border-radius:50%;border:1px solid #1a3a2a;display:block">
+                <defs><radialGradient id="swg" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#3fb950" stop-opacity="0.3"/><stop offset="100%" stop-color="#3fb950" stop-opacity="0"/></radialGradient></defs>
+                <circle cx="110" cy="110" r="90" fill="none" stroke="#1a3a2a" stroke-width="1"/>
+                <circle cx="110" cy="110" r="60" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
+                <circle cx="110" cy="110" r="30" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
+                <line x1="110" y1="22" x2="110" y2="198" stroke="#1a3a2a" stroke-width="0.5"/>
+                <line x1="22" y1="110" x2="198" y2="110" stroke="#1a3a2a" stroke-width="0.5"/>
+                <g style="transform-origin:110px 110px;animation:armSpin 4s linear infinite">
+                  <path d="M110,110 L110,20 A90,90 0 0,1 ${sweepX},${sweepY} Z" fill="url(#swg)" opacity="0.7"/>
+                  <line x1="110" y1="110" x2="110" y2="22" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round" opacity="0.9"/>
+                </g>
+                <circle cx="110" cy="110" r="3" fill="#3fb950"/>
+                <g id="pump-blips-layer"></g>
+              </svg>
+              <div id="pump-coin-count" style="font-size:10px;color:#1a4a2a;margin-top:4px">0 coin</div>
+            </div>
+            <div id="pump-coin-list" style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:6px">
+              <div style="text-align:center;padding:40px 16px;color:#1a3a2a;border:1px dashed #1a3a2a;border-radius:8px;font-size:12px">&#x1F4E1; Them coin de pump</div>
+            </div>
+          </div>
+          <div id="pump-history"></div>
+        </div>`;
+    }
+    _patchPumpData(d);
+}
 
-    const status    = d.status   || {};
-    const coins     = d.coins    || [];
-    const history   = d.history  || [];
-    const autoShort = d.auto_short || false;
-    const minScore  = d.min_score  || 60;
-    const scanning  = status.scanning   || false;
-    const scanCount = status.scan_count || 0;
-    const lastScan  = status.last_scan  || '--:--';
-    const alertCoins = coins.filter(c => c.score >= minScore);
+function _patchPumpData(d) {
+    if (!d) return;
+    const coins=d.coins||[], history=d.history||[], autoShort=d.auto_short||false;
+    const minScore=d.min_score||60, status=d.status||{};
+    const alertCoins=coins.filter(c=>c.score>=minScore);
 
-    // Vị trí blip trên radar
-    const CX = 110, CY = 110, R = 85;
-    const blips = coins.map((c, i) => {
-        const angle = (i / Math.max(coins.length, 1)) * 360 - 90;
-        const rad   = angle * Math.PI / 180;
-        const dist  = R * (0.3 + 0.7 * (1 - c.score / 100));
-        const x = CX + dist * Math.cos(rad);
-        const y = CY + dist * Math.sin(rad);
-        const isAlert = c.score >= minScore;
-        const isNear  = c.score >= 40 && !isAlert;
-        const col = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a6a';
-        const sz  = isAlert ? 7 : isNear ? 5 : 3.5;
-        const lbl = c.symbol.replace('USDT','');
-        const anim = isAlert ? `<animate attributeName="r" values="${sz};${sz+3};${sz}" dur="1.2s" repeatCount="indefinite"/>` : '';
-        return `<g style="cursor:pointer" onclick="scrollToCoin('${c.symbol}')">
-          <circle id="pump-blip-${c.symbol}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sz}" fill="${col}" opacity="0.9">${anim}</circle>
-          <text x="${(x+sz+3).toFixed(1)}" y="${(y+4).toFixed(1)}" font-size="9" fill="${col}" opacity="0.8" font-family="monospace">${lbl}</text>
-        </g>`;
-    }).join('');
+    const si=document.getElementById('pump-scan-info');
+    if(si) si.textContent=`Scan #${status.scan_count||0} \xb7 ${status.last_scan||'--:--'}`;
 
-    const sweepX = (CX + R * Math.sin(Math.PI * 0.3)).toFixed(0);
-    const sweepY = (CY - R * Math.cos(Math.PI * 0.3)).toFixed(0);
+    const asCb=document.getElementById('pump-auto-short');
+    if(asCb) asCb.checked=autoShort;
+    const asLbl=document.getElementById('pump-auto-label');
+    if(asLbl){asLbl.textContent=autoShort?'\ud83d\udd34 AUTO SHORT':'\u23f8 Alert only';asLbl.style.color=autoShort?'#f85149':'#2a5a3a';}
 
-    // Build SVG radar
-    const svgRadar = `<svg width="220" height="220" viewBox="0 0 220 220" style="background:#060d14;border-radius:50%;border:1px solid #1a3a2a">
-      <defs>
-        <radialGradient id="swg" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stop-color="#3fb950" stop-opacity="0.3"/>
-          <stop offset="100%" stop-color="#3fb950" stop-opacity="0"/>
-        </radialGradient>
-      </defs>
-      <circle cx="110" cy="110" r="90" fill="none" stroke="#1a3a2a" stroke-width="1"/>
-      <circle cx="110" cy="110" r="60" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
-      <circle cx="110" cy="110" r="30" fill="none" stroke="#1a3a2a" stroke-width="0.7" stroke-dasharray="4,4"/>
-      <line x1="110" y1="22" x2="110" y2="198" stroke="#1a3a2a" stroke-width="0.5"/>
-      <line x1="22" y1="110" x2="198" y2="110" stroke="#1a3a2a" stroke-width="0.5"/>
-      <g style="transform-origin:110px 110px;animation:armSpin 4s linear infinite">
-        <path d="M110,110 L110,20 A90,90 0 0,1 ${sweepX},${sweepY} Z" fill="url(#swg)" opacity="0.7"/>
-        <line x1="110" y1="110" x2="110" y2="22" stroke="#3fb950" stroke-width="1.5" stroke-linecap="round" opacity="0.9"/>
-      </g>
-      <circle cx="110" cy="110" r="3" fill="#3fb950"/>
-      ${blips}
-    </svg>`;
+    const banner=document.getElementById('pump-alert-banner');
+    if(banner) banner.innerHTML=alertCoins.length>0
+        ?`<div style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.4);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#3fb950">\ud83d\udea8 <b>S\u1eafP V\u00c0O L\u1ec6NH:</b> ${alertCoins.map(c=>`<span style="background:rgba(63,185,80,.15);border:1px solid #3fb950;border-radius:4px;padding:2px 8px;margin-left:4px;font-weight:700">${c.symbol.replace('USDT','')} ${c.score}/100</span>`).join('')}</div>`
+        :'';
 
-    let html = `
-    <div style="background:#060d14;border:1px solid #1a3a2a;border-radius:12px;padding:16px">
+    const cc=document.getElementById('pump-coin-count');
+    if(cc) cc.textContent=coins.length+' coin \u0111ang qu\xe9t';
 
-      <!-- Top bar -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div style="width:9px;height:9px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;
-                      animation:pulseDot 1.2s ease-in-out infinite"></div>
-          <span style="color:#3fb950;font-size:14px;font-weight:700;letter-spacing:2px">PUMP RADAR</span>
-          <span id="pump-scan-info" style="color:#1a4a2a;font-size:11px">Scan #${scanCount} · ${lastScan}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <input id="pump-coin-input" placeholder="BANKUSDT"
-                 style="width:110px;font-size:11px;background:#060d14;border-color:#1a3a2a;color:#3fb950"
-                 onkeydown="if(event.key==='Enter')addPumpCoin()">
-          <button class="btn btn-sm" onclick="addPumpCoin()"
-                  style="background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">+ Add</button>
-          <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
-            <input type="checkbox" id="pump-auto-short" ${autoShort?'checked':''}
-                   onchange="toggleAutoShort(this.checked)" style="accent-color:#f85149">
-            <span style="color:${autoShort?'#f85149':'#2a5a3a'}">${autoShort?'🔴 AUTO SHORT':'⏸ Alert only'}</span>
-          </label>
-        </div>
-      </div>
+    const blipLayer=document.getElementById('pump-blips-layer');
+    if(blipLayer){
+        const CX=110,CY=110,R=85;
+        if(blipLayer.querySelectorAll('circle').length!==coins.length){
+            blipLayer.innerHTML=coins.map((c,i)=>{
+                const angle=(i/Math.max(coins.length,1))*360-90;
+                const rad=angle*Math.PI/180;
+                const dist=R*(0.3+0.7*(1-Math.min(c.score,100)/100));
+                const x=(CX+dist*Math.cos(rad)).toFixed(1);
+                const y=(CY+dist*Math.sin(rad)).toFixed(1);
+                const col=c.score>=minScore?'#3fb950':c.score>=40?'#d29922':'#2d5a6a';
+                const sz=c.score>=minScore?7:c.score>=40?5:3.5;
+                const lbl=c.symbol.replace('USDT','');
+                return `<g style="cursor:pointer" onclick="scrollToCoin('${c.symbol}')"><circle id="pump-blip-${c.symbol}" cx="${x}" cy="${y}" r="${sz}" fill="${col}" opacity="0.9"/><text x="${(parseFloat(x)+sz+3).toFixed(1)}" y="${(parseFloat(y)+4).toFixed(1)}" font-size="9" fill="${col}" opacity="0.8" font-family="monospace">${lbl}</text></g>`;
+            }).join('');
+        } else {
+            coins.forEach(c=>{
+                const b=document.getElementById('pump-blip-'+c.symbol);
+                if(b) b.setAttribute('fill',c.score>=minScore?'#3fb950':c.score>=40?'#d29922':'#2d5a6a');
+            });
+        }
+    }
 
-      <!-- Alert banner -->
-      ${alertCoins.length > 0 ? `
-      <div style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.4);border-radius:6px;
-                  padding:8px 12px;margin-bottom:12px;font-size:12px;color:#3fb950">
-        🚨 <b>SẮP VÀO LỆNH:</b>
-        ${alertCoins.map(c=>`<span style="background:rgba(63,185,80,.15);border:1px solid #3fb950;border-radius:4px;padding:2px 8px;margin-left:4px;font-weight:700">${c.symbol.replace('USDT','')} ${c.score}/100</span>`).join('')}
-      </div>` : ''}
+    const listEl=document.getElementById('pump-coin-list');
+    if(!listEl) return;
+    const existCards=listEl.querySelectorAll('[id^="pump-card-"]');
+    if(existCards.length!==coins.length){
+        if(coins.length===0){
+            listEl.innerHTML=`<div style="text-align:center;padding:40px 16px;color:#1a3a2a;border:1px dashed #1a3a2a;border-radius:8px;font-size:12px">\ud83d\udce1 Th\xeam coin dev hay pump</div>`;
+        } else {
+            listEl.innerHTML=coins.map(c=>{
+                const name=c.symbol.replace('USDT','');
+                const isAlert=c.score>=minScore,isNear=c.score>=40&&!isAlert;
+                const col=isAlert?'#3fb950':isNear?'#d29922':'#2d5a4a';
+                const bg=isAlert?'rgba(63,185,80,.08)':isNear?'rgba(210,153,34,.05)':'transparent';
+                const bdr=isAlert?'1px solid rgba(63,185,80,.4)':isNear?'1px solid rgba(210,153,34,.3)':'1px solid #0d2020';
+                const pStr=c.price>0?(c.price>=1?'$'+c.price.toFixed(4):'$'+c.price.toFixed(6)):'\u2014';
+                const stTxt=isAlert?'\ud83d\udfe2 S\u1eafP V\u00c0O L\u1ec6NH':isNear?'\ud83d\udfe1 \u0110ang g\u1ea7n':'\u26ab \u0110ang qu\xe9t';
+                return `<div id="pump-card-${c.symbol}" style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px"><div style="display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:700;color:${col}">${name}</span><span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span><span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${stTxt}</span></div><div style="display:flex;align-items:center;gap:6px"><button onclick="pumpManualShort('${c.symbol}')" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">\u25bc SHORT</button><button onclick="removePumpCoin('${c.symbol}')" style="background:none;border:none;color:#1a4a3a;cursor:pointer;font-size:15px;padding:0">\xd7</button></div></div><div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px"><span style="color:#0d3a2a">SCORE</span><span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${c.score}/100</span></div><div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden"><div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s"></div></div></div><div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">${c.pump_pct>0?`<span style="color:#d29922">\u2191${c.pump_pct.toFixed(1)}%</span>`:''} ${c.rsi>0?`<span style="color:${c.rsi>70?'#f85149':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>`:''} ${isAlert&&c.entry>0?`<span style="color:#3fb950;font-weight:600">Entry $${c.entry.toPrecision(4)}</span><span style="color:#f85149"> SL $${c.sl.toPrecision(4)}</span>`:''}</div></div>`;
+            }).join('');
+        }
+    } else {
+        coins.forEach(c=>{
+            const isAlert=c.score>=minScore,isNear=c.score>=40&&!isAlert;
+            const col=isAlert?'#3fb950':isNear?'#d29922':'#2d5a4a';
+            const pStr=c.price>0?(c.price>=1?'$'+c.price.toFixed(4):'$'+c.price.toFixed(6)):'\u2014';
+            const stTxt=isAlert?'\ud83d\udfe2 S\u1eafP V\u00c0O L\u1ec6NH':isNear?'\ud83d\udfe1 \u0110ang g\u1ea7n':'\u26ab \u0110ang qu\xe9t';
+            const pe=document.getElementById('pump-price-'+c.symbol); if(pe&&pe.textContent!==pStr)pe.textContent=pStr;
+            const se=document.getElementById('pump-score-'+c.symbol); if(se){se.textContent=c.score+'/100';se.style.color=col;}
+            const be=document.getElementById('pump-bar-'+c.symbol); if(be){be.style.width=Math.min(c.score,100)+'%';be.style.background=col;}
+            const ste=document.getElementById('pump-status-'+c.symbol); if(ste){ste.textContent=stTxt;ste.style.color=col;}
+        });
+    }
 
-      <!-- Radar + Coin list -->
-      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
-
-        <!-- SVG Radar -->
-        <div style="flex-shrink:0;text-align:center">
-          ${svgRadar}
-          <div style="font-size:10px;color:#1a4a2a;margin-top:4px">${coins.length} coin đang quét</div>
-        </div>
-
-        <!-- Coin list -->
-        <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:6px">
-          ${coins.length === 0 ? `
-            <div style="text-align:center;padding:40px 16px;color:#1a3a2a;border:1px dashed #1a3a2a;border-radius:8px;font-size:12px">
-              📡 Thêm coin dev hay pump<br><span style="font-size:10px;color:#0d2a1a">BANK · LAB · SIREN · MAGMA...</span>
-            </div>` :
-          coins.map(c => {
-            const name    = c.symbol.replace('USDT','');
-            const isAlert = c.score >= minScore;
-            const isNear  = c.score >= 40 && !isAlert;
-            const col     = isAlert ? '#3fb950' : isNear ? '#d29922' : '#2d5a4a';
-            const bg      = isAlert ? 'rgba(63,185,80,.08)' : isNear ? 'rgba(210,153,34,.05)' : 'transparent';
-            const bdr     = isAlert ? '1px solid rgba(63,185,80,.4)' : isNear ? '1px solid rgba(210,153,34,.3)' : '1px solid #0d2020';
-            const pStr    = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const status  = isAlert ? '🟢 SẮP VÀO LỆNH' : isNear ? '🟡 Đang gần' : '⚫ Đang quét';
-            const ageSec  = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
-            const ageStr  = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
-            return `
-            <div id="pump-card-${c.symbol}"
-                 style="background:${bg};border:${bdr};border-radius:8px;padding:10px 12px;
-                        ${isAlert?'box-shadow:0 0 10px rgba(63,185,80,.15)':''}">
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:14px;font-weight:700;color:${col}">${name}</span>
-                  <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
-                  <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${status}</span>
-                </div>
-                <div style="display:flex;align-items:center;gap:6px">
-                  ${ageStr ? `<span style="font-size:10px;color:#0d3a2a">${ageStr}</span>` : ''}
-                  <button onclick="pumpManualShort('${c.symbol}')"
-                          style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:4px;
-                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▼ SHORT</button>
-                  <button onclick="removePumpCoin('${c.symbol}')"
-                          style="background:none;border:none;color:#1a4a3a;cursor:pointer;font-size:15px;padding:0">×</button>
-                </div>
-              </div>
-              <div style="margin-top:6px">
-                <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
-                  <span style="color:#0d3a2a">SCORE</span>
-                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${c.score}/100</span>
-                </div>
-                <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
-                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
-                              ${isAlert?'box-shadow:0 0 5px '+col:''}"></div>
-                </div>
-              </div>
-              <div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">
-                ${c.pump_pct > 0 ? `<span style="color:#d29922">↑${c.pump_pct.toFixed(1)}%</span>` : ''}
-                ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
-                ${c.vol_ratio > 0 ? `<span style="color:#1a5a7a">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
-                ${isAlert && c.entry > 0 ? `
-                  <span style="color:#3fb950;font-weight:600">Entry $${c.entry.toPrecision(4)}</span>
-                  <span style="color:#f85149">SL $${c.sl.toPrecision(4)}</span>
-                  <span style="color:#3fb950">TP $${c.tp1.toPrecision(4)}</span>` : ''}
-              </div>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-
-      <!-- History -->
-      ${history.filter(h=>h.is_pump_top).length > 0 ? `
-      <div style="margin-top:12px;padding-top:10px;border-top:1px solid #0d2a1a">
-        <div style="font-size:10px;color:#1a4a2a;margin-bottom:6px">📋 Tín hiệu gần nhất:</div>
-        <div style="display:flex;flex-wrap:wrap;gap:5px">
-          ${history.filter(h=>h.is_pump_top).slice(-6).reverse().map(h=>{
-            const t=new Date(h.timestamp*1000);
-            const tStr=t.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-            const name=(h.symbol||'').replace('USDT','');
-            return `<div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.25);border-radius:5px;padding:4px 8px;font-size:10px">
-              <span style="color:#3fb950;font-weight:700">${name}</span>
-              <span style="color:#d29922;margin-left:3px">+${(h.pump_pct||0).toFixed(1)}%</span>
-              <span style="color:#1a5a3a;margin-left:3px">s=${h.score||0}</span>
-              <span style="color:#0d3a2a;margin-left:3px">${tStr}</span>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>` : ''}
-
-    </div>`;
-
-    el.innerHTML = html;
+    const histEl=document.getElementById('pump-history');
+    if(histEl){
+        const tops=history.filter(h=>h.is_pump_top).slice(-6).reverse();
+        histEl.innerHTML=tops.length>0?`<div style="margin-top:12px;padding-top:10px;border-top:1px solid #0d2a1a"><div style="font-size:10px;color:#1a4a2a;margin-bottom:6px">\ud83d\udccb T\xedn hi\u1ec7u g\u1ea7n nh\u1ea5t:</div><div style="display:flex;flex-wrap:wrap;gap:5px">${tops.map(h=>{const t=new Date(h.timestamp*1000);const tStr=t.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const name=(h.symbol||'').replace('USDT','');return `<div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.25);border-radius:5px;padding:4px 8px;font-size:10px"><span style="color:#3fb950;font-weight:700">${name}</span><span style="color:#d29922;margin-left:3px">+${(h.pump_pct||0).toFixed(1)}%</span><span style="color:#1a5a3a;margin-left:3px">s=${h.score||0}</span><span style="color:#0d3a2a;margin-left:3px">${tStr}</span></div>`;}).join('')}</div></div>`:'';
+    }
 }
 
 function scrollToCoin(sym) {
