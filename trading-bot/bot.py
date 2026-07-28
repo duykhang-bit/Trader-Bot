@@ -1699,25 +1699,53 @@ def pump_scan_engine(exchange, notifier):
                             pass
 
                         exchange.set_leverage(symbol, config.LEVERAGE)
-                        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / sig.entry_price
+
+                        # Lấy giá market HIỆN TẠI để tính qty chính xác
+                        try:
+                            current_price = exchange.get_ticker_price(symbol)
+                        except Exception:
+                            current_price = sig.entry_price  # fallback nếu fail
+                        if not current_price or current_price <= 0:
+                            current_price = sig.entry_price
+
+                        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / current_price
                         try:
                             step, max_qty, decimals, min_notional = exchange.get_qty_precision(symbol)
                             qty = max(round(int(qty / step) * step, decimals), step)
                         except Exception:
                             qty = round(qty, 3)
 
-                        if qty * sig.entry_price < 5.0:
+                        if qty * current_price < 5.0:
                             continue
 
                         exchange.place_market_order(symbol, "SELL", qty)
-                        time.sleep(0.5)
+                        time.sleep(0.8)  # đợi lệnh fill trước khi đặt SL/TP
 
-                        try: exchange.place_stop_loss_order(symbol, "BUY", qty, sig.sl_price)
-                        except Exception as e: logger.error(f"[PumpEngine] SL {symbol}: {e}")
-                        try: exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
-                        except Exception as e: logger.error(f"[PumpEngine] TP {symbol}: {e}")
+                        # Đặt SL với retry 3 lần — không có SL là nguy hiểm
+                        sl_ok = False
+                        for _attempt in range(3):
+                            try:
+                                exchange.place_stop_loss_order(symbol, "BUY", qty, sig.sl_price)
+                                sl_ok = True
+                                break
+                            except Exception as e:
+                                logger.warning(f"[PumpEngine] SL attempt {_attempt+1} {symbol}: {e}")
+                                time.sleep(0.5)
+                        if not sl_ok:
+                            logger.error(f"[PumpEngine] ⚠️ SL FAILED after 3 attempts for {symbol} — closing position for safety")
+                            try:
+                                exchange.place_market_order(symbol, "BUY", qty)  # đóng ngay nếu không đặt được SL
+                            except Exception as ce:
+                                logger.error(f"[PumpEngine] Emergency close failed: {ce}")
+                            continue
 
-                        rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
+                        # Đặt TP (không bắt buộc, lỗi thì bỏ qua)
+                        try:
+                            exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
+                        except Exception as e:
+                            logger.warning(f"[PumpEngine] TP {symbol}: {e}")
+
+                        rr = abs(current_price - sig.tp1_price) / abs(current_price - sig.sl_price) if abs(current_price - sig.sl_price) > 0 else 0
                         with lock:
                             state["trade_log"].append({
                                 "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
