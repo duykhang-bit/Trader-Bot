@@ -1687,8 +1687,31 @@ def scan_engine(exchange, notifier):
                     try: exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
                     except Exception as e: logger.error(f"TP failed: {e}")
                 else:
-                    # LIMIT: lưu sl/tp vào pending_smart_orders để limit_order_monitor xử lý
-                    logger.info(f"[SL/TP] LIMIT order → chờ khớp, SL/TP sẽ đặt sau khi fill")
+                    # LIMIT: lưu order IDs + sl/tp vào pending_smart_orders để limit_order_monitor xử lý
+                    # limit_order_monitor sẽ poll từng order_id, khi FILLED → đặt SL/TP ngay
+                    try:
+                        open_orders = exchange._get("/fapi/v1/openOrders",
+                                                    {"symbol": best.symbol}, signed=True)
+                        # Lấy tất cả LIMIT entry orders vừa đặt (non-reduceOnly)
+                        entry_orders = [o for o in open_orders
+                                        if not o.get("reduceOnly", False)
+                                        and o.get("type") == "LIMIT"]
+                        with lock:
+                            psm = state.setdefault("pending_smart_orders", {})
+                            for o in entry_orders:
+                                oid = str(o["orderId"])
+                                psm[oid] = {
+                                    "symbol":   best.symbol,
+                                    "side":     best.signal,
+                                    "qty":      float(o.get("origQty", qty)),
+                                    "sl":       sl,
+                                    "tp":       tp,
+                                    "ts":       time.time(),
+                                }
+                        logger.info(f"[SL/TP] {len(entry_orders)} LIMIT order(s) registered → "
+                                    f"limit_order_monitor sẽ đặt SL={sl} TP={tp} khi fill")
+                    except Exception as _e:
+                        logger.error(f"[SL/TP] Failed to register pending orders: {_e}")
 
                 with lock:
                     state["position"]  = best.signal
@@ -2621,10 +2644,10 @@ def limit_order_monitor(exchange, notifier):
                     except Exception as e:
                         logger.debug(f"[LimitMonitor] Check order {order_id}: {e}")
 
-            # ── B. Auto SL/TP cho positions mới (mỗi 60s) ──
+            # ── B. Auto SL/TP cho positions mới (mỗi 30s) ──
             # Chỉ đặt nếu position THỰC SỰ không có SL/TP trên Binance
             # VÀ không có pending entry order chưa khớp (tránh đặt trùng)
-            if _time.time() - last_auto_check > 60:
+            if _time.time() - last_auto_check > 30:
                 last_auto_check = _time.time()
                 try:
                     from auto_sltp import get_positions_without_sltp, auto_set_sltp
@@ -2648,8 +2671,24 @@ def limit_order_monitor(exchange, notifier):
                             logger.debug(f"[AutoSLTP] Skip {sym}: còn pending entry order")
                             continue
                         logger.info(f"[AutoSLTP] Detected unprotected: {sym} {pos['side']}")
-                        auto_set_sltp(exchange, sym, pos["side"],
-                                     pos["entry"], pos["qty"], liq_tracker)
+                        result = auto_set_sltp(exchange, sym, pos["side"],
+                                               pos["entry"], pos["qty"], liq_tracker)
+                        # Notify Telegram
+                        try:
+                            notifier_inst = state.get("_notifier")
+                            if notifier_inst:
+                                icon = "✅" if result["ok"] else "⚠️"
+                                missing = []
+                                if not pos["has_sl"]: missing.append("SL")
+                                if not pos["has_tp"]: missing.append("TP")
+                                notifier_inst.telegram.send(
+                                    f"{icon} <b>AUTO SL/TP SET</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 {sym} {pos['side']} (thiếu: {', '.join(missing)})\n"
+                                    f"{result['msg']}"
+                                )
+                        except Exception as _ne:
+                            logger.debug(f"[AutoSLTP] Notify failed: {_ne}")
                 except Exception as e:
                     logger.debug(f"[AutoSLTP] Check error: {e}")
 

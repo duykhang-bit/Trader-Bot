@@ -277,78 +277,91 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
 def get_positions_without_sltp(exchange) -> List[Dict]:
     """
     Lấy danh sách positions đang mở mà KHÔNG có SL hoặc TP trên Binance.
+
+    SL/TP được đặt qua /fapi/v1/algoOrder (Algo Conditional API).
+    Cần check /fapi/v1/openAlgoOrders — không phải /fapi/v1/openOrders.
     """
     try:
-        # Lấy tất cả positions
+        # ── 1. Lấy tất cả positions đang mở ──────────────────
         all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
         open_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0]
 
         if not open_pos:
             return []
 
-        # Lấy tất cả open orders (regular)
-        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
-
-        # Lấy Algo/Conditional orders (SL/TP mới dùng endpoint này)
+        # ── 2. Lấy regular open orders (không dùng để check SL/TP nữa,
+        #        chỉ dùng để biết lệnh entry LIMIT nào chưa fill) ──
         try:
-            algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
-            if isinstance(algo_orders, dict):
-                algo_orders = algo_orders.get("orders", [])
+            regular_orders = exchange._get("/fapi/v1/openOrders", signed=True)
         except Exception:
-            algo_orders = []
+            regular_orders = []
 
-        # Group orders theo symbol
-        orders_by_symbol = {}
-        for o in all_orders:
-            sym = o.get("symbol", "")
-            orders_by_symbol.setdefault(sym, []).append(o)
+        # Regular reduce-only orders (STOP_MARKET / TAKE_PROFIT_MARKET đặt qua v1/order)
+        regular_sl_syms = set()
+        regular_tp_syms = set()
+        for o in regular_orders:
+            if not o.get("reduceOnly", False):
+                continue
+            otype = o.get("type", "")
+            sym   = o.get("symbol", "")
+            if otype in ("STOP_MARKET", "STOP"):
+                regular_sl_syms.add(sym)
+            if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
+                regular_tp_syms.add(sym)
 
-        # Group algo orders theo symbol
-        for o in algo_orders:
-            sym = o.get("symbol", "")
-            orders_by_symbol.setdefault(sym, []).append(o)
+        # ── 3. Lấy Algo/Conditional orders — đây là nơi SL/TP được lưu ──
+        algo_sl_syms = set()
+        algo_tp_syms = set()
+        try:
+            algo_resp = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
+            # API trả về {"total": N, "orders": [...]}
+            if isinstance(algo_resp, dict):
+                algo_list = algo_resp.get("orders", [])
+            elif isinstance(algo_resp, list):
+                algo_list = algo_resp
+            else:
+                algo_list = []
 
-        # Check từng position
+            for o in algo_list:
+                sym   = o.get("symbol", "")
+                # Algo orders dùng "orderType" thay vì "type"
+                otype = o.get("orderType", o.get("type", ""))
+                if otype in ("STOP_MARKET", "STOP"):
+                    algo_sl_syms.add(sym)
+                if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
+                    algo_tp_syms.add(sym)
+
+        except Exception as e:
+            logger.debug(f"get_positions_without_sltp: algo orders error: {e}")
+
+        # ── 4. Check từng position ────────────────────────────
         unprotected = []
         for p in open_pos:
-            sym = p["symbol"]
-            amt = float(p["positionAmt"])
+            sym   = p["symbol"]
+            amt   = float(p["positionAmt"])
             entry = float(p["entryPrice"])
-            side = "LONG" if amt > 0 else "SHORT"
+            side  = "LONG" if amt > 0 else "SHORT"
 
-            orders = orders_by_symbol.get(sym, [])
-            # Check regular orders
-            has_sl = any(o.get("type") in ("STOP_MARKET", "STOP") and
-                        o.get("reduceOnly", False) for o in orders)
-            has_tp = any(o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") and
-                        o.get("reduceOnly", False) for o in orders)
-            # Check algo/conditional orders
-            if not has_sl:
-                has_sl = any(o.get("orderType") == "STOP_MARKET" or
-                            o.get("algoType") == "CONDITIONAL" and "STOP" in o.get("orderType", "")
-                            for o in orders)
-            if not has_tp:
-                has_tp = any(o.get("orderType") == "TAKE_PROFIT_MARKET" or
-                            o.get("algoType") == "CONDITIONAL" and "TAKE_PROFIT" in o.get("orderType", "")
-                            for o in orders)
+            has_sl = sym in regular_sl_syms or sym in algo_sl_syms
+            has_tp = sym in regular_tp_syms or sym in algo_tp_syms
 
             if not has_sl or not has_tp:
                 unprotected.append({
-                    "symbol": sym,
-                    "side": side,
-                    "entry": entry,
-                    "qty": abs(amt),
-                    "has_sl": has_sl,
-                    "has_tp": has_tp,
-                    "mark": float(p.get("markPrice", entry)),
-                    "pnl": float(p.get("unRealizedProfit", 0)),
+                    "symbol":   sym,
+                    "side":     side,
+                    "entry":    entry,
+                    "qty":      abs(amt),
+                    "has_sl":   has_sl,
+                    "has_tp":   has_tp,
+                    "mark":     float(p.get("markPrice", entry)),
+                    "pnl":      float(p.get("unRealizedProfit", 0)),
                     "leverage": int(float(p.get("leverage", 1))),
                 })
 
         return unprotected
 
     except Exception as e:
-        logger.error(f"get_positions_without_sltp error: {e}")
+        logger.error(f"get_positions_without_sltp error: {e}", exc_info=True)
         return []
 
 
