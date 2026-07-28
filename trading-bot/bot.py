@@ -1825,6 +1825,20 @@ def pump_scan_engine(exchange, notifier):
 
                     sig = detector.analyze(symbol, df_1m, df_15m, ob_tracker=ob_tracker)
 
+                    # ── Tự clear signal cũ nếu coin không còn pump ───────
+                    # Nếu pump_pct < 40% ngưỡng → coin đã về bình thường
+                    # Xóa ngay khỏi state để web không hiện data cũ
+                    pump_threshold = detector.cfg["PUMP_PRICE_RISE_PCT"] * 0.4
+                    current_pump = sig.pump_pct if sig else 0
+                    if current_pump < pump_threshold:
+                        with lock:
+                            state["pump_signals"] = [s for s in state.get("pump_signals", [])
+                                                     if s.get("symbol") != symbol]
+                            state.get("pump_alerts", {}).pop(symbol, None)
+                            state.get("_pump_alert_cd", {}).pop(f"alert_{symbol}", None)
+                        if sig is None:
+                            continue
+
                     # ── PUMP ALERT: coin đang pump nhưng chưa đủ điều kiện SHORT ──
                     # Chạy song song với analyze() — check ngưỡng thấp hơn
                     try:

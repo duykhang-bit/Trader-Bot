@@ -213,6 +213,14 @@ class PumpDetector:
         if vol_ratio < 1.3:
             return None
 
+        # Step 2b: Giá phải đang TĂNG — không alert khi coin đang giảm
+        # Check close của 3 nến gần nhất phải cao hơn 3 nến trước đó
+        if len(df_1m) >= 6:
+            recent_avg = df_1m["close"].iloc[-3:].mean()
+            prev_avg   = df_1m["close"].iloc[-6:-3].mean()
+            if recent_avg <= prev_avg:
+                return None  # Giá đang đi xuống → không phải pump alert
+
         # Step 3: Tính score pump top để biết còn xa ngưỡng SHORT bao nhiêu
         score, signals = self._score_pump_top(df_1m, df_15m, pump_high)
 
