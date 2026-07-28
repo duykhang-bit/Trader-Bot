@@ -751,20 +751,36 @@ function restoreInputs() {
 }
 
 let _firstRender = true;
+let _refreshPaused = false;  // dừng refresh khi bot tắt
 
 async function refresh(){
     try{
         const r = await fetch('/api/state');
         const d = await r.json();
 
+        // Nếu bot tắt → dừng auto-refresh, hiện overlay "Bot Paused"
+        if (!d.running) {
+            _refreshPaused = true;
+            document.getElementById('bot-status').innerHTML =
+                '<span class="dot dot-red"></span> Paused';
+            // Chỉ update status + scan info, không rebuild layout
+            const si = document.getElementById('scan-info');
+            if (si) si.textContent = `Scan #${d.scan_no} | Last: ${d.last_scan}`;
+            return;
+        }
+
+        // Bot đang chạy → resume nếu vừa bật lại
+        if (_refreshPaused) {
+            _refreshPaused = false;
+            _firstRender = true;  // rebuild lại 1 lần khi resume
+        }
+
         if (_firstRender) {
-            // Lần đầu: render toàn bộ
             saveInputs();
             document.getElementById('content').innerHTML = renderDashboard(d);
             restoreInputs();
             _firstRender = false;
         } else {
-            // Lần sau: chỉ patch các ô thay đổi — không rebuild, không mất focus
             _patchDashboard(d);
         }
     }
