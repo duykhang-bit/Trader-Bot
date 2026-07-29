@@ -1524,29 +1524,15 @@ def api_toggle():
 
 
 def _save_coins_to_config(coins: list):
-    """Ghi danh sách coins vào config.py để persist khi restart."""
-    import os
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    """Ghi danh sách coins vào watchlist.json để persist khi restart (không bị git pull ghi đè)."""
+    import os, json
+    wl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        # Replace FIXED_COINS block
-        import re
-        new_block = "FIXED_COINS = [\n"
-        for c in coins:
-            new_block += f'    "{c}",\n'
-        new_block += "]"
-        content = re.sub(
-            r'FIXED_COINS\s*=\s*\[.*?\]',
-            new_block,
-            content,
-            flags=re.DOTALL
-        )
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        logger.info(f"Config saved: FIXED_COINS = {coins}")
+        with open(wl_path, "w", encoding="utf-8") as f:
+            json.dump(coins, f)
+        logger.info(f"Watchlist saved to watchlist.json: {coins}")
     except Exception as e:
-        logger.error(f"Failed to save config: {e}")
+        logger.error(f"Failed to save watchlist.json: {e}")
 
 
 @app.route("/api/coins/add", methods=["POST"])
@@ -1921,8 +1907,8 @@ def _api_pump_state_inner():
             sig_ts    = sig_d.get("timestamp", 0)
             age_min   = (time.time() - sig_ts) / 60 if sig_ts else 999
 
-            price_dropped  = entry_p > 0 and price > 0 and price < entry_p * 0.97
-            timed_out      = age_min > 15 and not sig_d.get("is_pump_top", False)
+            price_dropped  = entry_p > 0 and price > 0 and price < entry_p * 0.95
+            timed_out      = age_min > 30 and not sig_d.get("is_pump_top", False)
             is_stale       = price_dropped or timed_out
 
             if is_stale:
@@ -1950,7 +1936,7 @@ def _api_pump_state_inner():
             "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
             "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
             # is_alert = True khi có signal pump bất kỳ (dù chưa là top)
-            "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 5) if sig_d and not is_stale else bool(alert_d and not is_stale),
+            "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 2) if sig_d and not is_stale else bool(alert_d and not is_stale),
             "is_stale":    is_stale,            "rsi":         sig_d["rsi"]            if sig_d else (alert_d["rsi"]         if alert_d else 0),
             "vol_ratio":   sig_d["volume_ratio"]   if sig_d else (alert_d.get("vol_ratio", 0) if alert_d else 0),
             "entry":       sig_d["entry_price"]    if sig_d else (alert_d["price"]       if alert_d else 0),
