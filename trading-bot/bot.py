@@ -2088,6 +2088,17 @@ def scan_engine(exchange, notifier):
                                         else:
                                             tp = round(entry_price - (sl - entry_price) * 3.0, 8)
 
+                                # ── Guard min TP: tối thiểu RR 1:2 từ SL ──
+                                risk = abs(entry_price - sl)
+                                if best.signal == "LONG":
+                                    min_tp = entry_price + risk * 2.0
+                                    if tp < min_tp:
+                                        tp = round(min_tp, 8)
+                                else:
+                                    min_tp = entry_price - risk * 2.0
+                                    if tp > min_tp:
+                                        tp = round(min_tp, 8)
+
                                 # ── Validate RR ──────────────────────────
                                 risk   = abs(entry_price - sl)
                                 reward = abs(tp - entry_price)
