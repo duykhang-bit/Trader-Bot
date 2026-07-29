@@ -752,26 +752,31 @@ function patchPumpRadar(d) {
 
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#484f58');
-            scoreEl.textContent = c.score + '/100';
+            const chg24p = c.change_24h || 0;
+            const ds = c.score > 0 ? c.score : chg24p >= 30 ? 55 : chg24p >= 20 ? 40 : chg24p >= 10 ? 25 : chg24p >= 5 ? 12 : 0;
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (ds >= minScore ? '#3fb950' : ds >= 40 ? '#d29922' : ds > 0 ? '#388bfd' : '#484f58');
+            scoreEl.textContent = ds + '/100';
             scoreEl.style.color = col;
         }
         const barEl = document.getElementById('pump-bar-' + c.symbol);
         if (barEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#21262d');
-            barEl.style.width = Math.min(c.score, 100) + '%';
+            const chg24p = c.change_24h || 0;
+            const ds = c.score > 0 ? c.score : chg24p >= 30 ? 55 : chg24p >= 20 ? 40 : chg24p >= 10 ? 25 : chg24p >= 5 ? 12 : 0;
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (ds >= minScore ? '#3fb950' : ds >= 40 ? '#d29922' : ds > 0 ? '#388bfd' : '#21262d');
+            barEl.style.width = Math.min(ds, 100) + '%';
             barEl.style.background = col;
         }
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
+            const chg24p = c.change_24h || 0;
             const isStale = c.is_stale || false;
-            if (c.is_top)                             statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
-            else if (c.is_alert && !isStale)          statusEl.textContent = '🚀 Đang pump!';
-            else if (c.score >= minScore && !isStale) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
-            else if (c.score >= 40 && !isStale)       statusEl.textContent = '🟡 Đang gần';
-            else if (c.score > 0 && !isStale)         statusEl.textContent = `🔵 Pump +${c.pump_pct ? c.pump_pct.toFixed(1) : '?'}%`;
-            else if (isStale)                         statusEl.textContent = '⚫ Đã xả — theo dõi';
-            else                                      statusEl.textContent = '⚫ Đang quét';
+            const isPumpingP = (c.pump_pct > 2 || chg24p >= 5) && !isStale && !c.is_alert && !c.is_top;
+            const displayPct = c.pump_pct > 0 ? c.pump_pct : chg24p;
+            if (c.is_top)                              statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
+            else if (c.is_alert && !isStale)           statusEl.textContent = '🚀 Đang pump!';
+            else if (isPumpingP && !isStale)           statusEl.textContent = `🔵 Pump +${displayPct.toFixed(1)}%`;
+            else if (isStale)                          statusEl.textContent = '⚫ Đã xả — theo dõi';
+            else                                       statusEl.textContent = '⚫ Đang quét';
         }
 
         // Cập nhật pump alert banner bên dưới card nếu có
