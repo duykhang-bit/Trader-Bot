@@ -702,6 +702,14 @@ function patchPumpRadar(d) {
     const autoShort  = d.auto_short || false;
     const softShort  = d.soft_short || false;
 
+    // Sort realtime: pump top → alert → score cao → pump_pct cao
+    coins.sort((a, b) => {
+        if (a.is_top !== b.is_top) return b.is_top - a.is_top;
+        if (a.is_alert !== b.is_alert) return b.is_alert - a.is_alert;
+        if (b.score !== a.score) return b.score - a.score;
+        return (b.pump_pct || 0) - (a.pump_pct || 0);
+    });
+
     // Update scan counter + time
     const scanEl = document.getElementById('pump-scan-info');
     if (scanEl) scanEl.textContent = `Scan #${status.scan_count||0} · ${status.last_scan||'--:--'}`;
@@ -875,6 +883,14 @@ function renderPumpRadar(d) {
     const scanCount = status.scan_count || 0;
     const lastScan  = status.last_scan  || '--:--';
     const alertCoins = coins.filter(c => c.score >= minScore);
+
+    // Sort: pump top → alert → score cao → pump_pct cao → còn lại
+    coins.sort((a, b) => {
+        if (a.is_top !== b.is_top) return b.is_top - a.is_top;
+        if (a.is_alert !== b.is_alert) return b.is_alert - a.is_alert;
+        if (b.score !== a.score) return b.score - a.score;
+        return (b.pump_pct || 0) - (a.pump_pct || 0);
+    });
 
     // Vị trí blip trên radar
     const CX = 110, CY = 110, R = 85;
