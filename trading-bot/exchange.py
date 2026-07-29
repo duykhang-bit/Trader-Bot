@@ -185,13 +185,30 @@ class BinanceFutures:
     # ---- Trading ----
 
     def set_leverage(self, symbol: str, leverage: int):
-        """Set đòn bẩy"""
-        result = self._post("/fapi/v1/leverage", {
-            "symbol": symbol,
-            "leverage": leverage
-        })
-        logger.info(f"Leverage set to {leverage}x for {symbol}")
-        return result
+        """Set đòn bẩy — tự động giảm nếu coin không hỗ trợ leverage yêu cầu"""
+        try:
+            result = self._post("/fapi/v1/leverage", {
+                "symbol": symbol,
+                "leverage": leverage
+            })
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
+            return result
+        except Exception as e:
+            # Nếu leverage không hợp lệ (code -4028), thử giảm dần
+            if "-4028" in str(e) or "not valid" in str(e).lower():
+                for try_lev in [10, 5, 3, 2, 1]:
+                    if try_lev >= leverage:
+                        continue
+                    try:
+                        result = self._post("/fapi/v1/leverage", {
+                            "symbol": symbol,
+                            "leverage": try_lev
+                        })
+                        logger.info(f"Leverage fallback to {try_lev}x for {symbol} (requested {leverage}x not valid)")
+                        return result
+                    except Exception:
+                        continue
+            raise
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
         """Set margin type: ISOLATED hoặc CROSSED"""
