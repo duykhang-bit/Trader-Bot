@@ -308,21 +308,23 @@ class LiquidationTracker:
             })
 
         # ── Chọn cluster tối ưu ───────────────────────────────
-        # Ưu tiên: cluster GẦN NHẤT có đủ USD (≥ min_usd * 2)
-        # Nếu cluster gần nhất quá nhỏ → lấy cluster lớn nhất USD
+        # Ưu tiên: cluster có USD LỚN NHẤT trong tầm 8%
+        # Lý do: cluster lớn = nhiều liq bị quét = giá sẽ chạy đến đó mạnh hơn
+        # Nếu không có cluster nào đủ USD → lấy gần nhất
         threshold_usd = min_usd * 2
 
         nearby = [c for c in cluster_stats if c["dist_pct"] <= 8.0]
         if not nearby:
             nearby = cluster_stats  # fallback: lấy tất cả
 
-        # Trong các cluster gần (<8%), ưu tiên:
-        # 1. Cluster đầu tiên (gần nhất) nếu đủ USD
-        # 2. Nếu không đủ USD → cluster có tổng USD lớn nhất
-        best = nearby[0]  # cluster gần nhất (đã sort theo khoảng cách)
-        if best["total_usd"] < threshold_usd:
-            # Tìm cluster lớn nhất USD trong tầm gần
-            best = max(nearby, key=lambda c: c["total_usd"])
+        # Trong các cluster gần (<8%), ưu tiên cluster USD LỚN NHẤT
+        # Lý do: vùng liq lớn = nhiều lệnh bị quét = giá chạy đến đó mạnh
+        # Nếu không có cluster nào đủ min_usd → trả None
+        if not nearby:
+            return None
+
+        # Chọn cluster lớn nhất USD trong tầm gần
+        best = max(nearby, key=lambda c: c["total_usd"])
 
         if best["total_usd"] < min_usd:
             return None
