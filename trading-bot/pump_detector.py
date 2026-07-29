@@ -361,11 +361,14 @@ class PumpDetector:
 
         # ── SL dùng ATR nhưng có hard cap ───────────────────────────
         # - Tối thiểu 1.5% từ đỉnh (để không bị giật nhỏ xuyên thủng)
-        # - Tối đa 3.0% từ đỉnh (hard cap — nếu xuyên qua 3% là pump vẫn còn sức)
-        # - Dùng ATR×1.5 làm base, rồi clamp vào [1.5%, 3.0%]
-        atr_pct       = (atr / pump_high * 100) if pump_high > 0 else 1.5
-        sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))   # clamp [1.5%, 3.0%]
-        sl_price      = pump_high * (1 + sl_buffer_pct / 100)
+        # - Tối đa 3.0% từ đỉnh (hard cap)
+        # - Fallback: nếu ATR=0 hoặc pump_high=0 → dùng 2% cứng
+        if pump_high > 0 and atr > 0:
+            atr_pct       = (atr / pump_high * 100)
+            sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))
+        else:
+            sl_buffer_pct = 2.0   # fallback 2%
+        sl_price = pump_high * (1 + sl_buffer_pct / 100) if pump_high > 0 else current_price * 1.02
 
         # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
         # Đúng hơn: entry là đỉnh, tp xuống theo fib từ đỉnh xuống đáy
