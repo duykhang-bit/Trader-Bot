@@ -235,8 +235,8 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             return None
 
         # Filter entry quality: chỉ vào lệnh ở vùng giá tốt
-        # SHORT: không short khi RSI quá oversold
-        if signal == "SHORT" and rsi < 30:
+        # SHORT: không short khi RSI quá oversold (giá đã dump rồi, dễ bounce)
+        if signal == "SHORT" and rsi < 35:
             return None
         # LONG: không long khi RSI quá overbought
         if signal == "LONG" and rsi > 70:
