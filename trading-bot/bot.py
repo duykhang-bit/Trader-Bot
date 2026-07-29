@@ -2039,9 +2039,15 @@ def scan_engine(exchange, notifier):
                                 # ── SL: ngoài cluster + buffer ────────────
                                 sl = cluster["sl_zone"]
                                 if best.signal == "LONG":
+                                    # Min SL 2% dưới entry, max 5%
                                     sl = round(max(sl, entry_price * 0.95), 8)
+                                    if entry_price - sl < entry_price * 0.02:
+                                        sl = round(entry_price * 0.98, 8)
                                 else:
+                                    # Min SL 2% trên entry, max 5%
                                     sl = round(min(sl, entry_price * 1.05), 8)
+                                    if sl - entry_price < entry_price * 0.02:
+                                        sl = round(entry_price * 1.02, 8)
 
                                 # ── TP: cluster lớn nhất USD phía target ──
                                 heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
