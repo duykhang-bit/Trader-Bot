@@ -1164,11 +1164,17 @@ def position_reversal_monitor(exchange, notifier):
         try:
             with lock:
                 open_positions = list(state.get("open_positions", []))
+                # Chỉ áp dụng reversal monitor cho lệnh do PUMP engine vào
+                pump_trade_syms = set(state.get("pump_trade_symbols", set()))
 
             for pos in open_positions:
                 symbol = pos.get("symbol", "")
                 amt    = float(pos.get("positionAmt", 0))
                 if amt == 0:
+                    continue
+
+                # ── CHỈ áp dụng cho lệnh pump — bỏ qua lệnh scan thường ──
+                if symbol not in pump_trade_syms:
                     continue
 
                 side       = "SHORT" if amt < 0 else "LONG"
