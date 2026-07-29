@@ -1969,6 +1969,28 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
+                # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
+                # Đây là bước cuối cùng trước khi vào lệnh
+                # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
+                if not skip_reason:
+                    try:
+                        from indicators import get_smart_entry_signal
+                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
+                        df_1m_chk  = _klines_to_df(klines_1m)
+                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
+                        if smart["signal"] == "WAIT":
+                            # Chưa có trigger 1m — nhưng nếu 15m score >= 55 thì vẫn vào (không quá chặt)
+                            if smart["score"] < 40:
+                                skip_reason = f"15m/1m chưa sẵn sàng: {smart['reason'][:60]}"
+                            else:
+                                logger.info(f"[SmartEntry] {best.symbol}: 15m ok, 1m chưa trigger "
+                                            f"score={smart['score']} — vào bình thường")
+                        else:
+                            logger.info(f"[SmartEntry] {best.symbol}: {smart['signal']} "
+                                        f"quality={smart['quality']} score={smart['score']} | {smart['reason'][:60]}")
+                    except Exception as _e:
+                        logger.debug(f"SmartEntry skip: {_e}")
+
                 # Filter 3: Liquidity Cluster Entry
                 if not skip_reason:
                     # Ưu tiên: websocket tracker (nếu có data)
