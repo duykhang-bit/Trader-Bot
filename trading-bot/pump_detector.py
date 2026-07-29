@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 DEFAULT_CFG = {
     "PUMP_PRICE_RISE_PCT":      15.0,   # % tăng tối thiểu từ đáy để coi là "đang pump"
-    "PUMP_LOOKBACK_CANDLES":    20,     # số nến 1m nhìn lại để tìm đáy
+    "PUMP_LOOKBACK_CANDLES":    30,     # số nến 1m nhìn lại để tìm đáy (30 phút)
     "VOL_EXHAUST_RATIO":        0.45,   # volume hiện tại <= 45% đỉnh pump → kiệt sức
     "VOL_EXHAUST_CANDLES":      5,      # số nến cuối để tính volume trung bình
     "WICK_REJECT_RATIO":        1.8,    # bóng trên >= 1.8× thân nến
@@ -383,8 +383,8 @@ class PumpDetector:
         is_top = (
             score >= self.cfg["PUMP_TOP_MIN_SCORE"]
             and rsi >= 72
-            and pump_pct >= 20.0
-            and (use_limit_top or use_market)  # LIMIT gần đỉnh HOẶC MARKET sau xác nhận
+            and pump_pct >= self.cfg["PUMP_PRICE_RISE_PCT"]   # dùng config, không hardcode 20%
+            and (use_limit_top or use_market)
         )
 
         if is_top:

@@ -197,8 +197,9 @@ class ConfirmedTopDetector:
 
         # ── C4: VOLUME CLIFF — volume sụt mạnh ───────────────
         cur_vol    = df["volume"].iloc[-1]
+        # Nới lỏng từ 30% → 50%: dev pump dùng fake vol lớn, nến sau <= 50% vẫn là dấu hiệu xả
         c4_pass    = (peak_vol > 0 and
-                      cur_vol <= peak_vol * self.cfg["CT_VOL_CLIFF_RATIO"])
+                      cur_vol <= peak_vol * max(self.cfg["CT_VOL_CLIFF_RATIO"], 0.50))
 
         # ── C5: ORDER BOOK — ask > bid × ratio ───────────────
         c5_pass = False
@@ -255,21 +256,24 @@ class ConfirmedTopDetector:
         entry = cur_close
         sl    = round(peak_price * (1 + self.cfg["CT_SL_BUFFER_PCT"]), 8)
 
-        # TP = đỉnh - 40% của range pump
+        # ── TP: thực tế hơn — SHORT bắt đỉnh pump nên TP ở 30% fib, không cần 40% ─
+        # Dev pump thường xả về 60-80% range trong 30-60 phút
+        # TP1 = 30% retracement (an toàn, chốt nhanh)
+        # TP  = 50% retracement (target chính)
         pump_range = peak_price - baseline
-        tp         = round(peak_price - pump_range * self.cfg["CT_TP_RETRACE_PCT"], 8)
+        tp         = round(peak_price - pump_range * 0.30, 8)   # TP1: 30% — chốt nhanh
 
         # Đảm bảo TP < entry (SHORT)
         if tp >= entry:
-            tp = round(entry * 0.75, 8)
+            tp = round(entry * 0.90, 8)   # fallback: -10% từ entry
 
         risk   = abs(sl - entry)
         reward = abs(entry - tp)
         rr     = round(reward / risk, 1) if risk > 0 else 0
 
-        # RR phải >= 3 mới vào
-        if rr < 3.0:
-            logger.debug(f"[CTD] {symbol}: RR={rr} < 3.0 — skip")
+        # RR phải >= 2.0 — thực tế hơn (3.0 quá strict, bỏ lỡ nhiều setup tốt)
+        if rr < 2.0:
+            logger.debug(f"[CTD] {symbol}: RR={rr} < 2.0 — skip")
             return None
 
         # Set cooldown
