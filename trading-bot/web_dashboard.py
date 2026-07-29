@@ -61,6 +61,20 @@ tr:hover { background: #1c2128; }
 .price-item { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 10px; text-align: center; }
 .price-item .coin { font-size: 11px; color: #8b949e; }
 .price-item .price { font-size: 15px; font-weight: bold; color: #c9d1d9; margin-top: 2px; }
+/* PnL Stats */
+.pnl-stats-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.pnl-tab { padding: 5px 16px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #8b949e; cursor: pointer; font-size: 13px; transition: all .2s; }
+.pnl-tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+.pnl-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pnl-bar-label { width: 90px; font-size: 12px; color: #8b949e; flex-shrink: 0; text-align: right; }
+.pnl-bar-wrap { flex: 1; background: #161b22; border-radius: 4px; height: 20px; overflow: hidden; position: relative; }
+.pnl-bar-fill { height: 100%; border-radius: 4px; transition: width .4s; }
+.pnl-bar-val { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 600; }
+.pnl-bar-meta { width: 80px; font-size: 11px; color: #8b949e; flex-shrink: 0; text-align: right; }
+.pnl-summary-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.pnl-summary-card { flex: 1; min-width: 100px; background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 10px 14px; text-align: center; }
+.pnl-summary-card .lbl { font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+.pnl-summary-card .val { font-size: 18px; font-weight: 700; }
 /* ── Controls ── */
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: 0.2s; }
 .btn-green { background: #238636; color: #fff; } .btn-green:hover { background: #2ea043; }
@@ -517,16 +531,8 @@ function renderDashboard(d) {
     }
     html += `</div>`;
 
-    // Prices
-    if (d.prices && Object.keys(d.prices).length > 0) {
-        html += `<div class="section"><h2>&#x1F4B9; Prices</h2><div class="prices-grid">`;
-        for (const [sym, price] of Object.entries(d.prices)) {
-            const name = sym.replace('USDT','');
-            let pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 3 : 5);
-            html += `<div class="price-item"><div class="coin">${name}</div><div id="price-${sym}" class="price">${pStr}</div></div>`;
-        }
-        html += `</div></div>`;
-    }
+    // PnL Statistics — thay thế Prices section
+    html += `<div class="section"><h2>&#x1F4C8; PnL Statistics</h2><div id="pnl-stats-section"><div style="color:#8b949e;font-size:13px">Đang tải...</div></div></div>`;
 
     // Trade History
     if (d.trades_history && d.trades_history.length > 0) {
@@ -543,6 +549,89 @@ function renderDashboard(d) {
 
     html += `<div class="footer">Auto-refresh 1s</div>`;
     return html;
+}
+
+// ── PNL STATISTICS ───────────────────────────────────────────
+let _pnlTab = 'daily';  // daily | weekly | monthly
+let _pnlData = null;
+
+async function fetchPnlStats() {
+    try {
+        const r = await fetch('/api/pnl_stats');
+        _pnlData = await r.json();
+        renderPnlStats();
+    } catch(e) {}
+}
+
+function renderPnlStats() {
+    const el = document.getElementById('pnl-stats-section');
+    if (!el) return;
+    if (!_pnlData) { el.innerHTML = `<div style="color:#8b949e;font-size:13px">Đang tải...</div>`; return; }
+
+    const rows = _pnlData[_pnlTab] || [];
+    // Summary
+    const totalPnl   = rows.reduce((s,r) => s + r.pnl, 0);
+    const totalTrades = rows.reduce((s,r) => s + r.trades, 0);
+    const totalWins  = rows.reduce((s,r) => s + r.wins, 0);
+    const wr = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+    const pnlColor = v => v >= 0 ? '#3fb950' : '#f85149';
+
+    let html = `
+    <div class="pnl-stats-tabs">
+        <div class="pnl-tab ${_pnlTab==='daily'?'active':''}" onclick="setPnlTab('daily')">7 Ngày</div>
+        <div class="pnl-tab ${_pnlTab==='weekly'?'active':''}" onclick="setPnlTab('weekly')">Theo Tuần</div>
+        <div class="pnl-tab ${_pnlTab==='monthly'?'active':''}" onclick="setPnlTab('monthly')">Theo Tháng</div>
+    </div>
+    <div class="pnl-summary-row">
+        <div class="pnl-summary-card">
+            <div class="lbl">Tổng PnL</div>
+            <div class="val" style="color:${pnlColor(totalPnl)}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</div>
+        </div>
+        <div class="pnl-summary-card">
+            <div class="lbl">Lệnh</div>
+            <div class="val" style="color:#c9d1d9">${totalTrades}</div>
+        </div>
+        <div class="pnl-summary-card">
+            <div class="lbl">Win Rate</div>
+            <div class="val" style="color:${wr>=50?'#3fb950':'#f85149'}">${wr.toFixed(0)}%</div>
+        </div>
+        <div class="pnl-summary-card">
+            <div class="lbl">Win / Loss</div>
+            <div class="val" style="color:#c9d1d9"><span style="color:#3fb950">${totalWins}W</span> / <span style="color:#f85149">${totalTrades-totalWins}L</span></div>
+        </div>
+    </div>`;
+
+    // Bar chart
+    if (rows.length === 0) {
+        html += `<div style="color:#8b949e;font-size:13px;padding:12px 0">Chưa có dữ liệu</div>`;
+    } else {
+        const maxAbs = Math.max(...rows.map(r => Math.abs(r.pnl)), 0.01);
+        html += `<div>`;
+        rows.forEach(r => {
+            const pct = Math.min(Math.abs(r.pnl) / maxAbs * 100, 100);
+            const color = r.pnl >= 0 ? '#238636' : '#da3633';
+            const textColor = r.pnl >= 0 ? '#3fb950' : '#f85149';
+            const sign = r.pnl >= 0 ? '+' : '';
+            const wrTxt = r.trades > 0 ? `${(r.wins/r.trades*100).toFixed(0)}% · ${r.trades}L` : '–';
+            html += `
+            <div class="pnl-bar-row">
+                <div class="pnl-bar-label">${r.label}</div>
+                <div class="pnl-bar-wrap">
+                    <div class="pnl-bar-fill" style="width:${pct}%;background:${color}"></div>
+                    <div class="pnl-bar-val" style="color:${textColor}">${sign}$${r.pnl.toFixed(2)}</div>
+                </div>
+                <div class="pnl-bar-meta">${wrTxt}</div>
+            </div>`;
+        });
+        html += `</div>`;
+    }
+
+    el.innerHTML = html;
+}
+
+function setPnlTab(tab) {
+    _pnlTab = tab;
+    renderPnlStats();
 }
 
 // ── PUMP RADAR ───────────────────────────────────────────────
@@ -961,6 +1050,10 @@ function scrollToCoin(sym) {
 // Pump radar auto-refresh riêng — nhanh hơn main (2s)
 setInterval(fetchPump, 2000);
 fetchPump();
+
+// PnL stats refresh mỗi 30s (không cần nhanh)
+setInterval(fetchPnlStats, 30000);
+fetchPnlStats();
 
 function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString()}
 
@@ -2066,3 +2159,86 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     t.start()
     logger.info(f"Web dashboard started at http://localhost:{port}")
     return t
+
+
+@app.route("/api/pnl_stats", methods=["GET"])
+def api_pnl_stats():
+    """
+    Trả về thống kê PnL theo ngày / tuần / tháng.
+    Mỗi entry: { label, pnl, trades, wins }
+    """
+    from datetime import datetime, timedelta, timezone
+    import collections
+
+    with _state_lock:
+        tlog = list(_state.get("trade_log", []))
+
+    # Chỉ lấy lệnh đã đóng có PnL thực
+    closed = [t for t in tlog
+              if t.get("status") == "CLOSED"
+              and abs(t.get("pnl_usdt", 0)) > 0.001]
+
+    def parse_time(t):
+        try:
+            return datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+    # ── DAILY: 7 ngày gần nhất ───────────────────────────────
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    daily = []
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        day_str = day.strftime("%Y-%m-%d")
+        label   = "Hôm nay" if i == 0 else ("Hôm qua" if i == 1 else day.strftime("%d/%m"))
+        trades_day = [t for t in closed if (parse_time(t) or datetime.min).strftime("%Y-%m-%d") == day_str]
+        pnl    = sum(t.get("pnl_usdt", 0) for t in trades_day)
+        wins   = sum(1 for t in trades_day if t.get("pnl_usdt", 0) > 0)
+        daily.append({"label": label, "pnl": round(pnl, 2), "trades": len(trades_day), "wins": wins})
+
+    # ── WEEKLY: 8 tuần gần nhất ──────────────────────────────
+    def week_key(dt):
+        if dt is None: return None
+        # ISO week: năm-tuần
+        return dt.strftime("%G-W%V")
+
+    week_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0, "start": None})
+    for t in closed:
+        dt = parse_time(t)
+        if dt is None: continue
+        wk = week_key(dt)
+        week_map[wk]["pnl"]    += t.get("pnl_usdt", 0)
+        week_map[wk]["trades"] += 1
+        week_map[wk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+        if week_map[wk]["start"] is None or dt < week_map[wk]["start"]:
+            week_map[wk]["start"] = dt
+
+    # Sort theo tuần, lấy 8 tuần gần nhất
+    sorted_weeks = sorted(week_map.keys())[-8:]
+    current_week = datetime.now().strftime("%G-W%V")
+    weekly = []
+    for wk in sorted_weeks:
+        v = week_map[wk]
+        label = "Tuần này" if wk == current_week else f"T{wk.split('W')[1]}/{wk.split('-')[0][2:]}"
+        weekly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
+
+    # ── MONTHLY: 6 tháng gần nhất ────────────────────────────
+    month_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
+    for t in closed:
+        dt = parse_time(t)
+        if dt is None: continue
+        mk = dt.strftime("%Y-%m")
+        month_map[mk]["pnl"]    += t.get("pnl_usdt", 0)
+        month_map[mk]["trades"] += 1
+        month_map[mk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+
+    sorted_months = sorted(month_map.keys())[-6:]
+    current_month = datetime.now().strftime("%Y-%m")
+    monthly = []
+    for mk in sorted_months:
+        v = month_map[mk]
+        y, m = mk.split("-")
+        label = "Tháng này" if mk == current_month else f"T{int(m)}/{y[2:]}"
+        monthly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
+
+    return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly})
