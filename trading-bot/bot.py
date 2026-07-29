@@ -840,19 +840,32 @@ def price_ws_streamer():
                 with lock:
                     state["prices"][sym] = mark
 
-                # ── PUMP SPIKE CHECK — chạy mỗi tick, cực nhẹ ──
-                # Chỉ check coin trong pump_watch_coins (mày add vào web)
+                # ── PUMP SPIKE CHECK — chỉ coin trong pump_watch_coins ──
                 with lock:
                     pump_watch = set(state.get("pump_watch_coins", []))
                 if sym in pump_watch:
                     exc  = _ws_exchange_ref[0]
                     noti = _ws_notifier_ref[0]
                     if exc and noti:
-                        # 1. Spike detector (cũ) — detect pump đang xảy ra
+                        # 1. Spike detector — detect pump đang xảy ra
                         _ws_pump_spike_check(sym, mark, exc, noti)
-                        # 2. Confirmed top detector (mới) — detect đỉnh đã xác nhận
+                        # 2. Confirmed top detector — detect đỉnh đã xác nhận
                         try:
                             from confirmed_top_detector import get_ctd
+                            from orderbook_detector import get_ob_tracker
+                            _ctd = get_ctd(config)
+                            _ob  = get_ob_tracker(
+                                "wss://fstream.binance.com" if not config.USE_TESTNET
+                                else "wss://stream.binancefuture.com"
+                            )
+                            _ct_sig = _ctd.on_price_tick(sym, mark, exc, _ob)
+                            if _ct_sig:
+                                import threading as _th
+                                _th.Thread(
+                                    target=_handle_confirmed_top,
+                                    args=(_ct_sig, exc, noti),
+                                    daemon=True
+                                ).start()
                             from orderbook_detector import get_ob_tracker
                             _ctd = get_ctd(config)
                             _ob  = get_ob_tracker(
