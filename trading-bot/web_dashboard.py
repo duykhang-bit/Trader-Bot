@@ -1106,7 +1106,7 @@ function renderPumpRadar(d) {
             const barFill = Math.min(scoreNum, 100);
             const rsiVal = c.rsi ? c.rsi.toFixed(0) : '—';
             const rsiCol = c.rsi > 65 ? '#f85149' : c.rsi < 35 ? '#3fb950' : '#d29922';
-            const reason = (c.reason || '').replace(/\|/g,' · ').slice(0,80);
+            const reason = (c.reason || '').replace(/[|]/g,' · ').slice(0,80);
             return `<div style="background:#0a1a10;border:1px solid #1a3a1a;border-radius:6px;padding:8px 10px">
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                 <span style="color:#e6edf3;font-weight:700;min-width:52px">${c.symbol.replace('USDT','')}</span>
