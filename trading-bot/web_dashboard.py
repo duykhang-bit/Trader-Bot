@@ -560,7 +560,10 @@ async function fetchPnlStats() {
         const r = await fetch('/api/pnl_stats');
         _pnlData = await r.json();
         renderPnlStats();
-    } catch(e) {}
+    } catch(e) {
+        const el = document.getElementById('pnl-stats-section');
+        if (el) el.innerHTML = `<div style="color:#8b949e;font-size:13px">Không tải được dữ liệu</div>`;
+    }
 }
 
 function renderPnlStats() {
@@ -569,10 +572,12 @@ function renderPnlStats() {
     if (!_pnlData) { el.innerHTML = `<div style="color:#8b949e;font-size:13px">Đang tải...</div>`; return; }
 
     const rows = _pnlData[_pnlTab] || [];
-    // Summary
-    const totalPnl   = rows.reduce((s,r) => s + r.pnl, 0);
+    // Lọc ngày/tuần/tháng có trade
+    const activeRows = rows.filter(r => r.trades > 0);
+
+    const totalPnl    = rows.reduce((s,r) => s + r.pnl, 0);
     const totalTrades = rows.reduce((s,r) => s + r.trades, 0);
-    const totalWins  = rows.reduce((s,r) => s + r.wins, 0);
+    const totalWins   = rows.reduce((s,r) => s + r.wins, 0);
     const wr = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
     const pnlColor = v => v >= 0 ? '#3fb950' : '#f85149';
 
@@ -602,12 +607,12 @@ function renderPnlStats() {
     </div>`;
 
     // Bar chart
-    if (rows.length === 0) {
-        html += `<div style="color:#8b949e;font-size:13px;padding:12px 0">Chưa có dữ liệu</div>`;
+    if (activeRows.length === 0) {
+        html += `<div style="color:#8b949e;font-size:13px;padding:12px 0">📭 Chưa có lệnh nào được đóng</div>`;
     } else {
-        const maxAbs = Math.max(...rows.map(r => Math.abs(r.pnl)), 0.01);
+        const maxAbs = Math.max(...activeRows.map(r => Math.abs(r.pnl)), 0.01);
         html += `<div>`;
-        rows.forEach(r => {
+        activeRows.forEach(r => {
             const pct = Math.min(Math.abs(r.pnl) / maxAbs * 100, 100);
             const color = r.pnl >= 0 ? '#238636' : '#da3633';
             const textColor = r.pnl >= 0 ? '#3fb950' : '#f85149';
