@@ -92,6 +92,7 @@ class ConfirmedTopDetector:
         self.cfg       = self._load_cfg(config)
         self._cooldown: Dict[str, float]        = {}
         self._price_history: Dict[str, deque]   = {}  # {sym: deque[(ts,price)]}
+        self._klines_last_fetch: Dict[str, float] = {} # {sym: ts} rate limit guard
 
     @staticmethod
     def _load_cfg(config) -> dict:
@@ -126,9 +127,9 @@ class ConfirmedTopDetector:
             self._price_history[symbol] = deque(maxlen=3600)  # 1h ticks
         self._price_history[symbol].append((now, price))
 
-        # Cần đủ dữ liệu lịch sử (ít nhất 5 phút)
+        # Cần đủ dữ liệu lịch sử (ít nhất 30 ticks = 30 giây)
         hist = self._price_history[symbol]
-        if len(hist) < 60:
+        if len(hist) < 30:
             return None
 
         # ── C1: MEGA PUMP — giá tăng >= 50% so với 1h trước ─
@@ -152,8 +153,13 @@ class ConfirmedTopDetector:
             return None   # Chưa đủ pump, không cần check tiếp
 
         # ── Lấy klines 1m để check C2, C3, C4 ───────────────
+        # Rate limit guard: không gọi REST quá 1 lần/10s cho cùng coin
         if exchange is None:
             return None
+        last_fetch = self._klines_last_fetch.get(symbol, 0)
+        if now - last_fetch < 10:
+            return None   # Đợi đủ 10s mới fetch lại
+        self._klines_last_fetch[symbol] = now
 
         try:
             from scanner import _klines_to_df
