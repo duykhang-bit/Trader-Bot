@@ -1400,8 +1400,162 @@ def position_reversal_monitor(exchange, notifier):
 
 
 # ============================================================
-# THREAD 2b: Scan coin mới và vào lệnh (mỗi LOOP_INTERVAL giây)
+# THREAD 2a3: Scan Position Protector — chốt lời sớm cho lệnh SCAN thường
+# Mỗi 15s: check positions KHÔNG phải pump trade
+# Nếu đang có lời + có dấu hiệu đảo chiều → đóng trước khi về entry
+# Điều kiện nhẹ hơn pump reversal (scan coin không xả nhanh như pump)
 # ============================================================
+def scan_position_protector(exchange, notifier):
+    """
+    Bảo vệ lợi nhuận cho lệnh scan thường.
+    Chỉ check coin KHÔNG trong pump_trade_symbols.
+    Điều kiện đóng sớm (cần >= 2/3):
+      1. RSI đảo chiều rõ trên 15m (không dùng 1m vì nhiều noise)
+      2. EMA9 cross EMA21 ngược chiều lệnh trên 15m
+      3. Giá đã đi được >= 1% lời rồi quay đầu >= 40% khoảng đó
+    """
+    import time as _time
+    _time.sleep(30)  # Đợi bot ổn định
+    logger.info("[ScanProtector] Started — protecting scan positions")
+
+    _prev_rsi    = {}
+    _max_price   = {}  # LONG
+    _min_price   = {}  # SHORT
+    _last_klines = {}  # cache klines để giảm API calls
+
+    while state["running"]:
+        try:
+            with lock:
+                open_positions = list(state.get("open_positions", []))
+                pump_trade_syms = set(state.get("pump_trade_symbols", set()))
+
+            for pos in open_positions:
+                symbol = pos.get("symbol", "")
+                amt    = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+
+                # Chỉ xử lý lệnh SCAN thường — bỏ qua pump trades
+                if symbol in pump_trade_syms:
+                    continue
+
+                side       = "LONG" if amt > 0 else "SHORT"
+                entry      = float(pos.get("entryPrice", 0))
+                mark_price = pos.get("_mark", 0) or float(pos.get("markPrice", 0))
+                pnl_pct    = pos.get("_pct", 0)
+
+                if entry <= 0 or mark_price <= 0:
+                    continue
+
+                # Chỉ check khi đang có lời >= 0.8% (lệnh scan cần lời nhiều hơn pump)
+                if pnl_pct < 0.8:
+                    continue
+
+                try:
+                    # Dùng 15m thay vì 1m — ít noise hơn cho lệnh scan
+                    klines = exchange.get_klines(symbol, "15m", limit=30)
+                    df = _klines_to_df(klines)
+                    if df is None or len(df) < 15:
+                        continue
+
+                    from indicators import calculate_rsi, calculate_ema
+                    rsi_series = calculate_rsi(df["close"], 14)
+                    rsi_now    = rsi_series.iloc[-1]
+                    rsi_prev   = _prev_rsi.get(symbol, rsi_now)
+                    ema9       = calculate_ema(df["close"], 9).iloc[-1]
+                    ema21      = calculate_ema(df["close"], 21).iloc[-1]
+
+                    # Track giá cực trị
+                    if side == "LONG":
+                        if symbol not in _max_price or mark_price > _max_price[symbol]:
+                            _max_price[symbol] = mark_price
+                        max_reached    = _max_price[symbol]
+                        profit_travel  = (max_reached - entry) / entry * 100
+                        pullback       = (max_reached - mark_price) / max(max_reached, 0.0001) * 100
+                    else:
+                        if symbol not in _min_price or mark_price < _min_price[symbol]:
+                            _min_price[symbol] = mark_price
+                        min_reached    = _min_price[symbol]
+                        profit_travel  = (entry - min_reached) / entry * 100
+                        pullback       = (mark_price - min_reached) / max(min_reached, 0.0001) * 100
+
+                    signals = []
+
+                    # 1. RSI đảo chiều trên 15m
+                    if side == "LONG":
+                        if rsi_prev > 65 and rsi_now < rsi_prev - 5:
+                            signals.append(f"RSI15m drop {rsi_prev:.0f}→{rsi_now:.0f}")
+                    else:
+                        if rsi_prev < 35 and rsi_now > rsi_prev + 5:
+                            signals.append(f"RSI15m bounce {rsi_prev:.0f}→{rsi_now:.0f}")
+
+                    # 2. EMA cross ngược chiều
+                    if side == "LONG" and ema9 < ema21:
+                        signals.append(f"EMA9<EMA21 (bearish cross)")
+                    elif side == "SHORT" and ema9 > ema21:
+                        signals.append(f"EMA9>EMA21 (bullish cross)")
+
+                    # 3. Pullback mạnh sau khi đã lời tốt
+                    if profit_travel >= 1.0 and pullback >= 40:
+                        signals.append(f"Pullback {pullback:.0f}% (profit_travel={profit_travel:.1f}%)")
+
+                    _prev_rsi[symbol] = rsi_now
+
+                    # Cần >= 2 tín hiệu
+                    if len(signals) < 2:
+                        continue
+
+                    # Không đóng nếu config tắt
+                    if not getattr(config, "SCAN_PROTECT_ENABLED", True):
+                        continue
+
+                    # Không đóng nếu đang lỗ (đã bị reversal qua entry)
+                    # Trường hợp đó để SL Binance tự xử lý
+                    if pnl_pct <= 0:
+                        continue
+
+                    # ── Đóng position ──────────────────────────
+                    qty        = abs(amt)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    cur_price  = exchange.get_ticker_price(symbol)
+                    actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
+                    icon       = "✅" if actual_pnl >= 0 else "⚠️"
+
+                    exchange.place_market_order(symbol, close_side, qty)
+                    exchange.cancel_all_orders(symbol)
+
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                t.update({
+                                    "status":   "CLOSED",
+                                    "close":    cur_price,
+                                    "pnl_usdt": round(actual_pnl, 2),
+                                    "pnl_pct":  round(pnl_pct, 2),
+                                })
+                                break
+                        _max_price.pop(symbol, None)
+                        _min_price.pop(symbol, None)
+
+                    notifier.telegram.send(
+                        f"🛡 <b>SCAN PROTECT — Chốt lời sớm</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 {symbol} {side} | Lời {pnl_pct:.1f}%\n"
+                        f"📍 Entry: ${entry:.6g} → Close: ${cur_price:.6g}\n"
+                        f"⚠️ Dấu hiệu đảo chiều:\n"
+                        + "\n".join([f"  • {s}" for s in signals]) + "\n"
+                        f"{icon} PnL: <b>${actual_pnl:+.2f}</b>\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    logger.info(f"[ScanProtector] EXIT {symbol} {side} pnl={actual_pnl:+.2f} signals={signals}")
+
+                except Exception as e:
+                    logger.debug(f"[ScanProtector] {symbol}: {e}")
+
+        except Exception as e:
+            logger.error(f"[ScanProtector] Loop error: {e}")
+
+        _time.sleep(15)
 def scan_engine(exchange, notifier):
     while state["running"]:
         try:
@@ -3288,6 +3442,8 @@ if __name__ == "__main__":
         _t2a.start()
         _t2a2 = threading.Thread(target=position_reversal_monitor, args=(exchange, notifier), daemon=True)
         _t2a2.start()
+        _t2a3 = threading.Thread(target=scan_position_protector, args=(exchange, notifier), daemon=True)
+        _t2a3.start()
         _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
         _t2b.start()
         _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)

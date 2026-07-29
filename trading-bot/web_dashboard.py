@@ -179,6 +179,11 @@ async function toggleReversalMonitor(mode) {
     if (r && r.msg) toast(r.msg, r.ok);
     refresh();
 }
+async function toggleScanProtector(enabled) {
+    const r = await apiPost('/api/scan_protector', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function cancelAllPending() {
     if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
     await apiPost('/api/cancel_all_pending');
@@ -284,6 +289,20 @@ function renderDashboard(d) {
                         style="${mode==='off'   ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${mode==='auto'?'#3fb950':mode==='alert'?'#58a6ff':'#f85149'}">
                     ${mode==='auto'?'Đang tự chốt lời khi đảo chiều':mode==='alert'?'Chỉ gửi alert':'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:#8b949e">&#x1F6E1; Scan Protector:</span>
+            ${(() => {
+                const en = d.scan_protect_enabled !== false;
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleScanProtector(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleScanProtector(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
+                    ${en?'Đang chốt lời sớm khi lệnh scan đảo chiều':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -1336,6 +1355,7 @@ def api_state():
         },
         "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
+        "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
@@ -2099,6 +2119,23 @@ def api_pump_toggle_soft():
     logger.info(f"[PumpRadar] PUMP_AUTO_SHORT_SOFT = {enabled}")
     return jsonify({"ok": True, "msg": msg, "enabled": enabled})
 
+
+@app.route("/api/scan_protector", methods=["POST"])
+def api_scan_protector():
+    """Bật/tắt Scan Position Protector."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    try:
+        import config as _cfg
+        _cfg.SCAN_PROTECT_ENABLED = bool(enabled)
+    except Exception:
+        pass
+    status = "bật" if enabled else "tắt"
+    return jsonify({
+        "ok":  True,
+        "msg": f"Scan Protector: {status}",
+        "enabled": bool(enabled),
+    })
 
 @app.route("/api/reversal_monitor", methods=["POST"])
 def api_reversal_monitor():
