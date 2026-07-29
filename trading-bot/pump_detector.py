@@ -304,12 +304,16 @@ class PumpDetector:
         # WS cập nhật mỗi giây → chính xác hơn klines 1m
         if ws_high_override > pump_high:
             pump_high = ws_high_override
+            # Tính lại pump_pct với đỉnh WS
+            if pump_low > 0:
+                pump_pct = round((pump_high - pump_low) / pump_low * 100, 2)
 
         if pump_pct < self.cfg["PUMP_PRICE_RISE_PCT"]:
             return None
 
         # Giá phải còn trong 20% của đỉnh pump
         # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang pump
+        current_price = df_1m["close"].iloc[-1]   # define sớm, dùng cho check bên dưới
         if pump_high > 0 and current_price < pump_high * 0.80:
             return None
 
@@ -340,31 +344,41 @@ class PumpDetector:
         vol_ma  = calculate_volume_ma(df_1m["volume"], 20).iloc[-1]
         vol_ratio = df_1m["volume"].iloc[-1] / vol_ma if vol_ma > 0 else 1.0
 
+        # ── Xác nhận đảo chiều — phải check trước khi quyết định entry type ──
+        reversal_confirmed = self._confirm_reversal(df_1m, pump_high)
+
+        # ── Entry price + type trước — cần để tính TP chính xác ────
+        near_top_pct   = (pump_high - current_price) / pump_high * 100 if pump_high > 0 else 99
+        use_limit_top  = near_top_pct <= 1.0
+        use_market     = reversal_confirmed and near_top_pct > 1.0
+
+        if use_limit_top:
+            final_entry      = round(pump_high * 0.995, 8)
+            final_entry_type = "LIMIT"
+        else:
+            final_entry      = round(current_price, 8)
+            final_entry_type = "MARKET"
+
         # ── SL dùng ATR nhưng có hard cap ───────────────────────────
         # - Tối thiểu 1.5% từ đỉnh (để không bị giật nhỏ xuyên thủng)
         # - Tối đa 3.0% từ đỉnh (hard cap — nếu xuyên qua 3% là pump vẫn còn sức)
         # - Dùng ATR×1.5 làm base, rồi clamp vào [1.5%, 3.0%]
-        atr_pct      = (atr / pump_high * 100) if pump_high > 0 else 1.5
-        sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))  # clamp [1.5%, 3.0%]
+        atr_pct       = (atr / pump_high * 100) if pump_high > 0 else 1.5
+        sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))   # clamp [1.5%, 3.0%]
         sl_price      = pump_high * (1 + sl_buffer_pct / 100)
 
-        tp1_price = current_price - (current_price - pump_low) * 0.382        # 38.2% fib
-        tp2_price = current_price - (current_price - pump_low) * 0.618        # 61.8% fib
+        # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
+        # Đúng hơn: entry là đỉnh, tp xuống theo fib từ đỉnh xuống đáy
+        tp1_price = final_entry - (final_entry - pump_low) * 0.382   # 38.2% fib
+        tp2_price = final_entry - (final_entry - pump_low) * 0.618   # 61.8% fib
 
-        # ── Xác nhận đảo chiều thật: cần >= 2 nến 1m quay đầu ──────
-        # Lý do: đây là điều kiện QUAN TRỌNG NHẤT để tránh entry sớm.
-        # Nếu giá vẫn đang pump lên → dù SL rộng bao nhiêu cũng thua.
-        # Cần thấy giá ĐÃ tạo lower high: nến sau thấp hơn nến trước.
-        reversal_confirmed = self._confirm_reversal(df_1m, pump_high)
-
-        # ── Entry type: LIMIT tại đỉnh hoặc MARKET sau xác nhận ─────
-        # Nếu giá còn gần đỉnh (trong 1%) → dùng LIMIT sát đỉnh
-        #   → bắt đúng đỉnh khi giá quay đầu xuống lần đầu
-        # Nếu giá đã xuống > 1% từ đỉnh + reversal confirmed → MARKET
-        #   → vào ngay khi có xác nhận chắc chắn
-        near_top_pct   = (pump_high - current_price) / pump_high * 100 if pump_high > 0 else 99
-        use_limit_top  = near_top_pct <= 1.0   # giá còn trong 1% đỉnh → dùng LIMIT
-        use_market     = reversal_confirmed and near_top_pct > 1.0
+        # Validate RR tối thiểu 1.5 — nếu không đủ thì không vào
+        risk   = abs(sl_price - final_entry)
+        reward = abs(final_entry - tp1_price)
+        rr     = reward / risk if risk > 0 else 0
+        if rr < 1.5:
+            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
+            return None
 
         is_top = (
             score >= self.cfg["PUMP_TOP_MIN_SCORE"]
@@ -377,20 +391,9 @@ class PumpDetector:
             self._cooldown[symbol] = now
             logger.info(
                 f"[PumpDetector] {symbol}: TOP CONFIRMED score={score} "
-                f"entry={'LIMIT@top' if use_limit_top else 'MARKET'} "
-                f"SL={sl_price:.6g} (+{sl_buffer_pct:.1f}%) | {signals}"
+                f"entry={final_entry_type}@{final_entry:.6g} "
+                f"SL={sl_price:.6g} (+{sl_buffer_pct:.1f}%) RR=1:{rr:.1f} | {signals}"
             )
-
-        # Entry price + type
-        if use_limit_top:
-            # LIMIT sát đỉnh: đặt lệnh tại 99.5% của đỉnh → chờ giá quay đầu về
-            limit_entry = round(pump_high * 0.995, 8)
-            final_entry = limit_entry
-            final_entry_type = "LIMIT"
-        else:
-            # MARKET sau xác nhận đảo chiều
-            final_entry = round(current_price, 8)
-            final_entry_type = "MARKET"
 
         return PumpSignal(
             symbol       = symbol,
