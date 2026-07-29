@@ -323,8 +323,14 @@ class LiquidationTracker:
         if not nearby:
             return None
 
-        # Chọn cluster lớn nhất USD trong tầm gần
-        best = max(nearby, key=lambda c: c["total_usd"])
+        # Chọn cluster tối ưu: score = total_usd / dist_pct
+        # Cluster gần + lớn USD sẽ thắng, tránh chọn cluster quá xa dù USD lớn
+        # Giới hạn dist tối đa 5% để không đặt LIMIT quá xa
+        nearby_5pct = [c for c in nearby if c["dist_pct"] <= 5.0]
+        if not nearby_5pct:
+            nearby_5pct = nearby  # fallback nếu không có cluster trong 5%
+
+        best = max(nearby_5pct, key=lambda c: c["total_usd"] / max(c["dist_pct"], 0.1))
 
         if best["total_usd"] < min_usd:
             return None
