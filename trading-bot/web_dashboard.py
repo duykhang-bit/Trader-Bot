@@ -2193,7 +2193,7 @@ def api_pnl_stats():
     from datetime import datetime, timedelta, timezone
     import collections
 
-    with _state_lock:
+    with _lock:
         tlog = list(_state.get("trade_log", []))
 
     # Chỉ lấy lệnh đã đóng có PnL thực
@@ -2286,14 +2286,12 @@ def api_pnl_stats():
 def api_clear_trade_history():
     """Xoá toàn bộ trade log (closed trades). Open positions không bị ảnh hưởng."""
     try:
-        with _state_lock:
+        with _lock:
             tlog = _state.get("trade_log", [])
-            # Chỉ giữ lại lệnh đang OPEN — không xoá position đang chạy
             _state["trade_log"] = [t for t in tlog if t.get("status") != "CLOSED"]
-        # Ghi vào file lịch sử
         try:
             from trade_history import save_history
-            with _state_lock:
+            with _lock:
                 save_history(_state["trade_log"])
         except Exception:
             pass
