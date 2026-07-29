@@ -1015,7 +1015,15 @@ function renderPumpRadar(d) {
             // isAlert → xanh lá (đang pump, có thể LONG)
             // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const isPumping = c.pump_pct > 2 && !isStale && !isAlert && !isTop;
+            const chg24 = c.change_24h || 0;
+            const isPumping = (c.pump_pct > 2 || chg24 >= 5) && !isStale && !isAlert && !isTop;
+            // Score hiển thị: dùng score thật nếu có, fallback tính từ % 24h
+            const displayScore = c.score > 0 ? c.score
+                               : chg24 >= 30 ? 55
+                               : chg24 >= 20 ? 40
+                               : chg24 >= 10 ? 25
+                               : chg24 >= 5  ? 12 : 0;
+            const displayPumpPct = c.pump_pct > 0 ? c.pump_pct : (chg24 > 0 ? chg24 : 0);
             const col = isTop      ? '#f85149'
                       : isAlert    ? '#3fb950'
                       : isPumping && c.pump_pct > 5 ? '#d29922'
@@ -1041,7 +1049,7 @@ function renderPumpRadar(d) {
                          :             '';
             const statusTxt = isTop      ? '🔴 Đỉnh — Vào SHORT!'
                             : isAlert    ? '🚀 Đang pump!'
-                            : isPumping  ? '🔵 Pump +' + c.pump_pct.toFixed(1) + '%'
+                            : isPumping  ? '🔵 Pump +' + displayPumpPct.toFixed(1) + '%'
                             : isNear     ? '🟡 Đang gần'
                             : isStale    ? '⚫ Đã xả — theo dõi'
                             :              '⚫ Đang quét';
@@ -1072,15 +1080,15 @@ function renderPumpRadar(d) {
               <div style="margin-top:6px">
                 <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
                   <span style="color:#0d3a2a">SCORE</span>
-                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${c.score}/100</span>
+                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${displayScore}/100</span>
                 </div>
                 <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
-                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
+                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(displayScore,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
                               ${(isTop||isAlert)?'box-shadow:0 0 5px '+col:''}"></div>
                 </div>
               </div>
               <div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">
-                ${c.pump_pct > 0 ? `<span style="color:${isAlert?'#3fb950':'#d29922'}">↑${c.pump_pct.toFixed(1)}%</span>` : ''}
+                ${displayPumpPct > 0 ? `<span style="color:${isAlert?'#3fb950':isPumping?'#388bfd':'#d29922'}">↑${displayPumpPct.toFixed(1)}%</span>` : ''}
                 ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':c.rsi>60?'#d29922':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
                 ${c.vol_ratio > 0 ? `<span style="color:#1a5a7a">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
                 ${isTop && c.entry > 0 ? `
