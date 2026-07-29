@@ -2024,12 +2024,22 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
                                 price_moving_toward = price_now > price_3ago
                                 near_cluster = cluster["dist_pct"] <= 1.0
 
-                            if not price_moving_toward and not near_cluster:
-                                # Giá đang đi ngược → pending, chờ lần scan sau
+                            # Sweep: giá đã quét qua cluster (chạm đáy/đỉnh)
+                            sweep_check = (
+                                df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
+                                if best.signal == "LONG" else
+                                df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
+                            )
+
+                            # Chỉ vào khi:
+                            # 1. Giá đang đi đúng hướng về cluster, HOẶC
+                            # 2. Giá đã sweep qua cluster (bất kể momentum)
+                            # KHÔNG vào khi near_cluster nhưng giá đang hồi ngược
+                            if not price_moving_toward and not sweep_check:
                                 _pending_watch.pop(best.symbol, None)
-                                skip_reason = (f"Giá chưa tiến về cluster "
+                                skip_reason = (f"Giá đang hồi ngược chiều cluster "
                                                f"({'↗' if price_now > price_3ago else '↘'} "
-                                               f"vs cluster {cluster['dist_pct']:.1f}% away)")
+                                               f"dist={cluster['dist_pct']:.1f}%)")
                             else:
                                 # ── Entry: tại ĐÚNG vùng liq ──────────────
                                 # SHORT: entry = đáy cluster (giá pump lên chạm là vào)
