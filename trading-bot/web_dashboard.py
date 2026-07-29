@@ -765,12 +765,15 @@ function patchPumpRadar(d) {
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
             const isStale = c.is_stale || false;
+            const chgRaw = c.change_raw || 0;
             const isPumping = c.pump_pct > 2 && !isStale && !c.is_alert && !c.is_top;
-            if (c.is_top)                  statusEl.textContent = '🔴 Đỉnh — SẮP SHORT';
+            const isRising  = chgRaw >= 5 && !isStale && !c.is_alert && !c.is_top && !isPumping;
+            if (c.is_top)                    statusEl.textContent = '🔴 Đỉnh — SẮP SHORT';
             else if (c.is_alert && !isStale) statusEl.textContent = '🚀 Đang pump!';
             else if (isPumping && !isStale)  statusEl.textContent = `🔵 Pump +${c.pump_pct.toFixed(1)}%`;
-            else if (isStale)               statusEl.textContent = '⚫ Đã xả — theo dõi';
-            else                            statusEl.textContent = '⚫ Đang quét';
+            else if (isRising  && !isStale)  statusEl.textContent = `📈 +${chgRaw.toFixed(1)}% hôm nay`;
+            else if (isStale)                statusEl.textContent = '⚫ Đã xả — theo dõi';
+            else                             statusEl.textContent = '⚫ Đang quét';
         }
 
         // Cập nhật pump alert banner bên dưới card nếu có
@@ -1019,30 +1022,35 @@ function renderPumpRadar(d) {
             const chgRaw = c.change_raw || 0;
             // isPumping chỉ dựa vào pump_signals thật (pump_pct từ detector)
             const isPumping = c.pump_pct > 2 && !isStale && !isAlert && !isTop;
+            // isRising: coin đang tăng 24h (chỉ dùng cho màu badge, không phải pump)
+            const isRising = chgRaw >= 5 && !isStale && !isAlert && !isTop && !isPumping;
             const col = isTop      ? '#f85149'
                       : isAlert    ? '#3fb950'
                       : isPumping  ? '#d29922'
                       : isNear     ? '#d29922'
+                      : isRising   ? '#388bfd'
                       :              '#484f58';
             const bg  = isTop      ? 'rgba(248,81,73,.08)'
                       : isAlert    ? 'rgba(63,185,80,.08)'
-                      : isPumping && c.pump_pct > 5 ? 'rgba(210,153,34,.07)'
-                      : isPumping  ? 'rgba(56,139,253,.06)'
+                      : isPumping  ? 'rgba(210,153,34,.07)'
+                      : isRising   ? 'rgba(56,139,253,.06)'
                       : isNear     ? 'rgba(210,153,34,.05)'
                       :              'transparent';
             const bdr = isTop      ? '1px solid rgba(248,81,73,.4)'
                       : isAlert    ? '1px solid rgba(63,185,80,.4)'
-                      : isPumping && c.pump_pct > 5 ? '1px solid rgba(210,153,34,.4)'
-                      : isPumping  ? '1px solid rgba(56,139,253,.3)'
+                      : isPumping  ? '1px solid rgba(210,153,34,.4)'
+                      : isRising   ? '1px solid rgba(56,139,253,.3)'
                       : isNear     ? '1px solid rgba(210,153,34,.3)'
                       :              '1px solid #0d2020';
             const shadow = isTop     ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
                          : isAlert   ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
-                         : isPumping ? 'box-shadow:0 0 8px rgba(56,139,253,.2)'
+                         : isPumping ? 'box-shadow:0 0 8px rgba(210,153,34,.2)'
+                         : isRising  ? 'box-shadow:0 0 6px rgba(56,139,253,.15)'
                          :             '';
             const statusTxt = isTop      ? '🔴 Đỉnh — Vào SHORT!'
                             : isAlert    ? '🚀 Đang pump!'
                             : isPumping  ? '🔵 Pump +' + c.pump_pct.toFixed(1) + '%'
+                            : isRising   ? `📈 +${chgRaw.toFixed(1)}% hôm nay`
                             : isNear     ? '🟡 Đang gần'
                             : isStale    ? '⚫ Đã xả — theo dõi'
                             :              '⚫ Đang quét';
