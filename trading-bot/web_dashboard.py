@@ -990,19 +990,24 @@ function renderPumpRadar(d) {
                       :            '#2d5a4a';
             const bg  = isTop    ? 'rgba(248,81,73,.08)'
                       : isAlert  ? 'rgba(63,185,80,.08)'
+                      : isPumping ? 'rgba(210,153,34,.07)'
                       : isNear   ? 'rgba(210,153,34,.05)'
                       :            'transparent';
             const bdr = isTop    ? '1px solid rgba(248,81,73,.4)'
                       : isAlert  ? '1px solid rgba(63,185,80,.4)'
+                      : isPumping ? '1px solid rgba(210,153,34,.4)'
                       : isNear   ? '1px solid rgba(210,153,34,.3)'
                       :            '1px solid #0d2020';
             const shadow = isTop   ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
                          : isAlert ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
+                         : isPumping ? 'box-shadow:0 0 8px rgba(210,153,34,.2)'
                          :           '';
 
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
+            const isPumping = c.pump_pct > 5 && !isStale;
             const statusTxt = isTop    ? '🔴 Đỉnh — Vào SHORT!'
                             : isAlert  ? '🚀 Đang pump!'
+                            : isPumping ? '🟡 Đang pump ' + c.pump_pct.toFixed(1) + '%'
                             : isNear   ? '🟡 Đang gần'
                             : isStale  ? '⚫ Đã xả — theo dõi'
                             :            '⚫ Đang quét';
@@ -1901,9 +1906,9 @@ def _api_pump_state_inner():
             "pump_pct":    effective_pump_pct if sig_d else (alert_d["pump_pct"] if alert_d else 0),
             "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
             "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
-            "is_alert":    (not sig_d["is_pump_top"] and sig_d.get("is_alert", False)) if sig_d and not is_stale else bool(alert_d and not is_stale),
-            "is_stale":    is_stale,
-            "rsi":         sig_d["rsi"]            if sig_d else (alert_d["rsi"]         if alert_d else 0),
+            # is_alert = True khi có signal pump bất kỳ (dù chưa là top)
+            "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 5) if sig_d and not is_stale else bool(alert_d and not is_stale),
+            "is_stale":    is_stale,            "rsi":         sig_d["rsi"]            if sig_d else (alert_d["rsi"]         if alert_d else 0),
             "vol_ratio":   sig_d["volume_ratio"]   if sig_d else (alert_d.get("vol_ratio", 0) if alert_d else 0),
             "entry":       sig_d["entry_price"]    if sig_d else (alert_d["price"]       if alert_d else 0),
             "sl":          sig_d["sl_price"]       if sig_d else 0,
