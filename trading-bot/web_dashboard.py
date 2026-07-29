@@ -983,9 +983,11 @@ function renderPumpRadar(d) {
             // isTop   → đỏ (đỉnh pump, cần SHORT)
             // isAlert → xanh lá (đang pump, có thể LONG)
             // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
-            // isStale → tối (đã xả xong)
+            const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
+            const isPumping = c.pump_pct > 5 && !isStale && !isAlert && !isTop;
             const col = isTop    ? '#f85149'
                       : isAlert  ? '#3fb950'
+                      : isPumping ? '#d29922'
                       : isNear   ? '#d29922'
                       :            '#2d5a4a';
             const bg  = isTop    ? 'rgba(248,81,73,.08)'
@@ -1002,9 +1004,6 @@ function renderPumpRadar(d) {
                          : isAlert ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
                          : isPumping ? 'box-shadow:0 0 8px rgba(210,153,34,.2)'
                          :           '';
-
-            const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const isPumping = c.pump_pct > 5 && !isStale;
             const statusTxt = isTop    ? '🔴 Đỉnh — Vào SHORT!'
                             : isAlert  ? '🚀 Đang pump!'
                             : isPumping ? '🟡 Đang pump ' + c.pump_pct.toFixed(1) + '%'
