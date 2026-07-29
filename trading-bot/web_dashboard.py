@@ -751,26 +751,35 @@ function patchPumpRadar(d) {
 
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#484f58');
-            scoreEl.textContent = c.score + '/100';
+            const chg24 = c.change_24h || 0;
+            const displayScore = c.score > 0 ? c.score
+                               : chg24 >= 30 ? 55 : chg24 >= 20 ? 40
+                               : chg24 >= 10 ? 25 : chg24 >= 5  ? 12 : 0;
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (displayScore >= minScore ? '#3fb950' : displayScore >= 40 ? '#d29922' : displayScore > 0 ? '#388bfd' : '#484f58');
+            scoreEl.textContent = displayScore + '/100';
             scoreEl.style.color = col;
         }
         const barEl = document.getElementById('pump-bar-' + c.symbol);
         if (barEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#21262d');
-            barEl.style.width = Math.min(c.score, 100) + '%';
+            const chg24 = c.change_24h || 0;
+            const displayScore = c.score > 0 ? c.score
+                               : chg24 >= 30 ? 55 : chg24 >= 20 ? 40
+                               : chg24 >= 10 ? 25 : chg24 >= 5  ? 12 : 0;
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (displayScore >= minScore ? '#3fb950' : displayScore >= 40 ? '#d29922' : displayScore > 0 ? '#388bfd' : '#21262d');
+            barEl.style.width = Math.min(displayScore, 100) + '%';
             barEl.style.background = col;
         }
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
+            const chg24 = c.change_24h || 0;
+            const displayPumpPct = c.pump_pct > 0 ? c.pump_pct : chg24;
             const isStale = c.is_stale || false;
-            if (c.is_top)                             statusEl.textContent = '🔴 ĐỈnh — SẮP SHORT';
-            else if (c.is_alert && !isStale)          statusEl.textContent = '🚀 Đang pump!';
-            else if (c.score >= minScore && !isStale) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
-            else if (c.score >= 40 && !isStale)       statusEl.textContent = '🟡 Đang gần';
-            else if (c.score > 0 && !isStale)         statusEl.textContent = `🔵 Pump +${c.pump_pct ? c.pump_pct.toFixed(1) : '?'}%`;
-            else if (isStale)                         statusEl.textContent = '⚫ Đã xả — theo dõi';
-            else                                      statusEl.textContent = '⚫ Đang quét';
+            const isPumping = (c.pump_pct > 2 || chg24 >= 5) && !isStale && !c.is_alert && !c.is_top;
+            if (c.is_top)                              statusEl.textContent = '🔴 Đỉnh — SẮP SHORT';
+            else if (c.is_alert && !isStale)           statusEl.textContent = '🚀 Đang pump!';
+            else if (isPumping && !isStale)            statusEl.textContent = `🔵 Pump +${displayPumpPct.toFixed(1)}%`;
+            else if (isStale)                          statusEl.textContent = '⚫ Đã xả — theo dõi';
+            else                                       statusEl.textContent = '⚫ Đang quét';
         }
 
         // Cập nhật pump alert banner bên dưới card nếu có
@@ -1088,7 +1097,6 @@ function renderPumpRadar(d) {
                 </div>
               </div>
               <div style="display:flex;gap:8px;margin-top:5px;font-size:10px;flex-wrap:wrap">
-                ${displayPumpPct > 0 ? `<span style="color:${isAlert?'#3fb950':isPumping?'#388bfd':'#d29922'}">↑${displayPumpPct.toFixed(1)}%</span>` : ''}
                 ${c.rsi > 0 ? `<span style="color:${c.rsi>70?'#f85149':c.rsi>60?'#d29922':'#1a6a4a'}">RSI ${c.rsi.toFixed(0)}</span>` : ''}
                 ${c.vol_ratio > 0 ? `<span style="color:#1a5a7a">Vol ${c.vol_ratio.toFixed(1)}×</span>` : ''}
                 ${isTop && c.entry > 0 ? `
