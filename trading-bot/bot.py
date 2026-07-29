@@ -1831,7 +1831,7 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
         logger.error(f"[FastSpike] LONG execute {symbol}: {e}")
 
 
-def scan_engine(exchange, notifier):
+
     _spike_symbol = None   # coin được wake up sớm bởi spike detector
 
     while state["running"]:
@@ -2039,15 +2039,9 @@ def scan_engine(exchange, notifier):
                                 # ── SL: ngoài cluster + buffer ────────────
                                 sl = cluster["sl_zone"]
                                 if best.signal == "LONG":
-                                    # Min SL 2% dưới entry, max 5%
                                     sl = round(max(sl, entry_price * 0.95), 8)
-                                    if entry_price - sl < entry_price * 0.02:
-                                        sl = round(entry_price * 0.98, 8)
                                 else:
-                                    # Min SL 2% trên entry, max 5%
                                     sl = round(min(sl, entry_price * 1.05), 8)
-                                    if sl - entry_price < entry_price * 0.02:
-                                        sl = round(entry_price * 1.02, 8)
 
                                 # ── TP: cluster lớn nhất USD phía target ──
                                 heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
@@ -2087,17 +2081,6 @@ def scan_engine(exchange, notifier):
                                             tp = round(liq_tp * 1.002, 8)
                                         else:
                                             tp = round(entry_price - (sl - entry_price) * 3.0, 8)
-
-                                # ── Guard min TP: tối thiểu RR 1:2 từ SL ──
-                                risk = abs(entry_price - sl)
-                                if best.signal == "LONG":
-                                    min_tp = entry_price + risk * 2.0
-                                    if tp < min_tp:
-                                        tp = round(min_tp, 8)
-                                else:
-                                    min_tp = entry_price - risk * 2.0
-                                    if tp > min_tp:
-                                        tp = round(min_tp, 8)
 
                                 # ── Validate RR ──────────────────────────
                                 risk   = abs(entry_price - sl)

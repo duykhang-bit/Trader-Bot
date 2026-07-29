@@ -331,13 +331,18 @@ class LiquidationTracker:
         if direction == "SHORT":
             # Entry tại đáy cluster (giá thấp nhất) — dễ chạm nhất khi pump lên
             entry = best["low"]
-            # SL: trên đỉnh cluster + 0.2% buffer
-            sl_zone = best["high"] * 1.002
+            # SL: trên đỉnh cluster + buffer đủ rộng (ít nhất 1.5% trên entry)
+            # Tránh bị quét bởi noise — SL phải nằm NGOÀI vùng liq thật sự
+            cluster_range = best["high"] - best["low"]
+            sl_buffer = max(cluster_range * 0.5, entry * 0.015)  # ít nhất 1.5%
+            sl_zone = best["high"] + sl_buffer
         else:  # LONG
             # Entry tại đỉnh cluster (giá cao nhất) — dễ chạm nhất khi dump xuống
             entry = best["high"]
-            # SL: dưới đáy cluster - 0.2% buffer
-            sl_zone = best["low"] * 0.998
+            # SL: dưới đáy cluster - buffer đủ rộng (ít nhất 1.5% dưới entry)
+            cluster_range = best["high"] - best["low"]
+            sl_buffer = max(cluster_range * 0.5, entry * 0.015)  # ít nhất 1.5%
+            sl_zone = best["low"] - sl_buffer
 
         dist_pct = abs(entry - current_price) / current_price * 100
 
