@@ -536,7 +536,12 @@ function renderDashboard(d) {
 
     // Trade History
     if (d.trades_history && d.trades_history.length > 0) {
-        html += `<div class="section"><h2>&#x1F4CB; Recent Trades</h2><table>
+        html += `<div class="section">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <h2 style="margin:0">&#x1F4CB; Recent Trades</h2>
+                <button onclick="clearTradeHistory()" style="background:#da3633;border:none;color:#fff;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">🗑 Clear Data</button>
+            </div>
+            <table>
             <tr><th>#</th><th>Coin</th><th>Side</th><th>Entry</th><th>Close</th><th>PnL</th><th>%</th><th>Time</th></tr>`;
         d.trades_history.forEach((t,i) => {
             html += `<tr><td>${i+1}</td><td><b>${t.symbol.replace('USDT','')}</b></td><td>${sideHtml(t.side)}</td>
@@ -637,6 +642,19 @@ function renderPnlStats() {
 function setPnlTab(tab) {
     _pnlTab = tab;
     renderPnlStats();
+}
+
+async function clearTradeHistory() {
+    if (!confirm('Xoá toàn bộ lịch sử lệnh? Không thể hoàn tác.')) return;
+    try {
+        const r = await fetch('/api/clear_trade_history', {method:'POST'});
+        const d = await r.json();
+        if (d.ok) {
+            _pnlData = null;
+            alert('✅ Đã xoá lịch sử lệnh');
+            fetchPnlStats();
+        }
+    } catch(e) { alert('Lỗi: ' + e); }
 }
 
 // ── PUMP RADAR ───────────────────────────────────────────────
@@ -2247,3 +2265,24 @@ def api_pnl_stats():
         monthly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
 
     return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly})
+
+
+@app.route("/api/clear_trade_history", methods=["POST"])
+def api_clear_trade_history():
+    """Xoá toàn bộ trade log (closed trades). Open positions không bị ảnh hưởng."""
+    try:
+        with _state_lock:
+            tlog = _state.get("trade_log", [])
+            # Chỉ giữ lại lệnh đang OPEN — không xoá position đang chạy
+            _state["trade_log"] = [t for t in tlog if t.get("status") != "CLOSED"]
+        # Ghi vào file lịch sử
+        try:
+            from trade_history import save_history
+            with _state_lock:
+                save_history(_state["trade_log"])
+        except Exception:
+            pass
+        logger.info("[Dashboard] Trade history cleared by user")
+        return jsonify({"ok": True, "msg": "Đã xoá lịch sử lệnh"})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
