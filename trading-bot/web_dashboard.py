@@ -1085,6 +1085,50 @@ function renderPumpRadar(d) {
 
     </div>`;
 
+    // ── INLINE SCAN STATUS dưới pump radar ──────────────────
+    const cands = window._dashData ? (window._dashData.candidates || []) : [];
+    const etargets = window._dashData ? (window._dashData.entry_targets || {}) : {};
+    if (cands.length > 0) {
+        let scanHtml = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid #0d2a1a">';
+        scanHtml += '<div style="font-size:11px;color:#3fb950;font-weight:700;margin-bottom:8px">📊 SCAN STATUS</div>';
+        scanHtml += '<div style="display:flex;flex-direction:column;gap:6px">';
+        for (let i = 0; i < Math.min(cands.length, 8); i++) {
+            const c = cands[i];
+            const isLong = c.signal === 'LONG';
+            const sigCol = isLong ? '#3fb950' : '#f85149';
+            const sigTxt = isLong ? '▲ LONG' : '▼ SHORT';
+            const pNow = c.price ? (c.price >= 1 ? '$' + c.price.toFixed(3) : '$' + c.price.toFixed(5)) : '—';
+            const et = etargets[c.symbol] || {};
+            const entryFinal = isLong ? (et.long_entry || 0) : (et.short_entry || 0);
+            const pEntry = entryFinal > 0 ? (entryFinal >= 1 ? '$' + entryFinal.toFixed(3) : '$' + entryFinal.toFixed(5)) : '—';
+            const scoreNum = Math.round(c.score || 0);
+            const rsiVal = c.rsi ? c.rsi.toFixed(0) : '—';
+            const rsiCol = c.rsi > 65 ? '#f85149' : (c.rsi < 35 ? '#3fb950' : '#d29922');
+            const coinName = c.symbol.replace('USDT', '');
+            const reasonText = (c.reason || '').split('|')[0].trim().slice(0, 60);
+
+            scanHtml += '<div style="background:#0a1a10;border:1px solid #1a3a1a;border-radius:6px;padding:8px 10px">';
+            scanHtml += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+            scanHtml += '<span style="color:#e6edf3;font-weight:700;min-width:52px">' + coinName + '</span>';
+            scanHtml += '<span style="color:' + sigCol + ';font-weight:700;min-width:58px">' + sigTxt + '</span>';
+            scanHtml += '<div style="flex:1;min-width:80px"><div style="display:flex;align-items:center;gap:6px">';
+            scanHtml += '<div style="flex:1;background:#0d2a1a;border-radius:3px;height:6px;min-width:60px">';
+            scanHtml += '<div style="width:' + scoreNum + '%;height:100%;background:' + sigCol + ';border-radius:3px"></div>';
+            scanHtml += '</div><span style="color:#d29922;font-size:11px;white-space:nowrap">' + scoreNum + '%</span>';
+            scanHtml += '</div></div>';
+            scanHtml += '<span style="color:#8b949e;font-size:11px">' + pNow + '</span>';
+            scanHtml += '<span style="color:' + sigCol + ';font-weight:600;font-size:11px">' + pEntry + '</span>';
+            scanHtml += '<span style="color:' + rsiCol + ';font-size:11px">RSI ' + rsiVal + '</span>';
+            scanHtml += '</div>';
+            if (reasonText) {
+                scanHtml += '<div style="margin-top:4px;font-size:10px;color:#1a5a3a">' + reasonText + '</div>';
+            }
+            scanHtml += '</div>';
+        }
+        scanHtml += '</div></div>';
+        html += scanHtml;
+    }
+
     el.innerHTML = html;
 }
 
