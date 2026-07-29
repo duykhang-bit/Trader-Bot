@@ -235,12 +235,21 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             return None
 
         # Filter entry quality: chỉ vào lệnh ở vùng giá tốt
-        # SHORT: không short khi RSI quá oversold (giá đã dump rồi, dễ bounce)
-        if signal == "SHORT" and rsi < 35:
+        # SHORT: chỉ short khi RSI >= 40
+        if signal == "SHORT" and rsi < 40:
             return None
-        # LONG: không long khi RSI quá overbought
-        if signal == "LONG" and rsi > 70:
+        if signal == "LONG" and rsi > 60:
             return None
+        # Kiểm tra giá đang gần recent high/low (20 nến)
+        recent_high = high.rolling(20).max().iloc[-1]
+        recent_low  = low.rolling(20).min().iloc[-1]
+        price_range = recent_high - recent_low
+        if price_range > 0:
+            price_pos = (current_price - recent_low) / price_range
+            if signal == "SHORT" and price_pos < 0.4:
+                return None
+            if signal == "LONG" and price_pos > 0.6:
+                return None
 
         # --- Chấm điểm ---
         score = 0.0
