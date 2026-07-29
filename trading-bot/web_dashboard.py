@@ -1949,9 +1949,12 @@ def _api_pump_state_inner():
                 for t in resp.json():
                     s = t.get("symbol", "")
                     if s in watch:
+                        low = float(t.get("lowPrice", 0))
+                        cur = float(t.get("lastPrice", 0))
+                        pct_from_low = round((cur - low) / low * 100, 1) if low > 0 else 0
                         cache[s] = {
-                            "change_pct": float(t.get("priceChangePercent", 0)),
-                            "low":        float(t.get("lowPrice", 0)),
+                            "change_pct": pct_from_low,
+                            "low":        low,
                             "high":       float(t.get("highPrice", 0)),
                         }
                 _api_pump_state_inner._ticker_cache = cache
