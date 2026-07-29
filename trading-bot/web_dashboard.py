@@ -729,13 +729,13 @@ function patchPumpRadar(d) {
 
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a');
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#484f58');
             scoreEl.textContent = c.score + '/100';
             scoreEl.style.color = col;
         }
         const barEl = document.getElementById('pump-bar-' + c.symbol);
         if (barEl) {
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : '#2d5a4a');
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#21262d');
             barEl.style.width = Math.min(c.score, 100) + '%';
             barEl.style.background = col;
         }
@@ -746,6 +746,7 @@ function patchPumpRadar(d) {
             else if (c.is_alert && !isStale)          statusEl.textContent = '🚀 Đang pump!';
             else if (c.score >= minScore && !isStale) statusEl.textContent = '🟢 SẮP VÀO LỆNH';
             else if (c.score >= 40 && !isStale)       statusEl.textContent = '🟡 Đang gần';
+            else if (c.score > 0 && !isStale)         statusEl.textContent = `🔵 Pump +${c.pump_pct ? c.pump_pct.toFixed(1) : '?'}%`;
             else if (isStale)                         statusEl.textContent = '⚫ Đã xả — theo dõi';
             else                                      statusEl.textContent = '⚫ Đang quét';
         }
@@ -984,32 +985,36 @@ function renderPumpRadar(d) {
             // isAlert → xanh lá (đang pump, có thể LONG)
             // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const isPumping = c.pump_pct > 5 && !isStale && !isAlert && !isTop;
-            const col = isTop    ? '#f85149'
-                      : isAlert  ? '#3fb950'
-                      : isPumping ? '#d29922'
-                      : isNear   ? '#d29922'
-                      :            '#2d5a4a';
-            const bg  = isTop    ? 'rgba(248,81,73,.08)'
-                      : isAlert  ? 'rgba(63,185,80,.08)'
-                      : isPumping ? 'rgba(210,153,34,.07)'
-                      : isNear   ? 'rgba(210,153,34,.05)'
-                      :            'transparent';
-            const bdr = isTop    ? '1px solid rgba(248,81,73,.4)'
-                      : isAlert  ? '1px solid rgba(63,185,80,.4)'
-                      : isPumping ? '1px solid rgba(210,153,34,.4)'
-                      : isNear   ? '1px solid rgba(210,153,34,.3)'
-                      :            '1px solid #0d2020';
-            const shadow = isTop   ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
-                         : isAlert ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
-                         : isPumping ? 'box-shadow:0 0 8px rgba(210,153,34,.2)'
-                         :           '';
-            const statusTxt = isTop    ? '🔴 Đỉnh — Vào SHORT!'
-                            : isAlert  ? '🚀 Đang pump!'
-                            : isPumping ? '🟡 Đang pump ' + c.pump_pct.toFixed(1) + '%'
-                            : isNear   ? '🟡 Đang gần'
-                            : isStale  ? '⚫ Đã xả — theo dõi'
-                            :            '⚫ Đang quét';
+            const isPumping = c.pump_pct > 2 && !isStale && !isAlert && !isTop;
+            const col = isTop      ? '#f85149'
+                      : isAlert    ? '#3fb950'
+                      : isPumping && c.pump_pct > 5 ? '#d29922'
+                      : isPumping  ? '#388bfd'
+                      : isNear     ? '#d29922'
+                      : c.score > 0 ? '#388bfd'
+                      :              '#484f58';
+            const bg  = isTop      ? 'rgba(248,81,73,.08)'
+                      : isAlert    ? 'rgba(63,185,80,.08)'
+                      : isPumping && c.pump_pct > 5 ? 'rgba(210,153,34,.07)'
+                      : isPumping  ? 'rgba(56,139,253,.06)'
+                      : isNear     ? 'rgba(210,153,34,.05)'
+                      :              'transparent';
+            const bdr = isTop      ? '1px solid rgba(248,81,73,.4)'
+                      : isAlert    ? '1px solid rgba(63,185,80,.4)'
+                      : isPumping && c.pump_pct > 5 ? '1px solid rgba(210,153,34,.4)'
+                      : isPumping  ? '1px solid rgba(56,139,253,.3)'
+                      : isNear     ? '1px solid rgba(210,153,34,.3)'
+                      :              '1px solid #0d2020';
+            const shadow = isTop     ? 'box-shadow:0 0 10px rgba(248,81,73,.2)'
+                         : isAlert   ? 'box-shadow:0 0 10px rgba(63,185,80,.15)'
+                         : isPumping ? 'box-shadow:0 0 8px rgba(56,139,253,.2)'
+                         :             '';
+            const statusTxt = isTop      ? '🔴 Đỉnh — Vào SHORT!'
+                            : isAlert    ? '🚀 Đang pump!'
+                            : isPumping  ? '🔵 Pump +' + c.pump_pct.toFixed(1) + '%'
+                            : isNear     ? '🟡 Đang gần'
+                            : isStale    ? '⚫ Đã xả — theo dõi'
+                            :              '⚫ Đang quét';
             const ageSec = c.ts ? Math.round((Date.now()/1000) - c.ts) : null;
             const ageStr = ageSec !== null && ageSec < 3600 ? (ageSec<60?`${ageSec}s`:`${Math.floor(ageSec/60)}m`) : '';
             return `
