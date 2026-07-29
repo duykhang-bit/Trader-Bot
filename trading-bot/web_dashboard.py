@@ -1951,15 +1951,11 @@ def _api_pump_state_inner():
                     s = t.get("symbol", "")
                     if s in watch:
                         chg_pct = float(t.get("priceChangePercent", 0))
-                        low     = float(t.get("lowPrice",  0))
-                        cur     = float(t.get("lastPrice", 0))
-                        # Chỉ tính pump từ low nếu đang tăng trên 24h
-                        pct_from_low = round((cur - low) / low * 100, 1) if (low > 0 and chg_pct > 0) else 0
                         cache[s] = {
-                            "change_pct": pct_from_low,
+                            "change_pct":    chg_pct,
                             "change_24h_raw": chg_pct,
-                            "low":        low,
-                            "high":       float(t.get("highPrice", 0)),
+                            "low":  float(t.get("lowPrice",  0)),
+                            "high": float(t.get("highPrice", 0)),
                         }
                 _api_pump_state_inner._ticker_cache = cache
                 _api_pump_state_inner._ticker_ts    = _now
