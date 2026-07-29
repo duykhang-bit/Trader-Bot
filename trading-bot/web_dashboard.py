@@ -702,11 +702,12 @@ function patchPumpRadar(d) {
     const autoShort  = d.auto_short || false;
     const softShort  = d.soft_short || false;
 
-    // Sort realtime: pump top → alert → score cao → pump_pct cao
+    // Sort realtime: pump top → alert → score cao → change_24h cao → pump_pct cao
     coins.sort((a, b) => {
         if (a.is_top !== b.is_top) return b.is_top - a.is_top;
         if (a.is_alert !== b.is_alert) return b.is_alert - a.is_alert;
         if (b.score !== a.score) return b.score - a.score;
+        if ((b.change_raw||0) !== (a.change_raw||0)) return (b.change_raw||0) - (a.change_raw||0);
         return (b.pump_pct || 0) - (a.pump_pct || 0);
     });
 
@@ -751,35 +752,25 @@ function patchPumpRadar(d) {
 
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
-            const chg24 = c.change_24h || 0;
-            const displayScore = c.score > 0 ? c.score
-                               : chg24 >= 30 ? 55 : chg24 >= 20 ? 40
-                               : chg24 >= 10 ? 25 : chg24 >= 5  ? 12 : 0;
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (displayScore >= minScore ? '#3fb950' : displayScore >= 40 ? '#d29922' : displayScore > 0 ? '#388bfd' : '#484f58');
-            scoreEl.textContent = displayScore + '/100';
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#484f58');
+            scoreEl.textContent = c.score + '/100';
             scoreEl.style.color = col;
         }
         const barEl = document.getElementById('pump-bar-' + c.symbol);
         if (barEl) {
-            const chg24 = c.change_24h || 0;
-            const displayScore = c.score > 0 ? c.score
-                               : chg24 >= 30 ? 55 : chg24 >= 20 ? 40
-                               : chg24 >= 10 ? 25 : chg24 >= 5  ? 12 : 0;
-            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (displayScore >= minScore ? '#3fb950' : displayScore >= 40 ? '#d29922' : displayScore > 0 ? '#388bfd' : '#21262d');
-            barEl.style.width = Math.min(displayScore, 100) + '%';
+            const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#21262d');
+            barEl.style.width = Math.min(c.score, 100) + '%';
             barEl.style.background = col;
         }
         const statusEl = document.getElementById('pump-status-' + c.symbol);
         if (statusEl) {
-            const chg24 = c.change_24h || 0;
-            const displayPumpPct = c.pump_pct > 0 ? c.pump_pct : chg24;
             const isStale = c.is_stale || false;
-            const isPumping = (c.pump_pct > 2 || chg24 >= 5) && !isStale && !c.is_alert && !c.is_top;
-            if (c.is_top)                              statusEl.textContent = '🔴 Đỉnh — SẮP SHORT';
-            else if (c.is_alert && !isStale)           statusEl.textContent = '🚀 Đang pump!';
-            else if (isPumping && !isStale)            statusEl.textContent = `🔵 Pump +${displayPumpPct.toFixed(1)}%`;
-            else if (isStale)                          statusEl.textContent = '⚫ Đã xả — theo dõi';
-            else                                       statusEl.textContent = '⚫ Đang quét';
+            const isPumping = c.pump_pct > 2 && !isStale && !c.is_alert && !c.is_top;
+            if (c.is_top)                  statusEl.textContent = '🔴 Đỉnh — SẮP SHORT';
+            else if (c.is_alert && !isStale) statusEl.textContent = '🚀 Đang pump!';
+            else if (isPumping && !isStale)  statusEl.textContent = `🔵 Pump +${c.pump_pct.toFixed(1)}%`;
+            else if (isStale)               statusEl.textContent = '⚫ Đã xả — theo dõi';
+            else                            statusEl.textContent = '⚫ Đang quét';
         }
 
         // Cập nhật pump alert banner bên dưới card nếu có
@@ -907,11 +898,12 @@ function renderPumpRadar(d) {
     const lastScan  = status.last_scan  || '--:--';
     const alertCoins = coins.filter(c => c.score >= minScore);
 
-    // Sort: pump top → alert → score cao → pump_pct cao → còn lại
+    // Sort: pump top → alert → score cao → change_24h cao → pump_pct cao → còn lại
     coins.sort((a, b) => {
         if (a.is_top !== b.is_top) return b.is_top - a.is_top;
         if (a.is_alert !== b.is_alert) return b.is_alert - a.is_alert;
         if (b.score !== a.score) return b.score - a.score;
+        if ((b.change_raw||0) !== (a.change_raw||0)) return (b.change_raw||0) - (a.change_raw||0);
         return (b.pump_pct || 0) - (a.pump_pct || 0);
     });
 
@@ -1024,21 +1016,13 @@ function renderPumpRadar(d) {
             // isAlert → xanh lá (đang pump, có thể LONG)
             // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
-            const chg24 = c.change_24h || 0;
-            const isPumping = (c.pump_pct > 2 || chg24 >= 5) && !isStale && !isAlert && !isTop;
-            // Score hiển thị: dùng score thật nếu có, fallback tính từ % 24h
-            const displayScore = c.score > 0 ? c.score
-                               : chg24 >= 30 ? 55
-                               : chg24 >= 20 ? 40
-                               : chg24 >= 10 ? 25
-                               : chg24 >= 5  ? 12 : 0;
-            const displayPumpPct = c.pump_pct > 0 ? c.pump_pct : (chg24 > 0 ? chg24 : 0);
+            const chgRaw = c.change_raw || 0;
+            // isPumping chỉ dựa vào pump_signals thật (pump_pct từ detector)
+            const isPumping = c.pump_pct > 2 && !isStale && !isAlert && !isTop;
             const col = isTop      ? '#f85149'
                       : isAlert    ? '#3fb950'
-                      : isPumping && c.pump_pct > 5 ? '#d29922'
-                      : isPumping  ? '#388bfd'
+                      : isPumping  ? '#d29922'
                       : isNear     ? '#d29922'
-                      : c.score > 0 ? '#388bfd'
                       :              '#484f58';
             const bg  = isTop      ? 'rgba(248,81,73,.08)'
                       : isAlert    ? 'rgba(63,185,80,.08)'
@@ -1058,7 +1042,7 @@ function renderPumpRadar(d) {
                          :             '';
             const statusTxt = isTop      ? '🔴 Đỉnh — Vào SHORT!'
                             : isAlert    ? '🚀 Đang pump!'
-                            : isPumping  ? '🔵 Pump +' + displayPumpPct.toFixed(1) + '%'
+                            : isPumping  ? '🔵 Pump +' + c.pump_pct.toFixed(1) + '%'
                             : isNear     ? '🟡 Đang gần'
                             : isStale    ? '⚫ Đã xả — theo dõi'
                             :              '⚫ Đang quét';
@@ -1071,7 +1055,7 @@ function renderPumpRadar(d) {
                 <div style="display:flex;align-items:center;gap:8px">
                   <span style="font-size:12px;font-weight:700;color:${col}">${name}</span>
                   <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
-                  ${(c.change_24h && Math.abs(c.change_24h) >= 3) ? `<span id="pump-badge24h-${c.symbol}" style="font-size:10px;font-weight:700;color:${c.change_24h>=0?'#3fb950':'#f85149'};background:${c.change_24h>=0?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)'};padding:1px 5px;border-radius:3px">${c.change_24h>=0?'+':''}${c.change_24h.toFixed(1)}%</span>` : `<span id="pump-badge24h-${c.symbol}" style="display:none"></span>`}
+                  ${(c.change_raw !== undefined && Math.abs(c.change_raw||0) >= 3) ? `<span id="pump-badge24h-${c.symbol}" style="font-size:10px;font-weight:700;color:${(c.change_raw||0)>=0?'#3fb950':'#f85149'};background:${(c.change_raw||0)>=0?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)'};padding:1px 5px;border-radius:3px">${(c.change_raw||0)>=0?'+':''}${(c.change_raw||0).toFixed(1)}%</span>` : `<span id="pump-badge24h-${c.symbol}" style="display:none"></span>`}
                   <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${statusTxt}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:5px">
@@ -1089,10 +1073,10 @@ function renderPumpRadar(d) {
               <div style="margin-top:6px">
                 <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
                   <span style="color:#0d3a2a">SCORE</span>
-                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${displayScore}/100</span>
+                  <span id="pump-score-${c.symbol}" style="color:${col};font-weight:700">${c.score}/100</span>
                 </div>
                 <div style="background:#0a1a10;border-radius:3px;height:5px;overflow:hidden">
-                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(displayScore,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
+                  <div id="pump-bar-${c.symbol}" style="width:${Math.min(c.score,100)}%;height:100%;background:${col};border-radius:3px;transition:width .6s;
                               ${(isTop||isAlert)?'box-shadow:0 0 5px '+col:''}"></div>
                 </div>
               </div>
