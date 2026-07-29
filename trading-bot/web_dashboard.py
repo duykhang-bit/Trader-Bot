@@ -735,6 +735,20 @@ function patchPumpRadar(d) {
         const priceEl = document.getElementById('pump-price-' + c.symbol);
         if (priceEl && priceEl.textContent !== pStr) priceEl.textContent = pStr;
 
+        // Update badge 24h
+        const badgeEl = document.getElementById('pump-badge24h-' + c.symbol);
+        if (badgeEl && c.change_24h !== undefined) {
+            const chg = c.change_24h || 0;
+            if (Math.abs(chg) >= 3) {
+                badgeEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(1) + '%';
+                badgeEl.style.color = chg >= 0 ? '#3fb950' : '#f85149';
+                badgeEl.style.background = chg >= 0 ? 'rgba(63,185,80,.12)' : 'rgba(248,81,73,.12)';
+                badgeEl.style.display = 'inline-block';
+            } else {
+                badgeEl.style.display = 'none';
+            }
+        }
+
         const scoreEl = document.getElementById('pump-score-' + c.symbol);
         if (scoreEl) {
             const col = c.is_top ? '#f85149' : c.is_alert ? '#3fb950' : (c.score >= minScore ? '#3fb950' : c.score >= 40 ? '#d29922' : c.score > 0 ? '#388bfd' : '#484f58');
@@ -1040,6 +1054,7 @@ function renderPumpRadar(d) {
                 <div style="display:flex;align-items:center;gap:8px">
                   <span style="font-size:12px;font-weight:700;color:${col}">${name}</span>
                   <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
+                  ${(c.change_24h && Math.abs(c.change_24h) >= 3) ? `<span id="pump-badge24h-${c.symbol}" style="font-size:10px;font-weight:700;color:${c.change_24h>=0?'#3fb950':'#f85149'};background:${c.change_24h>=0?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)'};padding:1px 5px;border-radius:3px">${c.change_24h>=0?'+':''}${c.change_24h.toFixed(1)}%</span>` : `<span id="pump-badge24h-${c.symbol}" style="display:none"></span>`}
                   <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${statusTxt}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:5px">
@@ -1905,6 +1920,31 @@ def _api_pump_state_inner():
         prices  = dict(_state.get("prices", {}))
         pump_alerts = dict(_state.get("pump_alerts", {}))  # {symbol: {...}}
 
+    # Lấy % thay đổi 24h cho tất cả pump coins (1 API call, cache 60s)
+    _now = time.time()
+    cache = getattr(_api_pump_state_inner, "_ticker_cache", {})
+    cache_ts = getattr(_api_pump_state_inner, "_ticker_ts", 0)
+    if _now - cache_ts > 60:
+        try:
+            import requests as _req
+            base = getattr(_config, "LIVE_BASE_URL", "https://fapi.binance.com")
+            resp = _req.get(f"{base}/fapi/v1/ticker/24hr", timeout=5)
+            if resp.ok:
+                for t in resp.json():
+                    s = t.get("symbol", "")
+                    if s in watch:
+                        cache[s] = {
+                            "change_pct": float(t.get("priceChangePercent", 0)),
+                            "low":        float(t.get("lowPrice", 0)),
+                            "high":       float(t.get("highPrice", 0)),
+                        }
+                _api_pump_state_inner._ticker_cache = cache
+                _api_pump_state_inner._ticker_ts    = _now
+        except Exception:
+            pass
+    _api_pump_state_inner._ticker_cache = cache
+    _api_pump_state_inner._ticker_ts    = cache_ts if _now - cache_ts <= 60 else _now
+
     # Build coin rows với pump score nếu có
     rows = []
     for sym in watch:
@@ -1955,6 +1995,7 @@ def _api_pump_state_inner():
             "price":       price,
             "pump_pct":    effective_pump_pct if sig_d else (alert_d["pump_pct"] if alert_d else 0),
             "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
+            "change_24h":  cache.get(sym, {}).get("change_pct", 0),
             "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
             # is_alert = True khi có signal pump bất kỳ (dù chưa là top)
             "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 2) if sig_d and not is_stale else bool(alert_d and not is_stale),
