@@ -737,8 +737,8 @@ function patchPumpRadar(d) {
 
         // Update badge 24h
         const badgeEl = document.getElementById('pump-badge24h-' + c.symbol);
-        if (badgeEl && c.change_24h !== undefined) {
-            const chg = c.change_24h || 0;
+        if (badgeEl && c.change_raw !== undefined) {
+            const chg = c.change_raw || 0;
             if (Math.abs(chg) >= 3) {
                 badgeEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(1) + '%';
                 badgeEl.style.color = chg >= 0 ? '#3fb950' : '#f85149';
@@ -1025,8 +1025,9 @@ function renderPumpRadar(d) {
             // isNear  → vàng (gần ngưỡng) — CHỈ khi không stale
             const pStr = c.price > 0 ? (c.price >= 1 ? '$'+c.price.toFixed(4) : '$'+c.price.toFixed(6)) : '—';
             const chg24 = c.change_24h || 0;
-            const isPumping = (c.pump_pct > 2 || chg24 >= 5) && !isStale && !isAlert && !isTop;
-            // Score hiển thị: dùng score thật nếu có, fallback tính từ % 24h
+            const chgRaw = c.change_raw || 0;
+            // Chỉ hiện pump khi đang thực sự tăng (chgRaw > 0)
+            const isPumping = (chg24 >= 5 || c.pump_pct > 2) && chgRaw > 0 && !isStale && !isAlert && !isTop;
             const displayScore = c.score > 0 ? c.score
                                : chg24 >= 30 ? 55
                                : chg24 >= 20 ? 40
@@ -1071,7 +1072,7 @@ function renderPumpRadar(d) {
                 <div style="display:flex;align-items:center;gap:8px">
                   <span style="font-size:12px;font-weight:700;color:${col}">${name}</span>
                   <span id="pump-price-${c.symbol}" style="font-size:11px;color:#1a5a3a">${pStr}</span>
-                  ${(c.change_24h && Math.abs(c.change_24h) >= 3) ? `<span id="pump-badge24h-${c.symbol}" style="font-size:10px;font-weight:700;color:${c.change_24h>=0?'#3fb950':'#f85149'};background:${c.change_24h>=0?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)'};padding:1px 5px;border-radius:3px">${c.change_24h>=0?'+':''}${c.change_24h.toFixed(1)}%</span>` : `<span id="pump-badge24h-${c.symbol}" style="display:none"></span>`}
+                  ${(c.change_raw !== undefined && Math.abs(c.change_raw) >= 3) ? `<span id="pump-badge24h-${c.symbol}" style="font-size:10px;font-weight:700;color:${c.change_raw>=0?'#3fb950':'#f85149'};background:${c.change_raw>=0?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)'};padding:1px 5px;border-radius:3px">${c.change_raw>=0?'+':''}${c.change_raw.toFixed(1)}%</span>` : `<span id="pump-badge24h-${c.symbol}" style="display:none"></span>`}
                   <span id="pump-status-${c.symbol}" style="font-size:10px;color:${col}">${statusTxt}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:5px">
@@ -1949,11 +1950,14 @@ def _api_pump_state_inner():
                 for t in resp.json():
                     s = t.get("symbol", "")
                     if s in watch:
-                        low = float(t.get("lowPrice", 0))
-                        cur = float(t.get("lastPrice", 0))
-                        pct_from_low = round((cur - low) / low * 100, 1) if low > 0 else 0
+                        chg_pct = float(t.get("priceChangePercent", 0))
+                        low     = float(t.get("lowPrice",  0))
+                        cur     = float(t.get("lastPrice", 0))
+                        # Chỉ tính pump từ low nếu đang tăng trên 24h
+                        pct_from_low = round((cur - low) / low * 100, 1) if (low > 0 and chg_pct > 0) else 0
                         cache[s] = {
                             "change_pct": pct_from_low,
+                            "change_24h_raw": chg_pct,
                             "low":        low,
                             "high":       float(t.get("highPrice", 0)),
                         }
@@ -2015,6 +2019,7 @@ def _api_pump_state_inner():
             "pump_pct":    effective_pump_pct if sig_d else (alert_d["pump_pct"] if alert_d else 0),
             "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
             "change_24h":  cache.get(sym, {}).get("change_pct", 0),
+            "change_raw":  cache.get(sym, {}).get("change_24h_raw", 0),
             "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
             # is_alert = True khi có signal pump bất kỳ (dù chưa là top)
             "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 2) if sig_d and not is_stale else bool(alert_d and not is_stale),
