@@ -1914,9 +1914,13 @@ def scan_engine(exchange, notifier):
                         from indicators import calculate_macd
                         _, _, histogram = calculate_macd(df["close"])
                         hist_val = histogram.iloc[-1]
-                        if best.signal == "LONG" and hist_val <= 0:
+                        hist_prev = histogram.iloc[-2] if len(histogram) > 1 else hist_val
+                        # Chỉ skip nếu MACD âm/dương mạnh VÀ không đang chuyển chiều
+                        macd_turning_up   = hist_val > hist_prev  # đang tăng dần
+                        macd_turning_down = hist_val < hist_prev  # đang giảm dần
+                        if best.signal == "LONG" and hist_val <= -0.002 and not macd_turning_up:
                             skip_reason = f"MACD hist={hist_val:.5f} (cần dương cho LONG)"
-                        elif best.signal == "SHORT" and hist_val >= 0:
+                        elif best.signal == "SHORT" and hist_val >= 0.002 and not macd_turning_down:
                             skip_reason = f"MACD hist={hist_val:.5f} (cần âm cho SHORT)"
                     except Exception:
                         pass
