@@ -588,7 +588,7 @@ function renderPnlStats() {
 
     let html = `
     <div class="pnl-stats-tabs">
-        <div class="pnl-tab ${_pnlTab==='daily'?'active':''}" onclick="setPnlTab('daily')">7 Ngày</div>
+        <div class="pnl-tab ${_pnlTab==='daily'?'active':''}" onclick="setPnlTab('daily')">Theo Ngày</div>
         <div class="pnl-tab ${_pnlTab==='weekly'?'active':''}" onclick="setPnlTab('weekly')">Theo Tuần</div>
         <div class="pnl-tab ${_pnlTab==='monthly'?'active':''}" onclick="setPnlTab('monthly')">Theo Tháng</div>
     </div>
@@ -2207,17 +2207,32 @@ def api_pnl_stats():
         except Exception:
             return None
 
-    # ── DAILY: 7 ngày gần nhất ───────────────────────────────
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # ── DAILY: tất cả các ngày có trade ─────────────────────
+    day_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
+    for t in closed:
+        dt = parse_time(t)
+        if dt is None: continue
+        dk = dt.strftime("%Y-%m-%d")
+        day_map[dk]["pnl"]    += t.get("pnl_usdt", 0)
+        day_map[dk]["trades"] += 1
+        day_map[dk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    sorted_days = sorted(day_map.keys(), reverse=True)  # mới nhất lên đầu
     daily = []
-    for i in range(6, -1, -1):
-        day = today - timedelta(days=i)
-        day_str = day.strftime("%Y-%m-%d")
-        label   = "Hôm nay" if i == 0 else ("Hôm qua" if i == 1 else day.strftime("%d/%m"))
-        trades_day = [t for t in closed if (parse_time(t) or datetime.min).strftime("%Y-%m-%d") == day_str]
-        pnl    = sum(t.get("pnl_usdt", 0) for t in trades_day)
-        wins   = sum(1 for t in trades_day if t.get("pnl_usdt", 0) > 0)
-        daily.append({"label": label, "pnl": round(pnl, 2), "trades": len(trades_day), "wins": wins})
+    for dk in sorted_days:
+        v = day_map[dk]
+        if dk == today_str:
+            label = "Hôm nay"
+        elif dk == yesterday_str:
+            label = "Hôm qua"
+        else:
+            # dd/mm/yy
+            dt = datetime.strptime(dk, "%Y-%m-%d")
+            label = dt.strftime("%d/%m/%y")
+        daily.append({"label": label, "pnl": round(v["pnl"], 2),
+                      "trades": v["trades"], "wins": v["wins"]})
 
     # ── WEEKLY: 8 tuần gần nhất ──────────────────────────────
     def week_key(dt):
