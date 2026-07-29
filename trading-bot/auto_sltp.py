@@ -77,52 +77,67 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
         # ── ═══════════════════════════════════════════════════
         if side == "LONG":
 
-            # ── SL: nằm SAU (dưới) vùng liq bị quét ──────────
-            # Vùng liq SHORT phía dưới = nơi stop hunt sẽ xảy ra
-            # SL đặt thêm buffer dưới vùng đó để tránh bị quét
+            # ── SL: đặt SAU vùng liq thứ 2 phía dưới ─────────
+            # Vùng liq gần nhất = nơi giá quét trước → SL đặt dưới vùng thứ 2
+            # Nếu chỉ có 1 vùng liq → SL dưới vùng đó + ATR buffer
             sl_method = "ATR fallback"
-            best_sl   = entry_price - atr_1h * 2.0  # fallback
+            best_sl   = entry_price - atr_1h * 2.0
 
             if liq_below_map:
-                # Lấy vùng liq gần entry nhất phía dưới (vùng bị quét đầu tiên)
-                # → SL đặt dưới vùng đó 0.3% (buffer tránh stop hunt)
-                sweep_zone = max(liq_below_map.keys())  # gần entry nhất phía dưới
-                sweep_usd  = liq_below_map[sweep_zone]
+                # Sort theo giá giảm dần (gần entry nhất trước)
+                sorted_liq_below = sorted(
+                    [(p, u) for p, u in liq_below_map.items() if u >= 30_000],
+                    key=lambda x: x[0], reverse=True
+                )
 
-                # Nếu có vùng liq lớn ($50k+) thì SL đặt dưới nó
-                if sweep_usd >= 50_000:
-                    # SL = dưới đáy vùng liq 0.3%
-                    candidate_sl = sweep_zone * 0.997
-                    # Kiểm tra không quá xa (max 5% từ entry)
-                    if candidate_sl > entry_price * 0.95:
+                if len(sorted_liq_below) >= 2:
+                    # Có >= 2 vùng liq → SL dưới vùng thứ 2 (sau khi quét xong vùng 1)
+                    sweep_zone2, sweep_usd2 = sorted_liq_below[1]
+                    candidate_sl = sweep_zone2 * 0.996  # 0.4% dưới vùng thứ 2
+                    if candidate_sl > entry_price * 0.94:  # max 6% từ entry
                         best_sl   = candidate_sl
-                        sl_method = f"Below liq↓${sweep_zone:.{decimals}f}(${sweep_usd/1e3:.0f}k)"
-                        details.append(f"SweepZone=${sweep_zone:.{decimals}f}")
+                        sl_method = (f"Below 2nd liq↓${sweep_zone2:.{decimals}f}"
+                                     f"(${sweep_usd2/1e3:.0f}k)")
+                        details.append(f"SweepZone2=${sweep_zone2:.{decimals}f}")
                     else:
-                        # Vùng liq quá xa → dùng swing low gần nhất + buffer
-                        sl_method = "Liq too far, swing low"
+                        # Quá xa → dùng vùng liq 1 + ATR buffer
+                        sweep_zone1 = sorted_liq_below[0][0]
+                        candidate_sl = sweep_zone1 * 0.995
+                        if candidate_sl > entry_price * 0.94:
+                            best_sl   = candidate_sl
+                            sl_method = f"Below 1st liq + ATR buffer"
 
-            # Nếu không có liq data hoặc vùng liq quá xa → swing low
-            if sl_method in ("ATR fallback", "Liq too far, swing low"):
+                elif len(sorted_liq_below) == 1:
+                    # Chỉ 1 vùng liq → SL dưới đó + ATR×1.0 buffer
+                    sweep_zone1, sweep_usd1 = sorted_liq_below[0]
+                    candidate_sl = min(sweep_zone1 * 0.996,
+                                       sweep_zone1 - atr_1h)
+                    if candidate_sl > entry_price * 0.94:
+                        best_sl   = candidate_sl
+                        sl_method = (f"Below liq↓${sweep_zone1:.{decimals}f}"
+                                     f"+ATR(${sweep_usd1/1e3:.0f}k)")
+                        details.append(f"SweepZone=${sweep_zone1:.{decimals}f}")
+
+            # Không có liq data → swing low
+            if sl_method == "ATR fallback":
                 valid_sup = [s for s in supports if s < entry_price * 0.995]
                 if valid_sup:
-                    swing_low = max(valid_sup)  # swing low gần nhất
-                    # SL = dưới swing low 0.2% (buffer nhỏ)
-                    candidate_sl = swing_low * 0.998
-                    if candidate_sl > entry_price * 0.95:
+                    # Lấy swing low thứ 2 nếu có (tránh dừng ở swing low gần)
+                    swing_levels = sorted(valid_sup, reverse=True)
+                    swing_ref = swing_levels[1] if len(swing_levels) >= 2 else swing_levels[0]
+                    candidate_sl = swing_ref * 0.998
+                    if candidate_sl > entry_price * 0.94:
                         best_sl   = candidate_sl
-                        sl_method = f"Below swing low ${swing_low:.{decimals}f}"
-                        details.append(f"SwingLow=${swing_low:.{decimals}f}")
+                        sl_method = f"Below swing low2 ${swing_ref:.{decimals}f}"
                     else:
-                        # Swing low quá xa → ATR 2x
                         best_sl   = entry_price - atr_1h * 2.0
-                        sl_method = f"ATR×2.0"
+                        sl_method = "ATR×2.0"
                 else:
                     best_sl   = entry_price - atr_1h * 2.0
-                    sl_method = f"ATR×2.0"
+                    sl_method = "ATR×2.0"
 
-            # Hard floor: SL không được quá 5% dưới entry (bảo vệ rủi ro)
-            best_sl = max(best_sl, entry_price * 0.95)
+            # Hard floor: max 6% dưới entry
+            best_sl = max(best_sl, entry_price * 0.94)
             risk    = entry_price - best_sl
 
             # ── TP: vùng liq LONG lớn nhất phía trên ──────────
@@ -161,33 +176,48 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
         # ── ═══════════════════════════════════════════════════
         else:
 
-            # ── SL: nằm SAU (trên) vùng liq bị quét ──────────
+            # ── SL: nằm SAU (trên) vùng liq thứ 2 bị quét ──────────
             sl_method = "ATR fallback"
-            best_sl   = entry_price + atr_1h * 2.0  # fallback
+            best_sl   = entry_price + atr_1h * 2.0
 
             if liq_above_map:
-                # Vùng liq LONG gần entry nhất phía trên = nơi stop hunt xảy ra
-                sweep_zone = min(liq_above_map.keys())
-                sweep_usd  = liq_above_map[sweep_zone]
+                sorted_liq_above = sorted(
+                    [(p, u) for p, u in liq_above_map.items() if u >= 30_000],
+                    key=lambda x: x[0]  # gần entry nhất trước
+                )
 
-                if sweep_usd >= 50_000:
-                    candidate_sl = sweep_zone * 1.003  # SL trên vùng liq 0.3%
-                    if candidate_sl < entry_price * 1.05:
+                if len(sorted_liq_above) >= 2:
+                    sweep_zone2, sweep_usd2 = sorted_liq_above[1]
+                    candidate_sl = sweep_zone2 * 1.004
+                    if candidate_sl < entry_price * 1.06:
                         best_sl   = candidate_sl
-                        sl_method = f"Above liq↑${sweep_zone:.{decimals}f}(${sweep_usd/1e3:.0f}k)"
-                        details.append(f"SweepZone=${sweep_zone:.{decimals}f}")
+                        sl_method = (f"Above 2nd liq↑${sweep_zone2:.{decimals}f}"
+                                     f"(${sweep_usd2/1e3:.0f}k)")
+                        details.append(f"SweepZone2=${sweep_zone2:.{decimals}f}")
                     else:
-                        sl_method = "Liq too far, swing high"
+                        sweep_zone1 = sorted_liq_above[0][0]
+                        candidate_sl = sweep_zone1 * 1.005
+                        if candidate_sl < entry_price * 1.06:
+                            best_sl   = candidate_sl
+                            sl_method = "Above 1st liq + ATR buffer"
 
-            if sl_method in ("ATR fallback", "Liq too far, swing high"):
+                elif len(sorted_liq_above) == 1:
+                    sweep_zone1, sweep_usd1 = sorted_liq_above[0]
+                    candidate_sl = max(sweep_zone1 * 1.004, sweep_zone1 + atr_1h)
+                    if candidate_sl < entry_price * 1.06:
+                        best_sl   = candidate_sl
+                        sl_method = (f"Above liq↑${sweep_zone1:.{decimals}f}"
+                                     f"+ATR(${sweep_usd1/1e3:.0f}k)")
+
+            if sl_method == "ATR fallback":
                 valid_res = [r for r in resistances if r > entry_price * 1.005]
                 if valid_res:
-                    swing_high = min(valid_res)
-                    candidate_sl = swing_high * 1.002
-                    if candidate_sl < entry_price * 1.05:
+                    swing_levels = sorted(valid_res)
+                    swing_ref = swing_levels[1] if len(swing_levels) >= 2 else swing_levels[0]
+                    candidate_sl = swing_ref * 1.002
+                    if candidate_sl < entry_price * 1.06:
                         best_sl   = candidate_sl
-                        sl_method = f"Above swing high ${swing_high:.{decimals}f}"
-                        details.append(f"SwingHigh=${swing_high:.{decimals}f}")
+                        sl_method = f"Above swing high2 ${swing_ref:.{decimals}f}"
                     else:
                         best_sl   = entry_price + atr_1h * 2.0
                         sl_method = "ATR×2.0"
@@ -195,8 +225,8 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
                     best_sl   = entry_price + atr_1h * 2.0
                     sl_method = "ATR×2.0"
 
-            # Hard ceiling: SL không quá 5% trên entry
-            best_sl = min(best_sl, entry_price * 1.05)
+            # Hard ceiling: max 6% trên entry
+            best_sl = min(best_sl, entry_price * 1.06)
             risk    = best_sl - entry_price
 
             # ── TP: vùng liq SHORT lớn nhất phía dưới ─────────
