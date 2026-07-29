@@ -1085,6 +1085,50 @@ function renderPumpRadar(d) {
 
     </div>`;
 
+    // ── INLINE SCAN STATUS — hiện ngay dưới pump radar ──────
+    const cands = window._dashData && window._dashData.candidates ? window._dashData.candidates : [];
+    if (cands.length > 0) {
+        html += `
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #0d2a1a">
+          <div style="font-size:11px;color:#3fb950;font-weight:700;margin-bottom:8px">📊 SCAN STATUS</div>
+          <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead>
+              <tr style="color:#484f58;border-bottom:1px solid #1a3a2a">
+                <th style="text-align:left;padding:3px 6px">Coin</th>
+                <th style="text-align:left;padding:3px 6px">Signal</th>
+                <th style="text-align:left;padding:3px 6px">Score</th>
+                <th style="text-align:left;padding:3px 6px">Now</th>
+                <th style="text-align:left;padding:3px 6px">Entry</th>
+                <th style="text-align:left;padding:3px 6px">RSI</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${cands.slice(0,8).map(c => {
+                const isLong = c.signal === 'LONG';
+                const sigCol = isLong ? '#3fb950' : '#f85149';
+                const sigTxt = isLong ? '▲ LONG' : '▼ SHORT';
+                const pNow = c.price ? (c.price >= 1 ? c.price.toFixed(3) : c.price.toFixed(5)) : '—';
+                const pEntry = c.entry_long ? (c.entry_long >= 1 ? c.entry_long.toFixed(3) : c.entry_long.toFixed(5))
+                             : c.entry_short ? (c.entry_short >= 1 ? c.entry_short.toFixed(3) : c.entry_short.toFixed(5))
+                             : '—';
+                const entryCol = isLong ? '#3fb950' : '#f85149';
+                const scoreBar = '█'.repeat(Math.round(c.score/10)) + '░'.repeat(10-Math.round(c.score/10));
+                return `<tr style="border-bottom:1px solid #0a1a10">
+                  <td style="padding:4px 6px;color:#e6edf3;font-weight:600">${c.symbol.replace('USDT','')}</td>
+                  <td style="padding:4px 6px;color:${sigCol};font-weight:700">${sigTxt}</td>
+                  <td style="padding:4px 6px;color:#d29922">${c.score}%</td>
+                  <td style="padding:4px 6px;color:#8b949e">$${pNow}</td>
+                  <td style="padding:4px 6px;color:${entryCol};font-weight:600">$${pEntry}</td>
+                  <td style="padding:4px 6px;color:${c.rsi>65?'#f85149':c.rsi<35?'#3fb950':'#d29922'}">${c.rsi ? c.rsi.toFixed(0) : '—'}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+          </div>
+        </div>`;
+    }
+
     el.innerHTML = html;
 }
 
@@ -1125,6 +1169,7 @@ async function refresh(){
     try{
         const r = await fetch('/api/state');
         const d = await r.json();
+        window._dashData = d;  // lưu để pump radar dùng scan candidates
 
         // Backend chưa init xong (bot đang khởi động)
         if (d.error) {
