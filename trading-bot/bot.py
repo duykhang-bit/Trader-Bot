@@ -2078,54 +2078,52 @@ def scan_engine(exchange, notifier):
                                     skip_reason = (f"Entry SHORT {entry_price:.4f} <= giá hiện tại "
                                                    f"{cur_price:.4f} — cluster sai phía")
 
-                                if skip_reason:
-                                    pass  # sẽ bị skip ở validate RR bên dưới
-
-                                # ── SL: ngoài cluster + buffer ────────────
-                                sl = cluster["sl_zone"]
-                                if best.signal == "LONG":
-                                    sl = round(max(sl, entry_price * 0.95), 8)
-                                else:
-                                    sl = round(min(sl, entry_price * 1.05), 8)
-
-                                # ── TP: cluster lớn nhất USD phía target ──
-                                heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
-                                if best.signal == "LONG":
-                                    tp_cluster = liq_source.get_best_entry_cluster(
-                                        symbol        = best.symbol,
-                                        current_price = entry_price,
-                                        direction     = "SHORT",
-                                        min_usd       = 10_000,
-                                        cluster_gap_pct = 0.012,
-                                    )
-                                    if tp_cluster and tp_cluster["entry"] > entry_price:
-                                        tp = round(tp_cluster["cluster_low"] * 0.999, 8)
+                                if not skip_reason:
+                                    # ── SL: ngoài cluster + buffer ────────────
+                                    sl = cluster["sl_zone"]
+                                    if best.signal == "LONG":
+                                        sl = round(max(sl, entry_price * 0.95), 8)
                                     else:
-                                        above = [(p, u) for p, u in heatmap.items()
-                                                 if p > cur_price and u >= 10_000]
-                                        if above:
-                                            liq_tp = max(above, key=lambda x: x[1])[0]
-                                            tp = round(liq_tp * 0.998, 8)
+                                        sl = round(min(sl, entry_price * 1.05), 8)
+
+                                    # ── TP: cluster lớn nhất USD phía target ──
+                                    heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
+                                    if best.signal == "LONG":
+                                        tp_cluster = liq_source.get_best_entry_cluster(
+                                            symbol        = best.symbol,
+                                            current_price = entry_price,
+                                            direction     = "SHORT",
+                                            min_usd       = 10_000,
+                                            cluster_gap_pct = 0.012,
+                                        )
+                                        if tp_cluster and tp_cluster["entry"] > entry_price:
+                                            tp = round(tp_cluster["cluster_low"] * 0.999, 8)
                                         else:
-                                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
-                                else:  # SHORT
-                                    tp_cluster = liq_source.get_best_entry_cluster(
-                                        symbol        = best.symbol,
-                                        current_price = entry_price,
-                                        direction     = "LONG",
-                                        min_usd       = 10_000,
-                                        cluster_gap_pct = 0.012,
-                                    )
-                                    if tp_cluster and tp_cluster["entry"] < entry_price:
-                                        tp = round(tp_cluster["cluster_high"] * 1.001, 8)
-                                    else:
-                                        below = [(p, u) for p, u in heatmap.items()
-                                                 if p < cur_price and u >= 10_000]
-                                        if below:
-                                            liq_tp = min(below, key=lambda x: -x[1])[0]
-                                            tp = round(liq_tp * 1.002, 8)
+                                            above = [(p, u) for p, u in heatmap.items()
+                                                     if p > cur_price and u >= 10_000]
+                                            if above:
+                                                liq_tp = max(above, key=lambda x: x[1])[0]
+                                                tp = round(liq_tp * 0.998, 8)
+                                            else:
+                                                tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                                    else:  # SHORT
+                                        tp_cluster = liq_source.get_best_entry_cluster(
+                                            symbol        = best.symbol,
+                                            current_price = entry_price,
+                                            direction     = "LONG",
+                                            min_usd       = 10_000,
+                                            cluster_gap_pct = 0.012,
+                                        )
+                                        if tp_cluster and tp_cluster["entry"] < entry_price:
+                                            tp = round(tp_cluster["cluster_high"] * 1.001, 8)
                                         else:
-                                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+                                            below = [(p, u) for p, u in heatmap.items()
+                                                     if p < cur_price and u >= 10_000]
+                                            if below:
+                                                liq_tp = min(below, key=lambda x: -x[1])[0]
+                                                tp = round(liq_tp * 1.002, 8)
+                                            else:
+                                                tp = round(entry_price - (sl - entry_price) * 3.0, 8)
 
                                 # ── Validate RR ──────────────────────────
                                 risk   = abs(entry_price - sl)
@@ -2193,8 +2191,11 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "LONG",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
+                    # near_zone phải < cur_p (phía dưới giá) và > entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster and near_cluster["entry"] > entry_price
+                                 if near_cluster
+                                 and near_cluster["entry"] < cur_p   # đúng phía
+                                 and near_cluster["entry"] > entry_price  # gần hơn deep
                                  else None)
                     deep_zone = entry_price
                 else:
@@ -2202,8 +2203,11 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "SHORT",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
+                    # near_zone phải > cur_p (phía trên giá) và < entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster and near_cluster["entry"] < entry_price
+                                 if near_cluster
+                                 and near_cluster["entry"] > cur_p   # đúng phía
+                                 and near_cluster["entry"] < entry_price  # gần hơn deep
                                  else None)
                     deep_zone = entry_price
 
