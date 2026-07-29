@@ -1831,7 +1831,7 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
         logger.error(f"[FastSpike] LONG execute {symbol}: {e}")
 
 
-
+def scan_engine(exchange, notifier):
     _spike_symbol = None   # coin được wake up sớm bởi spike detector
 
     while state["running"]:
