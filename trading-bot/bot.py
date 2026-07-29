@@ -365,6 +365,14 @@ _SPIKE_MIN_PCT      = 3.0   # tăng >= 3% trong 5s → nghi ngờ pump
 _SPIKE_CONFIRM_PCT  = 5.0   # tăng >= 5% trong 5s → xác nhận, SHORT ngay không cần indicators
 _SPIKE_COOLDOWN_SEC = 120   # 2 phút không spam cùng coin
 
+# ── Dump detector — phát hiện dump nhanh để SHORT sớm ──
+# Dùng chung WS price history, KHÔNG cần REST call thêm
+_DUMP_WINDOW_SEC    = 30    # cửa sổ 30s để tính % drop
+_DUMP_MIN_PCT       = 3.0   # drop >= 3% trong 30s → nghi ngờ dump
+_DUMP_CONFIRM_PCT   = 5.0   # drop >= 5% → SHORT ngay (không cần indicators)
+_DUMP_COOLDOWN_SEC  = 120   # 2 phút cooldown
+_dump_tracker: dict = {}    # {symbol: {"alert_ts": float, "ws_low": float}}
+
 
 def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
     """
@@ -1556,7 +1564,276 @@ def scan_position_protector(exchange, notifier):
             logger.error(f"[ScanProtector] Loop error: {e}")
 
         _time.sleep(15)
-def scan_engine(exchange, notifier):
+
+# ── Interruptible sleep: wake up sớm khi phát hiện spike giá ──────────────
+# Dùng giá WS đã có trong state["prices"] — không tốn API call
+# Trả về symbol bị spike (để scan ngay), hoặc None nếu hết thời gian
+_spike_price_baseline: dict = {}   # {symbol: (price, timestamp)}
+
+def _wait_or_spike(total_seconds: float, check_interval: float = 2,
+                   spike_pct: float = 3.0, dump_pct: float = 2.5):
+    """
+    Sleep tối đa total_seconds giây, nhưng wake up sớm nếu:
+    - Có coin trong FIXED_COINS pump  >= spike_pct% so với baseline  -> SHORT alert
+    - Có coin trong FIXED_COINS dump  >= dump_pct% so với baseline   -> LONG alert
+
+    Baseline reset mỗi đầu chu kỳ scan.
+    Trả về symbol bị spike/dump, hoặc None nếu hết giờ bình thường.
+    """
+    global _spike_price_baseline
+
+    with lock:
+        current_prices = dict(state.get("prices", {}))
+        fixed_coins    = list(getattr(config, "FIXED_COINS", []))
+        open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                     if abs(float(p.get("positionAmt", 0))) > 0}
+
+    _spike_price_baseline = {
+        sym: current_prices[sym]
+        for sym in fixed_coins
+        if sym in current_prices and sym not in open_syms
+    }
+
+    elapsed = 0.0
+    while elapsed < total_seconds:
+        time.sleep(check_interval)
+        elapsed += check_interval
+
+        with lock:
+            latest_prices = dict(state.get("prices", {}))
+            open_syms_now = {p["symbol"] for p in state.get("open_positions", [])
+                             if abs(float(p.get("positionAmt", 0))) > 0}
+
+        for sym, base_price in _spike_price_baseline.items():
+            if sym in open_syms_now:
+                continue
+            cur = latest_prices.get(sym, 0)
+            if base_price <= 0 or cur <= 0:
+                continue
+            chg_pct = (cur - base_price) / base_price * 100
+            if chg_pct >= spike_pct:
+                logger.info(f"[SpikeDet] {sym} pump +{chg_pct:.1f}% in {elapsed:.0f}s — wake up scan")
+                return sym
+            if chg_pct <= -dump_pct:
+                logger.info(f"[SpikeDet] {sym} dump {chg_pct:.1f}% in {elapsed:.0f}s — wake up scan")
+                return sym
+
+    return None
+
+
+def _fast_spike_scan(symbol: str, exchange, notifier) -> None:
+    """
+    Fast scan 1 coin khi spike detector wake up scan_engine sớm.
+    - Pump >= 3%  → check SHORT (dùng pump_detector)
+    - Dump >= 2.5% → check LONG (RSI oversold + volume spike + reversal candle)
+    Chỉ tốn 2 API call klines — an toàn rate limit.
+    """
+    try:
+        from pump_detector import PumpDetector, _to_df
+        from indicators import calculate_rsi, calculate_atr, calculate_ema
+
+        klines_1m  = exchange.get_klines(symbol, "1m",  limit=60)
+        klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+        df_1m      = _to_df(klines_1m)
+        df_15m     = _to_df(klines_15m)
+
+        cur_price  = df_1m["close"].iloc[-1]
+        base_price = _spike_price_baseline.get(symbol, cur_price)
+        chg_pct    = (cur_price - base_price) / base_price * 100 if base_price > 0 else 0
+
+        with lock:
+            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                         if abs(float(p.get("positionAmt", 0))) > 0}
+        if symbol in open_syms:
+            return
+
+        # ── SHORT path: coin đang pump ──────────────────────────
+        if chg_pct >= 3.0:
+            detector = PumpDetector(config)
+            sig = detector.analyze(symbol, df_1m, df_15m)
+            if sig and sig.is_pump_top:
+                logger.info(f"[FastSpike] SHORT {symbol} pump={chg_pct:.1f}% score={sig.score}")
+                _execute_spike_short(symbol, sig, exchange, notifier)
+            else:
+                score = sig.score if sig else 0
+                logger.info(f"[FastSpike] {symbol} pump +{chg_pct:.1f}% score={score} chua du")
+
+        # ── LONG path: coin đang dump mạnh ──────────────────────
+        elif chg_pct <= -2.5:
+            rsi = calculate_rsi(df_1m["close"], 14).iloc[-1]
+            vol = df_1m["volume"]
+            vol_ma = vol.rolling(20).mean().iloc[-1]
+            vol_ratio = vol.iloc[-1] / vol_ma if vol_ma > 0 else 1.0
+
+            last = df_1m.iloc[-1]
+            rng  = last["high"] - last["low"]
+            lower_wick = min(last["close"], last["open"]) - last["low"]
+            lower_wick_ratio = lower_wick / rng if rng > 0 else 0
+            reversal_candle = (
+                last["close"] > last["open"]
+                or lower_wick_ratio >= 0.4
+            )
+
+            long_score = 0
+            reasons = []
+            if rsi <= 35:
+                long_score += 40
+                reasons.append(f"RSI={rsi:.0f} oversold")
+            elif rsi <= 42:
+                long_score += 20
+                reasons.append(f"RSI={rsi:.0f} near oversold")
+            if vol_ratio >= 2.0:
+                long_score += 30
+                reasons.append(f"Vol {vol_ratio:.1f}x spike")
+            elif vol_ratio >= 1.5:
+                long_score += 15
+                reasons.append(f"Vol {vol_ratio:.1f}x")
+            if reversal_candle:
+                long_score += 20
+                reasons.append("Reversal candle")
+            if abs(chg_pct) >= 5.0:
+                long_score += 10
+                reasons.append(f"Dump {chg_pct:.1f}%")
+
+            logger.info(f"[FastSpike] LONG check {symbol} dump={chg_pct:.1f}% RSI={rsi:.0f} vol={vol_ratio:.1f}x score={long_score}")
+
+            if long_score >= 60:
+                atr = calculate_atr(df_1m["high"], df_1m["low"], df_1m["close"], 14).iloc[-1]
+                sl  = round(cur_price - atr * 2.0, 8)
+                tp  = round(cur_price + atr * 4.0, 8)
+                rr  = (tp - cur_price) / (cur_price - sl) if (cur_price - sl) > 0 else 0
+                if rr >= 1.5:
+                    _execute_spike_long(symbol, cur_price, sl, tp, long_score, reasons, exchange, notifier)
+                else:
+                    logger.info(f"[FastSpike] {symbol} LONG RR={rr:.1f} < 1.5, skip")
+            else:
+                logger.info(f"[FastSpike] {symbol} dump {chg_pct:.1f}% long_score={long_score} chua du 60")
+
+    except Exception as e:
+        logger.error(f"[FastSpike] {symbol} error: {e}")
+
+
+def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
+    """Vào SHORT nhanh cho coin spike."""
+    try:
+        exchange.set_leverage(symbol, config.LEVERAGE)
+        cur_price = exchange.get_ticker_price(symbol)
+        if not cur_price or cur_price <= 0:
+            cur_price = sig.entry_price
+
+        from qty_utils import calc_qty_precise
+        qty, _ = calc_qty_precise(exchange, symbol, config.MAX_ORDER_USDT, config.LEVERAGE, cur_price)
+        if qty * cur_price < 5.0:
+            return
+
+        exchange.place_market_order(symbol, "SELL", qty)
+        time.sleep(0.8)
+
+        sl_ok = False
+        for _a in range(3):
+            try:
+                exchange.place_stop_loss_order(symbol, "BUY", qty, sig.sl_price)
+                sl_ok = True
+                break
+            except Exception:
+                time.sleep(0.5)
+        if not sl_ok:
+            exchange.place_market_order(symbol, "BUY", qty)
+            return
+
+        try:
+            exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
+        except Exception:
+            pass
+
+        with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": "SHORT",
+                "entry": cur_price, "sl": sig.sl_price, "tp": sig.tp1_price,
+                "qty": qty, "status": "OPEN", "note": f"spike_short_s{sig.score}",
+            })
+            state.setdefault("pump_trade_symbols", set()).add(symbol)
+
+        notifier.telegram.send(
+            f"⚡ <b>SPIKE SHORT — Fast Entry</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
+            f"💰 Entry : <b>${cur_price:,.6g}</b>  [MARKET]\n"
+            f"🛑 SL    : <b>${sig.sl_price:,.6g}</b>\n"
+            f"🎯 TP    : <b>${sig.tp1_price:,.6g}</b>\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(f"[FastSpike] SHORT placed: {symbol} @ {cur_price}")
+    except Exception as e:
+        logger.error(f"[FastSpike] SHORT execute {symbol}: {e}")
+
+
+def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
+                        score: int, reasons: list, exchange, notifier) -> None:
+    """Vào LONG nhanh khi coin dump mạnh và đủ điều kiện bắt đáy."""
+    try:
+        exchange.set_leverage(symbol, config.LEVERAGE)
+
+        from qty_utils import calc_qty_precise
+        qty, _ = calc_qty_precise(exchange, symbol, config.MAX_ORDER_USDT, config.LEVERAGE, cur_price)
+        if qty * cur_price < 5.0:
+            return
+
+        with lock:
+            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                         if abs(float(p.get("positionAmt", 0))) > 0}
+        if symbol in open_syms:
+            return
+
+        exchange.place_market_order(symbol, "BUY", qty)
+        time.sleep(0.8)
+
+        sl_ok = False
+        for _a in range(3):
+            try:
+                exchange.place_stop_loss_order(symbol, "SELL", qty, sl)
+                sl_ok = True
+                break
+            except Exception:
+                time.sleep(0.5)
+        if not sl_ok:
+            exchange.place_market_order(symbol, "SELL", qty)
+            return
+
+        try:
+            exchange.place_take_profit_order(symbol, "SELL", qty, tp)
+        except Exception:
+            pass
+
+        rr = (tp - cur_price) / (cur_price - sl) if (cur_price - sl) > 0 else 0
+        with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": "LONG",
+                "entry": cur_price, "sl": sl, "tp": tp,
+                "qty": qty, "status": "OPEN", "note": f"spike_long_s{score}",
+            })
+
+        notifier.telegram.send(
+            f"⚡ <b>SPIKE LONG — Bat Day Fast</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {symbol}  Score {score}/100\n"
+            f"📉 Dump manh — {' | '.join(reasons[:3])}\n"
+            f"💰 Entry : <b>${cur_price:,.6g}</b>  [MARKET]\n"
+            f"🛑 SL    : <b>${sl:,.6g}</b>\n"
+            f"🎯 TP    : <b>${tp:,.6g}</b>\n"
+            f"📐 RR    : 1:{rr:.1f}\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(f"[FastSpike] LONG placed: {symbol} @ {cur_price} SL={sl} TP={tp}")
+    except Exception as e:
+        logger.error(f"[FastSpike] LONG execute {symbol}: {e}")
+
+
+
+    _spike_symbol = None   # coin được wake up sớm bởi spike detector
+
     while state["running"]:
         try:
             with lock:
@@ -1565,19 +1842,29 @@ def scan_engine(exchange, notifier):
             if time.time() - last_loss_time < cooldown:
                 wait = int(cooldown - (time.time() - last_loss_time))
                 logger.info(f"Cooldown sau lỗ: còn {wait}s")
-                time.sleep(config.LOOP_INTERVAL_SECONDS)
+                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
                 continue
 
             with lock:
                 n_open = len(state.get("open_positions", []))
             if n_open >= config.MAX_OPEN_POSITIONS:
                 logger.info(f"Max positions ({n_open}/{config.MAX_OPEN_POSITIONS}), skip scan")
-                time.sleep(config.LOOP_INTERVAL_SECONDS)
+                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
                 continue
 
             with lock:
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
+
+            # ── Fast path: nếu spike detector phát hiện coin cụ thể ──────────
+            # Chỉ scan coin đó ngay, không scan toàn bộ watchlist
+            if _spike_symbol:
+                logger.info(f"[ScanEngine] ⚡ Fast scan spike coin: {_spike_symbol}")
+                _spike_symbol = _fast_spike_scan(_spike_symbol, exchange, notifier)
+                # Reset và tiếp tục vòng lặp bình thường (không full scan ngay)
+                _spike_symbol = None
+                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
+                continue
 
             best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
@@ -1991,7 +2278,11 @@ def scan_engine(exchange, notifier):
             notifier.telegram.send(f"⚠️ Bot error: {e}")
             time.sleep(60)
 
-        time.sleep(config.LOOP_INTERVAL_SECONDS)
+        # ── Interruptible sleep: thay vì sleep 60s cứng,
+        # check giá WS mỗi 2s — nếu coin nào spike mạnh thì wake up ngay ──
+        _spike_wake = _wait_or_spike(config.LOOP_INTERVAL_SECONDS, check_interval=2)
+        if _spike_wake:
+            logger.info(f"[ScanEngine] ⚡ Spike detected: {_spike_wake} — wake up early")
 
 # ============================================================
 # THREAD 2c: Pump Scan Engine — quét đỉnh pump để SHORT
