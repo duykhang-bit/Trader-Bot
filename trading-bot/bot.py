@@ -2042,9 +2042,22 @@ def scan_engine(exchange, notifier):
                                                f"dist={cluster['dist_pct']:.1f}%)")
                             else:
                                 # ── Entry: tại ĐÚNG vùng liq ──────────────
-                                # SHORT: entry = đáy cluster (giá pump lên chạm là vào)
-                                # LONG:  entry = đỉnh cluster (giá dump xuống chạm là vào)
+                                # LONG:  entry = đỉnh cluster phía DƯỚI giá (giá dump xuống chạm là vào)
+                                # SHORT: entry = đáy cluster phía TRÊN giá (giá pump lên chạm là vào)
                                 entry_price = cluster["entry"]
+
+                                # Safety validate: entry phải đúng phía so với giá hiện tại
+                                # LONG: entry phải < cur_price (cluster phía dưới)
+                                # SHORT: entry phải > cur_price (cluster phía trên)
+                                if best.signal == "LONG" and entry_price >= cur_price:
+                                    skip_reason = (f"Entry LONG {entry_price:.4f} >= giá hiện tại "
+                                                   f"{cur_price:.4f} — cluster sai phía")
+                                elif best.signal == "SHORT" and entry_price <= cur_price:
+                                    skip_reason = (f"Entry SHORT {entry_price:.4f} <= giá hiện tại "
+                                                   f"{cur_price:.4f} — cluster sai phía")
+
+                                if skip_reason:
+                                    pass  # sẽ bị skip ở validate RR bên dưới
 
                                 # ── SL: ngoài cluster + buffer ────────────
                                 sl = cluster["sl_zone"]
