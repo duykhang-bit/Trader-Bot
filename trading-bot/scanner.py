@@ -238,8 +238,20 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         # SHORT: chỉ short khi RSI >= 40
         if signal == "SHORT" and rsi < 40:
             return None
-        if signal == "LONG" and rsi > 60:
+
+        # LONG RSI filter: nới lỏng cho coin pump mạnh (pullback sau pump)
+        # Sau pump +20%, RSI vẫn > 60 khi đang ở đáy pullback → không block
+        # Chỉ block khi RSI > 70 (thực sự overbought) hoặc
+        # RSI > 60 nhưng giá không giảm (không phải pullback)
+        if signal == "LONG" and rsi > 70:
             return None
+        if signal == "LONG" and rsi > 60:
+            # Cho phép nếu giá đang pullback (giá hiện tại < nến trước 3 nến)
+            price_3_bars_ago = close.iloc[-4] if len(close) >= 4 else close.iloc[0]
+            is_pulling_back = current_price < price_3_bars_ago * 0.998
+            if not is_pulling_back:
+                return None
+
         # Kiểm tra giá đang gần recent high/low (20 nến)
         recent_high = high.rolling(20).max().iloc[-1]
         recent_low  = low.rolling(20).min().iloc[-1]
@@ -248,7 +260,10 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             price_pos = (current_price - recent_low) / price_range
             if signal == "SHORT" and price_pos < 0.4:
                 return None
-            if signal == "LONG" and price_pos > 0.6:
+            # Nới lỏng price_pos filter cho LONG:
+            # Sau pump mạnh, range 20 nến rất rộng → đáy pullback vẫn > 0.6
+            # Chỉ block khi giá thực sự ở đỉnh range (> 0.80)
+            if signal == "LONG" and price_pos > 0.80:
                 return None
 
         # --- Chấm điểm ---

@@ -838,6 +838,16 @@ def price_ws_streamer():
     _ws_exchange_ref  = [None]
     _ws_notifier_ref  = [None]
 
+    # Khởi tạo ScanPriceMonitor singleton cho scan coins
+    from ws_price_monitor import get_scan_monitor
+    _scan_monitor = get_scan_monitor(
+        symbols     = list(getattr(config, "FIXED_COINS", WATCHLIST)),
+        window_sec  = 30,    # cửa sổ 30s
+        drop_pct    = 2.5,   # dump >= 2.5% → wake up LONG check
+        bounce_pct  = 2.0,   # bounce >= 2.0% → wake up breakout check
+        cooldown_sec = 90,   # 90s cooldown mỗi coin
+    )
+
     def on_message(wsapp, message):
         try:
             data    = _json.loads(message)
@@ -847,6 +857,10 @@ def price_ws_streamer():
             if sym and mark > 0:
                 with lock:
                     state["prices"][sym] = mark
+
+                # ── SCAN PRICE MONITOR — phát hiện dump/bounce cho scan engine ──
+                # Chỉ forward tick cho monitor, không chạy indicators ở đây
+                _scan_monitor.on_price_tick(sym, mark)
 
                 # ── PUMP SPIKE CHECK — chỉ coin trong pump_watch_coins ──
                 with lock:
@@ -1834,6 +1848,10 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
 def scan_engine(exchange, notifier):
     _spike_symbol = None   # coin được wake up sớm bởi spike detector
 
+    # Lấy ScanPriceMonitor (đã được khởi tạo trong price_ws_streamer)
+    from ws_price_monitor import get_scan_monitor
+    _scan_monitor = get_scan_monitor()
+
     while state["running"]:
         try:
             with lock:
@@ -1842,29 +1860,22 @@ def scan_engine(exchange, notifier):
             if time.time() - last_loss_time < cooldown:
                 wait = int(cooldown - (time.time() - last_loss_time))
                 logger.info(f"Cooldown sau lỗ: còn {wait}s")
-                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
+                _scan_monitor.wait_for_signal(timeout=min(wait, config.LOOP_INTERVAL_SECONDS))
                 continue
 
             with lock:
                 n_open = len(state.get("open_positions", []))
             if n_open >= config.MAX_OPEN_POSITIONS:
                 logger.info(f"Max positions ({n_open}/{config.MAX_OPEN_POSITIONS}), skip scan")
-                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
+                _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                 continue
 
             with lock:
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
 
-            # ── Fast path: nếu spike detector phát hiện coin cụ thể ──────────
-            # Chỉ scan coin đó ngay, không scan toàn bộ watchlist
-            if _spike_symbol:
-                logger.info(f"[ScanEngine] ⚡ Fast scan spike coin: {_spike_symbol}")
-                _spike_symbol = _fast_spike_scan(_spike_symbol, exchange, notifier)
-                # Reset và tiếp tục vòng lặp bình thường (không full scan ngay)
-                _spike_symbol = None
-                _spike_symbol = _wait_or_spike(config.LOOP_INTERVAL_SECONDS)
-                continue
+            # ── Fast path: đã được thay bằng ScanPriceMonitor ở cuối vòng lặp ──
+            # (wake up sớm qua ws_signal ở dưới)
 
             best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
@@ -1876,14 +1887,14 @@ def scan_engine(exchange, notifier):
                                  if abs(float(p.get("positionAmt", 0))) > 0}
                 if best.symbol in open_syms:
                     logger.info(f"Skip {best.symbol}: already has open position")
-                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
                 try:
                     pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     pending_syms = {o["symbol"] for o in pending_orders if not o.get("reduceOnly", False)}
                     if best.symbol in pending_syms:
                         logger.info(f"Skip {best.symbol}: already has pending order")
-                        time.sleep(config.LOOP_INTERVAL_SECONDS)
+                        _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                         continue
                 except Exception:
                     pass
@@ -2178,7 +2189,7 @@ def scan_engine(exchange, notifier):
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
-                    time.sleep(config.LOOP_INTERVAL_SECONDS)
+                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 
                 # ── 2 lệnh LIMIT đồng thời ──────────────────────────────
@@ -2327,11 +2338,25 @@ def scan_engine(exchange, notifier):
             notifier.telegram.send(f"⚠️ Bot error: {e}")
             time.sleep(60)
 
-        # ── Interruptible sleep: thay vì sleep 60s cứng,
-        # check giá WS mỗi 2s — nếu coin nào spike mạnh thì wake up ngay ──
-        _spike_wake = _wait_or_spike(config.LOOP_INTERVAL_SECONDS, check_interval=2)
-        if _spike_wake:
-            logger.info(f"[ScanEngine] ⚡ Spike detected: {_spike_wake} — wake up early")
+        # ── Smart sleep: thay vì sleep 60s cứng,
+        # dùng ScanPriceMonitor để wake up sớm khi có dump/bounce mạnh.
+        # Pump spike checker (_wait_or_spike) vẫn giữ nguyên cho pump coins.
+        # ScanPriceMonitor chỉ dành cho FIXED_COINS / scan thường.
+        ws_signal = _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
+        if ws_signal:
+            sym_wake, direction_wake, chg_wake = ws_signal
+            logger.info(
+                f"[ScanEngine] ⚡ WS wake up: {sym_wake} {direction_wake} "
+                f"{chg_wake:+.1f}% — fast scan ngay"
+            )
+            # Fast scan coin đó ngay (dùng lại _fast_spike_scan với logic LONG/dump)
+            try:
+                _fast_spike_scan(sym_wake, exchange, notifier)
+            except Exception as _e:
+                logger.debug(f"[ScanEngine] fast scan {sym_wake}: {_e}")
+            # Reset cooldown để lần sau không bị block
+            _scan_monitor.reset_cooldown(sym_wake)
+        # Nếu hết timeout mà không có signal → vòng lặp tiếp theo (full scan)
 
 # ============================================================
 # THREAD 2c: Pump Scan Engine — quét đỉnh pump để SHORT

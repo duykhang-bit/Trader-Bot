@@ -182,6 +182,7 @@ def get_signal_high_vol(df: pd.DataFrame, config) -> str:
     if cur_hist > 0 and cur_hist > prev_hist:
         long_score += 2
     elif cur_hist > prev_hist:
+        # Hist âm nhưng đang tăng dần (recovering) → momentum bắt đầu đảo chiều
         long_score += 1
 
     if long_score >= 3 and vol_ok:
@@ -213,6 +214,7 @@ def get_signal_high_vol(df: pd.DataFrame, config) -> str:
     if cur_hist < 0 and cur_hist < prev_hist:
         short_score += 2
     elif cur_hist < prev_hist:
+        # Hist dương nhưng đang giảm dần (weakening) → momentum đảo chiều xuống
         short_score += 1
 
     if short_score >= 3 and vol_ok:
@@ -431,8 +433,9 @@ def get_smart_entry_signal(df_15m: pd.DataFrame, df_1m: pd.DataFrame,
             score += 10
             reasons.append("15m MACD↑")
         elif hist_15c > hist_15p:
-            score += 5
-            reasons.append("15m MACD turning↑")
+            # Hist âm nhưng đang recover → momentum đảo chiều lên
+            score += 7
+            reasons.append("15m MACD recovering↑")
 
         # Giá trên EMA50 (major trend)
         if p15 > e50_15:
@@ -461,8 +464,9 @@ def get_smart_entry_signal(df_15m: pd.DataFrame, df_1m: pd.DataFrame,
             score += 10
             reasons.append("15m MACD↓")
         elif hist_15c < hist_15p:
-            score += 5
-            reasons.append("15m MACD turning↓")
+            # Hist dương nhưng đang yếu dần → momentum đảo chiều xuống
+            score += 7
+            reasons.append("15m MACD weakening↓")
 
         if p15 < e50_15:
             score += 10
@@ -698,8 +702,14 @@ def compute_signal_score(df_15m: pd.DataFrame, df_1h: pd.DataFrame,
     # MACD
     if cur_hist > 0 and cur_hist > prev_hist:
         long_reasons.append("MACD↑")
+    elif cur_hist < 0 and cur_hist > prev_hist:
+        # Hist âm nhưng đang tăng dần → momentum đang recover → tín hiệu LONG
+        long_reasons.append("MACD recovering↑")
     elif cur_hist < 0 and cur_hist < prev_hist:
         short_reasons.append("MACD↓")
+    elif cur_hist > 0 and cur_hist < prev_hist:
+        # Hist dương nhưng đang giảm dần → momentum yếu dần → tín hiệu SHORT nhẹ
+        short_reasons.append("MACD weakening↓")
     
     # Bollinger Band
     if price <= bb_lo.iloc[-1] * 1.005:
