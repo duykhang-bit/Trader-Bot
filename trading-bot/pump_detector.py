@@ -129,6 +129,16 @@ class PumpSignal:
             f"⚠️ <i>Dev pump — dùng size nhỏ, SL theo ATR</i>"
         )
 
+    def to_telegram_markup(self) -> dict:
+        """Inline keyboard để vào lệnh SHORT tay ngay từ Telegram."""
+        sym = self.symbol.replace("USDT", "")
+        return {
+            "inline_keyboard": [[
+                {"text": f"🔴 SHORT {sym} NOW", "callback_data": f"pump_short:{self.symbol}:{self.entry_price:.8g}:{self.sl_price:.8g}:{self.tp1_price:.8g}"},
+                {"text": "⏭ Bỏ qua", "callback_data": f"pump_skip:{self.symbol}"},
+            ]]
+        }
+
 
 # ─────────────────────────────────────────────────────────────
 # CORE DETECTOR
@@ -786,7 +796,10 @@ def scan_for_pump_tops(exchange,
                 confirmed.append(sig)
                 if notifier:
                     try:
-                        notifier.telegram.send(sig.to_telegram())
+                        notifier.telegram.send(
+                            sig.to_telegram(),
+                            reply_markup=sig.to_telegram_markup()
+                        )
                         logger.info(f"[PumpScan] Alert sent: {symbol}")
                     except Exception as e:
                         logger.warning(f"[PumpScan] Telegram failed: {e}")

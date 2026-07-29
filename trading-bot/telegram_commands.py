@@ -1517,6 +1517,28 @@ class TelegramCommandHandler:
                                 else:
                                     self.send(f"ℹ️ {target} đã có SL/TP hoặc không có position")
 
+                    elif data.startswith("pump_short:"):
+                        # Format: pump_short:BULLAUSDT:0.0176881:0.0181478:0.0168183
+                        parts_cb = data.split(":")
+                        if len(parts_cb) >= 5:
+                            sym      = parts_cb[1]
+                            entry_p  = float(parts_cb[2])
+                            sl_p     = float(parts_cb[3])
+                            tp_p     = float(parts_cb[4])
+                            self.send(f"⏳ Đang đặt lệnh SHORT <b>{sym}</b> @ ${entry_p:,.6g}...")
+                            t = threading.Thread(
+                                target=self._execute_trade_from_callback,
+                                args=("SHORT", sl_p, tp_p, sym),
+                                daemon=True
+                            )
+                            t.start()
+                        else:
+                            self.send("❌ Callback data lỗi định dạng")
+
+                    elif data.startswith("pump_skip:"):
+                        sym = data.split(":")[1] if ":" in data else ""
+                        self.send(f"⏭ Đã bỏ qua {sym}")
+
                     elif data == "cancel_trade":
                         self.send("❌ <b>Đã hủy.</b>")
 
