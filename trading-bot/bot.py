@@ -360,9 +360,9 @@ def dashboard_updater():
 # ── Pump spike tracker — theo dõi % thay đổi giá theo thời gian ──
 # {symbol: {"prices": [deque of (ts, price)], "alerted": bool, "alert_ts": float}}
 _pump_spike_tracker: dict = {}
-_SPIKE_WINDOW_SEC   = 10    # cửa sổ 10 giây để tính % tăng
-_SPIKE_MIN_PCT      = 3.0   # tăng >= 3% trong 10s → nghi ngờ pump
-_SPIKE_CONFIRM_PCT  = 6.0   # tăng >= 6% → xác nhận luôn, không cần indicators
+_SPIKE_WINDOW_SEC   = 5     # cửa sổ 5 giây — dev pump xảy ra trong vài giây
+_SPIKE_MIN_PCT      = 3.0   # tăng >= 3% trong 5s → nghi ngờ pump
+_SPIKE_CONFIRM_PCT  = 5.0   # tăng >= 5% trong 5s → xác nhận, SHORT ngay không cần indicators
 _SPIKE_COOLDOWN_SEC = 120   # 2 phút không spam cùng coin
 
 
@@ -446,12 +446,78 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
       Tầng 2 — Order Book : ask wall áp đảo bid wall (dev đang xả)
       Tầng 3 — PumpDetect : volume kiệt sức + wick rejection + RSI div
     Cần >= 2/3 tầng pass → alert. Cần 3/3 → auto short.
+
+    FAST PATH: spike >= _SPIKE_CONFIRM_PCT (5%) trong 5s → SHORT ngay
+    không chờ klines/indicators — dev pump đỉnh tồn tại vài giây.
     """
     import time as _t
     from pump_detector import PumpDetector, _to_df
     from orderbook_detector import get_ob_tracker, confirm_pump_top
 
     try:
+        # ── FAST PATH: spike >= 5% trong 5s → SHORT ngay, không chờ klines ──
+        # Dev pump đỉnh chỉ tồn tại 3-10 giây
+        # Chờ klines REST (300-500ms) + indicators là đã trễ
+        auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
+        if auto_short and spike_pct >= _SPIKE_CONFIRM_PCT:
+            with lock:
+                open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                             if abs(float(p.get("positionAmt", 0))) > 0}
+                n_open = len(state.get("open_positions", []))
+
+            if sym not in open_syms and n_open < config.MAX_OPEN_POSITIONS:
+                try:
+                    cur_price = trigger_price  # dùng WS price, không gọi REST
+                    ws_high   = _pump_spike_tracker.get(sym, {}).get("ws_high", cur_price)
+
+                    exchange_ref.set_leverage(sym, config.LEVERAGE)
+                    qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_price
+                    try:
+                        step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
+                        qty = max(round(int(qty / step) * step, decimals), step)
+                    except Exception:
+                        qty = round(qty, 3)
+
+                    if qty * cur_price >= 5.0:
+                        # SL chặt: 2% trên đỉnh WS (không phải trigger_price)
+                        sl_price = round(ws_high * 1.02, 8)
+                        # TP: -10% từ entry (pump thường xả nhanh 10-20%)
+                        tp_price = round(cur_price * 0.90, 8)
+
+                        exchange_ref.place_market_order(sym, "SELL", qty)
+                        _t.sleep(0.3)
+                        try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sl_price)
+                        except Exception as e: logger.error(f"[FastShort] SL {sym}: {e}")
+                        try: exchange_ref.place_take_profit_order(sym, "BUY", qty, tp_price)
+                        except Exception as e: logger.error(f"[FastShort] TP {sym}: {e}")
+
+                        rr = abs(cur_price - tp_price) / abs(sl_price - cur_price)
+                        with lock:
+                            state["trade_log"].append({
+                                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": "SHORT",
+                                "entry":  cur_price, "sl": sl_price, "tp": tp_price,
+                                "qty":    qty, "status": "OPEN",
+                                "note":   f"fast_spike_{spike_pct:.1f}pct",
+                            })
+                            state.setdefault("pump_trade_symbols", set()).add(sym)
+
+                        notifier_ref.telegram.send(
+                            f"⚡ <b>FAST SHORT — DEV PUMP</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🪙 {sym}  📈 <b>+{spike_pct:.1f}%</b> trong 5s\n"
+                            f"🔴 Entry : <b>${cur_price:,.6g}</b>  [MARKET]\n"
+                            f"🛑 SL    : <b>${sl_price:,.6g}</b>  (+2% đỉnh)\n"
+                            f"🎯 TP    : <b>${tp_price:,.6g}</b>  (-10%)\n"
+                            f"📐 RR    : 1:{rr:.1f}   📦 Qty: {qty}\n"
+                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[FastShort] SHORT placed: {sym} +{spike_pct:.1f}% qty={qty}")
+                        return  # Không cần chạy slow path nữa
+                except Exception as e:
+                    logger.error(f"[FastShort] {sym} failed: {e}")
+
+        # ── SLOW PATH: spike 3-5% → chạy 3-tier analysis như cũ ──
         # Lấy order book tracker (đã chạy sẵn)
         ob = get_ob_tracker(
             "wss://fstream.binance.com" if not config.USE_TESTNET
