@@ -2004,6 +2004,7 @@ def _api_pump_state_inner():
             "pump_pct":    effective_pump_pct if sig_d else (alert_d["pump_pct"] if alert_d else 0),
             "score":       effective_score if sig_d else (alert_d["score"] if alert_d else 0),
             "change_24h":  cache.get(sym, {}).get("change_pct", 0),
+            "change_raw":  cache.get(sym, {}).get("change_pct", 0),
             "is_top":      sig_d["is_pump_top"] if sig_d and not is_stale else False,
             # is_alert = True khi có signal pump bất kỳ (dù chưa là top)
             "is_alert":    (not sig_d["is_pump_top"] and effective_pump_pct > 2) if sig_d and not is_stale else bool(alert_d and not is_stale),
