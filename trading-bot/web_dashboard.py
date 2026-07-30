@@ -94,6 +94,22 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .toast-ok { background: #238636; color: #fff; } .toast-err { background: #da3633; color: #fff; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 768px) { .stats { grid-template-columns: repeat(2, 1fr); } .prices-grid { grid-template-columns: repeat(2, 1fr); } }
+/* ── Pump Nhẹ Radar ── */
+.pnhe-wrap { background: linear-gradient(135deg,#0d1117 0%,#0a0d14 100%); border: 1px solid #1a2a3d; border-radius: 12px; padding: 16px; }
+.pnhe-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
+.pnhe-title { display:flex; align-items:center; gap:10px; }
+.pnhe-dot { width:9px; height:9px; border-radius:50%; background:#388bfd; box-shadow:0 0 8px #388bfd; animation:pulseDot 1.4s ease-in-out infinite; }
+.pnhe-coin-list { display:flex; flex-direction:column; gap:6px; }
+.pnhe-card { background:#0d1117; border:1px solid #1a2a3d; border-radius:8px; padding:10px 12px; transition:border-color .3s; }
+.pnhe-card:hover { border-color:#30363d; }
+.pnhe-card.strong  { border-color:rgba(248,81,73,.45); background:rgba(248,81,73,.05); }
+.pnhe-card.medium  { border-color:rgba(210,153,34,.45); background:rgba(210,153,34,.04); }
+.pnhe-card.soft    { border-color:rgba(56,139,253,.4);  background:rgba(56,139,253,.04); }
+.pnhe-card.dump    { border-color:rgba(139,73,248,.35); background:rgba(139,73,248,.04); }
+.pnhe-card.flat    { border-color:#1a2a3d; }
+.pnhe-bar-wrap { background:#0a1420; border-radius:3px; height:5px; overflow:hidden; margin-top:5px; }
+.pnhe-bar-fill { height:100%; border-radius:3px; transition:width .5s; }
+.pnhe-empty { text-align:center; padding:32px 16px; color:#1a3a5a; border:1px dashed #1a2a3d; border-radius:8px; font-size:12px; }
 /* ── Pump Radar ── */
 .pump-radar-wrap { background: linear-gradient(135deg,#0d1117 0%,#110a14 100%); border: 1px solid #3d1a1a; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
 .pump-radar-wrap::before { content:''; position:absolute; inset:0; background:radial-gradient(ellipse at top left,rgba(248,81,73,.04) 0%,transparent 70%); pointer-events:none; }
@@ -314,6 +330,16 @@ function renderDashboard(d) {
         <div style="text-align:center;padding:24px;color:#484f58">
           <div style="font-size:28px;margin-bottom:6px">📡</div>
           <div>Đang tải Pump Radar...</div>
+        </div>
+      </div>
+    </div>`;
+
+    // ── PUMP NHẸ RADAR SECTION ───────────────────────────────
+    html += `<div class="section" style="padding:0;border-color:#1a2a3d">
+      <div id="pump-nhe-root" style="padding:16px">
+        <div style="text-align:center;padding:24px;color:#484f58">
+          <div style="font-size:24px;margin-bottom:6px">🔵</div>
+          <div>Đang tải Pump Nhẹ Radar...</div>
         </div>
       </div>
     </div>`;
@@ -675,6 +701,168 @@ async function clearTradeHistory() {
         }
     } catch(e) { alert('Lỗi: ' + e); }
 }
+
+// ── PUMP NHẸ RADAR ──────────────────────────────────────────
+let _pumpNheData = null;
+
+async function fetchPumpNhe() {
+    try {
+        const r = await fetch('/api/pump-nhe/state');
+        _pumpNheData = await r.json();
+        renderPumpNhe(_pumpNheData);
+    } catch(e) {}
+}
+
+async function addPumpNheCoin() {
+    const inp = document.getElementById('pnhe-coin-input');
+    let sym = (inp.value || '').trim().toUpperCase();
+    if (!sym) return;
+    if (!sym.endsWith('USDT')) sym += 'USDT';
+    const r = await apiPost('/api/pump-nhe/add', {symbol: sym});
+    if (r.ok) { inp.value = ''; fetchPumpNhe(); }
+}
+
+async function removePumpNheCoin(sym) {
+    await apiPost('/api/pump-nhe/remove', {symbol: sym});
+    fetchPumpNhe();
+}
+
+async function pumpNheManualLong(sym) {
+    const coin = (_pumpNheData && _pumpNheData.coins || []).find(c => c.symbol === sym);
+    const priceStr = coin && coin.price > 0 ? ` @ $${coin.price.toPrecision(5)}` : '';
+    if (!confirm(`▲ LONG tay ${sym}${priceStr}?\nSL/TP tự động từ chart. Dùng MAX_ORDER_USDT + LEVERAGE từ config.`)) return;
+    const r = await apiPost('/api/pump/coins/manual_long', {symbol: sym, usdt: 0, leverage: 0});
+    if (r.ok) toast(r.msg, true);
+}
+
+async function pumpNheManualShort(sym) {
+    const coin = (_pumpNheData && _pumpNheData.coins || []).find(c => c.symbol === sym);
+    const priceStr = coin && coin.price > 0 ? ` @ $${coin.price.toPrecision(5)}` : '';
+    if (!confirm(`▼ SHORT tay ${sym}${priceStr}?\nDùng MAX_ORDER_USDT + LEVERAGE từ config.`)) return;
+    const r = await apiPost('/api/order', {symbol: sym, side: 'SHORT', usdt: 0, sl: 0, tp: 0, leverage: 0});
+    if (r.ok) toast(r.msg, true);
+}
+
+function renderPumpNhe(d) {
+    const el = document.getElementById('pump-nhe-root');
+    if (!el || !d) return;
+
+    const coins = d.coins || [];
+
+    // level → màu / icon / text
+    const meta = {
+        strong: { col: '#f85149', bg: 'rgba(248,81,73,.1)',  icon: '🔴', txt: 'Pump mạnh'  },
+        medium: { col: '#d29922', bg: 'rgba(210,153,34,.1)', icon: '🟡', txt: 'Pump vừa'   },
+        soft:   { col: '#388bfd', bg: 'rgba(56,139,253,.1)', icon: '🔵', txt: 'Pump nhẹ'   },
+        dump:   { col: '#a371f7', bg: 'rgba(163,113,247,.1)',icon: '🟣', txt: 'Đang dump'  },
+        flat:   { col: '#484f58', bg: 'transparent',          icon: '⚫', txt: 'Đi ngang'   },
+    };
+
+    let html = `<div class="pnhe-wrap">`;
+
+    // Header
+    html += `
+    <div class="pnhe-header">
+      <div class="pnhe-title">
+        <div class="pnhe-dot"></div>
+        <span style="color:#388bfd;font-size:14px;font-weight:700;letter-spacing:2px">PUMP NHẸ RADAR</span>
+        <span style="color:#1a3a5a;font-size:11px">${coins.length} coin · refresh 5s</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input id="pnhe-coin-input" placeholder="BEATUSDT"
+               style="width:110px;font-size:11px;background:#0a0d14;border-color:#1a2a3d;color:#388bfd"
+               onkeydown="if(event.key==='Enter')addPumpNheCoin()">
+        <button class="btn btn-sm" onclick="addPumpNheCoin()"
+                style="background:#0d1a2a;color:#388bfd;border:1px solid #1a3a5a">+ Add</button>
+      </div>
+    </div>`;
+
+    // Legend
+    html += `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;font-size:10px">
+      <span style="color:#f85149">🔴 ≥20% pump mạnh</span>
+      <span style="color:#d29922">🟡 10-20% pump vừa</span>
+      <span style="color:#388bfd">🔵 3-10% pump nhẹ</span>
+      <span style="color:#a371f7">🟣 dump</span>
+      <span style="color:#484f58">⚫ đi ngang</span>
+    </div>`;
+
+    if (coins.length === 0) {
+        html += `
+        <div class="pnhe-empty">
+          🔵 Thêm coin để theo dõi pump nhẹ<br>
+          <span style="font-size:10px;color:#0d2040">BEAT · XRP · SOL · BNB · DOGE...</span>
+        </div>`;
+    } else {
+        html += `<div class="pnhe-coin-list">`;
+
+        coins.forEach(c => {
+            const m        = meta[c.level] || meta.flat;
+            const name     = c.symbol.replace('USDT', '');
+            const pStr     = c.price > 0 ? (c.price >= 1 ? '$' + c.price.toFixed(4) : '$' + c.price.toFixed(6)) : '—';
+            const chgSign  = c.change_pct >= 0 ? '+' : '';
+            const chgStr   = `${chgSign}${c.change_pct.toFixed(2)}%`;
+            const lowStr   = c.pump_from_low > 0 ? `↑${c.pump_from_low.toFixed(1)}% từ đáy` : '';
+            // Bar width: dựa trên % thay đổi, max 50% → full bar
+            const barPct   = Math.min(Math.abs(c.change_pct) / 50 * 100, 100);
+            const barCol   = c.level === 'dump' ? '#a371f7' : m.col;
+            const volStr   = c.volume_24h > 0
+                ? (c.volume_24h >= 1e9 ? `$${(c.volume_24h/1e9).toFixed(1)}B`
+                 : c.volume_24h >= 1e6 ? `$${(c.volume_24h/1e6).toFixed(0)}M`
+                 : `$${(c.volume_24h/1e3).toFixed(0)}K`)
+                : '';
+
+            html += `
+            <div class="pnhe-card ${c.level}">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+
+                <!-- Left: coin info -->
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span style="font-size:13px;font-weight:700;color:${m.col};min-width:52px">${name}</span>
+                  <span style="font-size:11px;color:#1a4a6a">${pStr}</span>
+                  <span style="font-size:12px;font-weight:700;color:${m.col}">${chgStr}</span>
+                  ${lowStr ? `<span style="font-size:10px;color:#1a5a3a">${lowStr}</span>` : ''}
+                  <span style="font-size:10px;color:${m.col};background:${m.bg};padding:1px 6px;border-radius:3px">${m.icon} ${m.txt}</span>
+                  ${volStr ? `<span style="font-size:10px;color:#1a3a5a">Vol ${volStr}</span>` : ''}
+                </div>
+
+                <!-- Right: buttons -->
+                <div style="display:flex;align-items:center;gap:5px">
+                  ${c.level !== 'dump' && c.level !== 'flat' ? `
+                  <button onclick="pumpNheManualLong('${c.symbol}')"
+                          style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:4px;
+                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▲ LONG</button>` : ''}
+                  <button onclick="pumpNheManualShort('${c.symbol}')"
+                          style="background:#2a0d0d;color:#f85149;border:1px solid #5a1a1a;border-radius:4px;
+                                 padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">▼ SHORT</button>
+                  <button onclick="removePumpNheCoin('${c.symbol}')"
+                          style="background:none;border:none;color:#1a3a5a;cursor:pointer;font-size:15px;padding:0 2px">×</button>
+                </div>
+              </div>
+
+              <!-- Progress bar: % pump từ đáy -->
+              <div class="pnhe-bar-wrap">
+                <div class="pnhe-bar-fill" style="width:${barPct}%;background:${barCol}"></div>
+              </div>
+
+              <!-- 24h high/low -->
+              <div style="display:flex;gap:10px;margin-top:4px;font-size:10px;color:#1a3a5a;flex-wrap:wrap">
+                ${c.high_24h > 0 ? `<span>H: $${c.high_24h >= 1 ? c.high_24h.toFixed(4) : c.high_24h.toFixed(6)}</span>` : ''}
+                ${c.low_24h  > 0 ? `<span>L: $${c.low_24h  >= 1 ? c.low_24h.toFixed(4)  : c.low_24h.toFixed(6)}</span>`  : ''}
+              </div>
+            </div>`;
+        });
+
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    el.innerHTML = html;
+}
+
+// Pump Nhẹ Radar auto-refresh mỗi 5s
+setInterval(fetchPumpNhe, 5000);
+fetchPumpNhe();
 
 // ── PUMP RADAR ───────────────────────────────────────────────
 let _pumpData = null;
@@ -2297,6 +2485,181 @@ def api_reversal_monitor():
         logger.error(f"[PumpRadar] Save config failed: {e}")
 
 
+# ============================================================
+# PUMP NHẸ RADAR — API endpoints (hoàn toàn độc lập pump radar cũ)
+# ============================================================
+
+def _save_pump_nhe_coins(coins: list):
+    """Ghi PUMP_NHE_COINS vào config.py để persist khi restart."""
+    import os, re
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_block = "PUMP_NHE_COINS = [\n"
+        for c in coins:
+            new_block += f'    "{c}",\n'
+        new_block += "]"
+        content = re.sub(
+            r'PUMP_NHE_COINS\s*=\s*\[.*?\]',
+            new_block,
+            content,
+            flags=re.DOTALL
+        )
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[PumpNhe] Config saved: PUMP_NHE_COINS = {coins}")
+    except Exception as e:
+        logger.error(f"[PumpNhe] Save config failed: {e}")
+
+
+@app.route("/api/pump-nhe/state", methods=["GET"])
+def api_pump_nhe_state():
+    """
+    Trả về danh sách coin pump nhẹ + % thay đổi 24h + giá realtime.
+    Fetch ticker 24h từ Binance mỗi 30s (cache).
+    """
+    if _state is None:
+        return jsonify({"ok": False, "coins": []})
+
+    with _lock:
+        coins = list(_state.get("pump_nhe_coins", []))
+        prices = dict(_state.get("prices", {}))
+
+    now_ts = time.time()
+    cache    = getattr(api_pump_nhe_state, "_cache", {})
+    cache_ts = getattr(api_pump_nhe_state, "_cache_ts", 0)
+
+    if now_ts - cache_ts > 30:
+        try:
+            import requests as _req
+            base = getattr(_config, "LIVE_BASE_URL", "https://fapi.binance.com")
+            resp = _req.get(f"{base}/fapi/v1/ticker/24hr", timeout=6)
+            if resp.ok:
+                for t in resp.json():
+                    s = t.get("symbol", "")
+                    cache[s] = {
+                        "change_pct": float(t.get("priceChangePercent", 0)),
+                        "high":       float(t.get("highPrice", 0)),
+                        "low":        float(t.get("lowPrice", 0)),
+                        "volume":     float(t.get("quoteVolume", 0)),
+                    }
+                api_pump_nhe_state._cache    = cache
+                api_pump_nhe_state._cache_ts = now_ts
+        except Exception as e:
+            logger.debug(f"[PumpNhe] ticker fetch error: {e}")
+
+    api_pump_nhe_state._cache    = cache
+    api_pump_nhe_state._cache_ts = cache_ts if now_ts - cache_ts <= 30 else now_ts
+
+    rows = []
+    for sym in coins:
+        price   = prices.get(sym, 0)
+        td      = cache.get(sym, {})
+        chg_pct = td.get("change_pct", 0)
+        high24  = td.get("high", 0)
+        low24   = td.get("low", 0)
+        vol24   = td.get("volume", 0)
+
+        # Tính pump từ đáy 24h → giá hiện tại
+        pump_from_low = 0.0
+        if low24 > 0 and price > 0:
+            pump_from_low = (price - low24) / low24 * 100
+
+        # Phân loại mức pump
+        if chg_pct >= 20:
+            level = "strong"   # 🔴 pump mạnh
+        elif chg_pct >= 10:
+            level = "medium"   # 🟡 pump vừa
+        elif chg_pct >= 3:
+            level = "soft"     # 🔵 pump nhẹ
+        elif chg_pct <= -5:
+            level = "dump"     # 🟣 đang dump
+        else:
+            level = "flat"     # ⚫ đi ngang
+
+        rows.append({
+            "symbol":         sym,
+            "price":          price,
+            "change_pct":     round(chg_pct, 2),
+            "pump_from_low":  round(pump_from_low, 2),
+            "high_24h":       high24,
+            "low_24h":        low24,
+            "volume_24h":     vol24,
+            "level":          level,
+        })
+
+    # Sort: pump mạnh nhất lên đầu
+    rows.sort(key=lambda r: r["change_pct"], reverse=True)
+
+    return jsonify({"ok": True, "coins": rows})
+
+
+@app.route("/api/pump-nhe/add", methods=["POST"])
+def api_pump_nhe_add():
+    """Thêm coin vào PUMP NHẸ RADAR."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "msg": "Thiếu symbol"})
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
+    # Validate coin tồn tại trên Binance Futures
+    if _exchange:
+        try:
+            p = _exchange.get_ticker_price(symbol)
+            if not p or float(p) <= 0:
+                return jsonify({"ok": False, "msg": f"❌ {symbol} không tồn tại trên Futures"})
+        except Exception:
+            return jsonify({"ok": False, "msg": f"❌ {symbol} không có trên Futures"})
+
+    with _lock:
+        coins = _state.get("pump_nhe_coins", [])
+        if symbol in coins:
+            return jsonify({"ok": False, "msg": f"⚠️ {symbol} đã có trong Pump Nhẹ Radar"})
+        coins.append(symbol)
+        _state["pump_nhe_coins"] = coins
+
+    try:
+        import config as _cfg
+        if not hasattr(_cfg, "PUMP_NHE_COINS"):
+            _cfg.PUMP_NHE_COINS = []
+        if symbol not in _cfg.PUMP_NHE_COINS:
+            _cfg.PUMP_NHE_COINS.append(symbol)
+    except Exception:
+        pass
+
+    _save_pump_nhe_coins(coins)
+    logger.info(f"[PumpNhe] Added: {symbol}")
+    return jsonify({"ok": True, "msg": f"Đã thêm {symbol} ✅"})
+
+
+@app.route("/api/pump-nhe/remove", methods=["POST"])
+def api_pump_nhe_remove():
+    """Xóa coin khỏi PUMP NHẸ RADAR."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+
+    with _lock:
+        coins = _state.get("pump_nhe_coins", [])
+        if symbol not in coins:
+            return jsonify({"ok": False, "msg": f"{symbol} không có trong danh sách"})
+        coins.remove(symbol)
+        _state["pump_nhe_coins"] = coins
+
+    try:
+        import config as _cfg
+        if hasattr(_cfg, "PUMP_NHE_COINS") and symbol in _cfg.PUMP_NHE_COINS:
+            _cfg.PUMP_NHE_COINS.remove(symbol)
+    except Exception:
+        pass
+
+    _save_pump_nhe_coins(coins)
+    logger.info(f"[PumpNhe] Removed: {symbol}")
+    return jsonify({"ok": True, "msg": f"Đã xóa {symbol}"})
+
+
 def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     """Start web dashboard in background thread."""
     global _state, _lock, _config, _exchange
@@ -2312,6 +2675,8 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
         # Khởi tạo pump watch list nếu chưa có
         if "pump_watch_coins" not in state:
             state["pump_watch_coins"] = list(getattr(config, "PUMP_WATCH_COINS", []))
+        if "pump_nhe_coins" not in state:
+            state["pump_nhe_coins"] = list(getattr(config, "PUMP_NHE_COINS", []))
         if "pump_signals" not in state:
             state["pump_signals"] = []   # list PumpSignal gần nhất
         if "pump_scan_status" not in state:

@@ -181,6 +181,11 @@ PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
 # ← Để trống, tự add qua web dashboard
 PUMP_WATCH_COINS = []
 
+# ── PUMP NHẸ RADAR — theo dõi coin pump nhẹ/vừa (5-30%) ───────
+# Hoàn toàn độc lập với PUMP_WATCH_COINS và pump radar cũ
+# Add/remove qua web dashboard (section PUMP NHẸ RADAR)
+PUMP_NHE_COINS = []
+
 # Interval quét pump riêng (giây) — chạy nhanh hơn main loop
 # 30s để bắt đỉnh kịp thời, không phải đợi 60s main loop
 PUMP_SCAN_INTERVAL_SECONDS = 30
