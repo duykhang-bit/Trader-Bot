@@ -1003,23 +1003,53 @@ def price_updater(exchange):
                     # Tìm lệnh OPEN tương ứng trong trade_log
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
-                            # Lấy giá đóng từ price
-                            close_price = state["prices"].get(sym, t.get("entry", 0))
                             entry = t.get("entry", 0)
-                            side = t.get("side", "LONG")
-                            qty = t.get("qty", 0)
-                            if entry > 0:
-                                pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
-                                pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
-                            else:
-                                pnl_pct = 0
-                                pnl_usd = 0
+                            side  = t.get("side", "LONG")
+                            qty   = t.get("qty", 0)
+
+                            # ── Lấy realized PnL thật từ Binance userTrades ──
+                            # Chỉ gọi 1 lần khi detect close, không poll liên tục
+                            close_price = state["prices"].get(sym, entry)
+                            pnl_usd     = 0.0
+                            pnl_pct     = 0.0
+                            try:
+                                trades = exchange._get("/fapi/v1/userTrades", {
+                                    "symbol": sym,
+                                    "limit":  10,   # chỉ lấy 10 trade gần nhất
+                                }, signed=True)
+                                if trades:
+                                    # Lấy realized PnL từ các trade gần nhất
+                                    # (lệnh đóng thường là 1-2 trade fill cuối)
+                                    realized = sum(
+                                        float(tr.get("realizedPnl", 0))
+                                        for tr in trades[-5:]
+                                        if float(tr.get("realizedPnl", 0)) != 0
+                                    )
+                                    if realized != 0:
+                                        pnl_usd = realized
+                                        pnl_pct = pnl_usd / (entry * qty) * 100 if entry > 0 and qty > 0 else 0
+                                        # Lấy giá đóng thật từ trade cuối
+                                        last_trade = trades[-1]
+                                        close_price = float(last_trade.get("price", close_price))
+                                        logger.info(f"[Sync] Binance PnL for {sym}: ${pnl_usd:+.2f} @ ${close_price}")
+                                    else:
+                                        # Fallback tính từ giá nếu PnL = 0
+                                        if entry > 0:
+                                            pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                                            pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+                            except Exception as _fe:
+                                logger.debug(f"[Sync] userTrades fetch failed {sym}: {_fe}")
+                                # Fallback tính từ giá WS
+                                if entry > 0:
+                                    pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                                    pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+
                             t.update({
-                                "status": "CLOSED",
-                                "close": close_price,
+                                "status":   "CLOSED",
+                                "close":    close_price,
                                 "pnl_usdt": round(pnl_usd, 2),
-                                "pnl_pct": round(pnl_pct, 2),
-                                "note": "closed_external"
+                                "pnl_pct":  round(pnl_pct, 2),
+                                "note":     "closed_external"
                             })
                             logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
                             from trade_history import save_history
