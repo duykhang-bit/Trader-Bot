@@ -2575,9 +2575,12 @@ def pump_scan_engine(exchange, notifier):
                             f"[PumpEngine] TOP: {symbol} score={sig.score} "
                             f"+{sig.pump_pct:.1f}%"
                         )
-                        # Telegram alert ngay
+                        # Telegram alert ngay — có nút SHORT tay
                         try:
-                            notifier.telegram.send(sig.to_telegram())
+                            notifier.telegram.send(
+                                sig.to_telegram(),
+                                reply_markup=sig.to_telegram_markup()
+                            )
                         except Exception as te:
                             logger.warning(f"[PumpEngine] Telegram failed: {te}")
 
@@ -2648,7 +2651,7 @@ def pump_scan_engine(exchange, notifier):
                                 f"[PumpNhe] TOP: {symbol} score={sig.score} "
                                 f"+{sig.pump_pct:.1f}% (ngưỡng {nhe_score})"
                             )
-                            # Telegram alert
+                            # Telegram alert — có nút SHORT tay
                             try:
                                 nhe_msg = (
                                     sig.to_telegram()
@@ -2656,7 +2659,10 @@ def pump_scan_engine(exchange, notifier):
                                              "PUMP NHẸ TOP — SHORT SIGNAL")
                                     .replace("/100", f"/100 (ngưỡng {nhe_score})")
                                 )
-                                notifier.telegram.send(nhe_msg)
+                                notifier.telegram.send(
+                                    nhe_msg,
+                                    reply_markup=sig.to_telegram_markup()
+                                )
                             except Exception as _te:
                                 logger.warning(f"[PumpNhe] Telegram failed: {_te}")
 
@@ -2773,7 +2779,10 @@ def pump_scan_engine(exchange, notifier):
                             confirmed_this_round.append(sig)
                             logger.info(f"[PumpEngine] Fixed coin TOP: {symbol} score={sig.score}")
                             try:
-                                notifier.telegram.send(sig.to_telegram())
+                                notifier.telegram.send(
+                                    sig.to_telegram(),
+                                    reply_markup=sig.to_telegram_markup()
+                                )
                             except Exception:
                                 pass
                     except Exception as e:
