@@ -2652,6 +2652,11 @@ def api_pump_nhe_add():
     except Exception:
         pass
 
+    # Sync vào state pump_nhe_coins để pump_scan_engine đọc ngay
+    if _state is not None and _lock is not None:
+        with _lock:
+            _state["pump_nhe_coins"] = coins
+
     _save_pump_nhe_coins(coins)
     logger.info(f"[PumpNhe] Added: {symbol}")
     return jsonify({"ok": True, "msg": f"Đã thêm {symbol} ✅"})
@@ -2693,6 +2698,11 @@ def api_pump_nhe_remove():
             _cfg.PUMP_NHE_COINS.remove(symbol)
     except Exception:
         pass
+
+    # Sync vào state
+    if _state is not None and _lock is not None:
+        with _lock:
+            _state["pump_nhe_coins"] = coins
 
     _save_pump_nhe_coins(coins)
     logger.info(f"[PumpNhe] Removed: {symbol}")

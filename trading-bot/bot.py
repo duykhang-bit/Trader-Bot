@@ -2586,9 +2586,14 @@ def pump_scan_engine(exchange, notifier):
 
             # ── PUMP NHẸ RADAR scan — ngưỡng thấp hơn, độc lập pump cũ ──
             # Chạy mỗi slow_interval (30s), dùng detector riêng với cfg nhẹ hơn
-            nhe_coins = list(getattr(config, "PUMP_NHE_COINS", []))
+            # Đọc từ state (được sync realtime khi add/remove qua web) thay vì config
+            with lock:
+                nhe_coins = list(state.get("pump_nhe_coins", []))
+            # Fallback về config nếu state trống
+            if not nhe_coins:
+                nhe_coins = list(getattr(config, "PUMP_NHE_COINS", []))
             nhe_auto  = getattr(config, "PUMP_NHE_AUTO_SHORT", False)
-            nhe_score = getattr(config, "PUMP_NHE_MIN_SCORE", 50)
+            nhe_score = getattr(config, "PUMP_NHE_MIN_SCORE", 60)
             nhe_rise  = getattr(config, "PUMP_NHE_PRICE_RISE_PCT", 10.0)
 
             if nhe_coins and should_scan_fixed:
