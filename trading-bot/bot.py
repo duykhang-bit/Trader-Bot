@@ -2629,7 +2629,11 @@ def pump_scan_engine(exchange, notifier):
             nhe_score = getattr(config, "PUMP_NHE_MIN_SCORE", 60)
             nhe_rise  = getattr(config, "PUMP_NHE_PRICE_RISE_PCT", 10.0)
 
-            if nhe_coins and should_scan_fixed:
+            # Define should_scan_fixed sớm — dùng cho cả NHE block và fixed_coins block
+            _scan_tick_now = state.get("_pump_tick", 0)
+            _should_scan_fixed = (_scan_tick_now % max(1, slow_interval // interval) == 0)
+
+            if nhe_coins and _should_scan_fixed:
                 # Tạo detector riêng với ngưỡng nhẹ hơn — không ảnh hưởng detector cũ
                 nhe_detector = PumpDetector(config)
                 nhe_detector.cfg["PUMP_TOP_MIN_SCORE"] = nhe_score
@@ -2795,7 +2799,7 @@ def pump_scan_engine(exchange, notifier):
 
             fixed_coins = [c for c in list(getattr(config, "FIXED_COINS", WATCHLIST))
                            if c not in pump_coins]
-            should_scan_fixed = (_scan_tick % max(1, slow_interval // interval) == 0)
+            should_scan_fixed = _should_scan_fixed
 
             if should_scan_fixed and fixed_coins:
                 for symbol in fixed_coins:
