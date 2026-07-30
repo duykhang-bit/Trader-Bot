@@ -186,6 +186,18 @@ PUMP_WATCH_COINS = []
 # Add/remove qua web dashboard (section PUMP NHẸ RADAR)
 PUMP_NHE_COINS = []
 
+# Tự động vào SHORT khi PUMP NHẸ RADAR phát hiện đỉnh
+# Dùng cùng pump_detector.py nhưng ngưỡng thấp hơn (score >= PUMP_NHE_MIN_SCORE)
+# Bật/tắt độc lập với PUMP_AUTO_SHORT — có thể bật cả 2 cùng lúc
+PUMP_NHE_AUTO_SHORT = False
+
+# Ngưỡng score tối thiểu cho PUMP NHẸ RADAR (thấp hơn pump mạnh)
+# 50 = nhẹ hơn pump radar cũ (75), bắt được nhiều setup hơn
+PUMP_NHE_MIN_SCORE = 60
+
+# % tăng tối thiểu từ đáy để xem xét SHORT (thấp hơn pump mạnh)
+PUMP_NHE_PRICE_RISE_PCT = 10.0
+
 # Interval quét pump riêng (giây) — chạy nhanh hơn main loop
 # 30s để bắt đỉnh kịp thời, không phải đợi 60s main loop
 PUMP_SCAN_INTERVAL_SECONDS = 30

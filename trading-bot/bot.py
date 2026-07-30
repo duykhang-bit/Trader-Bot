@@ -2584,6 +2584,167 @@ def pump_scan_engine(exchange, notifier):
                 except Exception as e:
                     logger.debug(f"[PumpEngine] {symbol} scan error: {e}")
 
+            # ── PUMP NHẸ RADAR scan — ngưỡng thấp hơn, độc lập pump cũ ──
+            # Chạy mỗi slow_interval (30s), dùng detector riêng với cfg nhẹ hơn
+            nhe_coins = list(getattr(config, "PUMP_NHE_COINS", []))
+            nhe_auto  = getattr(config, "PUMP_NHE_AUTO_SHORT", False)
+            nhe_score = getattr(config, "PUMP_NHE_MIN_SCORE", 50)
+            nhe_rise  = getattr(config, "PUMP_NHE_PRICE_RISE_PCT", 10.0)
+
+            if nhe_coins and should_scan_fixed:
+                # Tạo detector riêng với ngưỡng nhẹ hơn — không ảnh hưởng detector cũ
+                nhe_detector = PumpDetector(config)
+                nhe_detector.cfg["PUMP_TOP_MIN_SCORE"] = nhe_score
+                nhe_detector.cfg["PUMP_PRICE_RISE_PCT"] = nhe_rise
+
+                for symbol in nhe_coins:
+                    # Bỏ qua nếu đã là pump coin cũ (tránh scan 2 lần)
+                    if symbol in pump_coins:
+                        continue
+                    try:
+                        klines_1m  = exchange.get_klines(symbol, "1m",  limit=200)
+                        klines_15m = exchange.get_klines(symbol, "15m", limit=50)
+                        df_1m      = _to_df(klines_1m)
+                        df_15m     = _to_df(klines_15m)
+
+                        sig = nhe_detector.analyze(symbol, df_1m, df_15m)
+                        if sig is None:
+                            continue
+
+                        # Lưu vào state (tag riêng để web phân biệt)
+                        sig_dict = {
+                            "symbol":       sig.symbol,
+                            "is_pump_top":  sig.is_pump_top,
+                            "is_nhe":       True,          # flag phân biệt với pump cũ
+                            "score":        sig.score,
+                            "pump_pct":     sig.pump_pct,
+                            "signals":      sig.signals,
+                            "entry_price":  sig.entry_price,
+                            "sl_price":     sig.sl_price,
+                            "tp1_price":    sig.tp1_price,
+                            "tp2_price":    sig.tp2_price,
+                            "atr":          sig.atr,
+                            "volume_ratio": sig.volume_ratio,
+                            "rsi":          sig.rsi,
+                            "timestamp":    sig.timestamp,
+                        }
+                        with lock:
+                            nhe_sigs = state.setdefault("pump_nhe_signals", [])
+                            idx = next((i for i, s in enumerate(nhe_sigs)
+                                        if s.get("symbol") == symbol), None)
+                            if idx is not None:
+                                nhe_sigs[idx] = sig_dict
+                            else:
+                                nhe_sigs.append(sig_dict)
+                            state["pump_nhe_signals"] = nhe_sigs[-50:]
+
+                        if sig.is_pump_top:
+                            logger.info(
+                                f"[PumpNhe] TOP: {symbol} score={sig.score} "
+                                f"+{sig.pump_pct:.1f}% (ngưỡng {nhe_score})"
+                            )
+                            # Telegram alert
+                            try:
+                                nhe_msg = (
+                                    sig.to_telegram()
+                                    .replace("PUMP TOP — SHORT SIGNAL",
+                                             "PUMP NHẸ TOP — SHORT SIGNAL")
+                                    .replace("/100", f"/100 (ngưỡng {nhe_score})")
+                                )
+                                notifier.telegram.send(nhe_msg)
+                            except Exception as _te:
+                                logger.warning(f"[PumpNhe] Telegram failed: {_te}")
+
+                            # AUTO SHORT nếu bật
+                            if nhe_auto:
+                                try:
+                                    with lock:
+                                        open_syms_nhe = {
+                                            p["symbol"] for p in state.get("open_positions", [])
+                                            if abs(float(p.get("positionAmt", 0))) > 0
+                                        }
+                                        n_open_nhe = len(state.get("open_positions", []))
+
+                                    if (symbol not in open_syms_nhe
+                                            and n_open_nhe < config.MAX_OPEN_POSITIONS):
+                                        exchange.set_leverage(symbol, config.LEVERAGE)
+                                        cur_p_nhe = exchange.get_ticker_price(symbol)
+                                        if not cur_p_nhe or cur_p_nhe <= 0:
+                                            cur_p_nhe = sig.entry_price
+
+                                        qty_nhe = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_p_nhe
+                                        try:
+                                            step, _, decimals, _ = exchange.get_qty_precision(symbol)
+                                            qty_nhe = max(
+                                                round(int(qty_nhe / step) * step, decimals), step
+                                            )
+                                        except Exception:
+                                            qty_nhe = round(qty_nhe, 3)
+
+                                        if qty_nhe * cur_p_nhe >= 5.0:
+                                            exchange.place_market_order(symbol, "SELL", qty_nhe)
+                                            time.sleep(0.8)
+
+                                            # SL với retry
+                                            sl_ok_nhe = False
+                                            for _a in range(3):
+                                                try:
+                                                    exchange.place_stop_loss_order(
+                                                        symbol, "BUY", qty_nhe, sig.sl_price
+                                                    )
+                                                    sl_ok_nhe = True
+                                                    break
+                                                except Exception:
+                                                    time.sleep(0.5)
+
+                                            if not sl_ok_nhe:
+                                                exchange.place_market_order(symbol, "BUY", qty_nhe)
+                                                logger.error(f"[PumpNhe] SL failed, closed immediately {symbol}")
+                                            else:
+                                                try:
+                                                    exchange.place_take_profit_order(
+                                                        symbol, "BUY", qty_nhe, sig.tp1_price
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                                rr_nhe = (
+                                                    abs(cur_p_nhe - sig.tp1_price)
+                                                    / abs(cur_p_nhe - sig.sl_price)
+                                                    if abs(cur_p_nhe - sig.sl_price) > 0 else 0
+                                                )
+                                                with lock:
+                                                    state["trade_log"].append({
+                                                        "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                        "symbol": symbol, "side": "SHORT",
+                                                        "entry":  cur_p_nhe,
+                                                        "sl": sig.sl_price, "tp": sig.tp1_price,
+                                                        "qty": qty_nhe, "status": "OPEN",
+                                                        "note": f"pump_nhe_short_s{sig.score}",
+                                                    })
+                                                    state.setdefault("pump_trade_symbols", set()).add(symbol)
+
+                                                notifier.telegram.send(
+                                                    f"🔴 <b>AUTO SHORT — PUMP NHẸ</b>\n"
+                                                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                                    f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%  "
+                                                    f"Score {sig.score}/{nhe_score}\n"
+                                                    f"💰 Entry : <b>${cur_p_nhe:,.6g}</b>\n"
+                                                    f"🛑 SL    : <b>${sig.sl_price:,.6g}</b>\n"
+                                                    f"🎯 TP    : <b>${sig.tp1_price:,.6g}</b>\n"
+                                                    f"📐 RR    : 1:{rr_nhe:.1f}   📦 Qty: {qty_nhe}\n"
+                                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                                )
+                                                logger.info(
+                                                    f"[PumpNhe] SHORT placed: {symbol} "
+                                                    f"score={sig.score} qty={qty_nhe}"
+                                                )
+                                except Exception as _nhe_e:
+                                    logger.error(f"[PumpNhe] Short {symbol} failed: {_nhe_e}")
+
+                    except Exception as _nhe_scan_e:
+                        logger.debug(f"[PumpNhe] {symbol} scan error: {_nhe_scan_e}")
+
             # ── Cũng quét FIXED_COINS nhưng chậm hơn (mỗi slow_interval) ──
             # Chỉ chạy khi interval == slow_interval (không có pump coins)
             # hoặc mỗi 6 vòng (30s) khi đang chạy 5s
@@ -3655,7 +3816,9 @@ if __name__ == "__main__":
     # Khởi tạo pump state
     with lock:
         state["pump_watch_coins"]  = list(getattr(config, "PUMP_WATCH_COINS", []))
+        state["pump_nhe_coins"]    = list(getattr(config, "PUMP_NHE_COINS", []))
         state["pump_signals"]      = []
+        state["pump_nhe_signals"]  = []
         state["pump_alerts"]       = {}   # {symbol: {pump_pct, price, rsi, ...}}
         state["_pump_alert_cd"]    = {}   # cooldown dict cho pump alerts
         state["pump_limit_orders"] = {}   # {symbol: {entry_price, sl_price, tp1_price, qty, ts}}

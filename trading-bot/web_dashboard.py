@@ -705,6 +705,12 @@ async function clearTradeHistory() {
 // ── PUMP NHẸ RADAR ──────────────────────────────────────────
 let _pumpNheData = null;
 
+async function togglePumpNheAutoShort(enabled) {
+    const r = await apiPost('/api/pump-nhe/toggle_auto', {enabled: enabled});
+    if (r && r.msg) toast(r.msg, r.ok);
+    fetchPumpNhe();
+}
+
 async function fetchPumpNhe() {
     try {
         const r = await fetch('/api/pump-nhe/state');
@@ -768,7 +774,17 @@ function renderPumpNhe(d) {
         <span style="color:#388bfd;font-size:14px;font-weight:700;letter-spacing:2px">PUMP NHẸ RADAR</span>
         <span style="color:#1a3a5a;font-size:11px">${coins.length} coin · refresh 5s</span>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="pnhe-auto-short"
+                 ${d.auto_short ? 'checked' : ''}
+                 onchange="togglePumpNheAutoShort(this.checked)"
+                 style="accent-color:#f85149">
+          <span id="pnhe-auto-label" style="color:${d.auto_short ? '#f85149' : '#1a3a5a'}">
+            ${d.auto_short ? '🔴 AUTO SHORT (nhẹ)' : '⏸ Alert only'}
+          </span>
+        </label>
+        <span style="font-size:10px;color:#1a2a3d">score≥${d.min_score || 50} | rise≥${d.min_rise || 10}%</span>
         <input id="pnhe-coin-input" placeholder="BEATUSDT"
                style="width:110px;font-size:11px;background:#0a0d14;border-color:#1a2a3d;color:#388bfd"
                onkeydown="if(event.key==='Enter')addPumpNheCoin()">
@@ -2592,7 +2608,13 @@ def api_pump_nhe_state():
     # Sort: pump mạnh nhất lên đầu
     rows.sort(key=lambda r: r["change_pct"], reverse=True)
 
-    return jsonify({"ok": True, "coins": rows})
+    return jsonify({
+        "ok":        True,
+        "coins":     rows,
+        "auto_short": getattr(_config, "PUMP_NHE_AUTO_SHORT", False),
+        "min_score":  getattr(_config, "PUMP_NHE_MIN_SCORE", 50),
+        "min_rise":   getattr(_config, "PUMP_NHE_PRICE_RISE_PCT", 10.0),
+    })
 
 
 @app.route("/api/pump-nhe/add", methods=["POST"])
@@ -2633,6 +2655,23 @@ def api_pump_nhe_add():
     _save_pump_nhe_coins(coins)
     logger.info(f"[PumpNhe] Added: {symbol}")
     return jsonify({"ok": True, "msg": f"Đã thêm {symbol} ✅"})
+
+
+@app.route("/api/pump-nhe/toggle_auto", methods=["POST"])
+def api_pump_nhe_toggle_auto():
+    """Bật/tắt PUMP_NHE_AUTO_SHORT — độc lập PUMP_AUTO_SHORT."""
+    data    = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    try:
+        import config as _cfg
+        _cfg.PUMP_NHE_AUTO_SHORT = enabled
+    except Exception:
+        pass
+    msg = (f"🔴 PUMP NHẸ AUTO SHORT bật — score≥{getattr(_config,'PUMP_NHE_MIN_SCORE',50)}, "
+           f"rise≥{getattr(_config,'PUMP_NHE_PRICE_RISE_PCT',10)}%") if enabled \
+          else "⏸ PUMP NHẸ AUTO SHORT tắt — chỉ alert"
+    logger.info(f"[PumpNhe] PUMP_NHE_AUTO_SHORT = {enabled}")
+    return jsonify({"ok": True, "msg": msg, "enabled": enabled})
 
 
 @app.route("/api/pump-nhe/remove", methods=["POST"])
