@@ -1431,6 +1431,9 @@ class TelegramCommandHandler:
                      [{"text": "⚙️ Score"}, {"text": "📤 Export"}],
                  ], "resize_keyboard": True})
 
+        # Set dedup callback_id — tránh xử lý cùng 1 callback 2 lần
+        _processed_cb_ids: set = set()
+
         while self.running and self.state.get("running", True):
             updates = self.get_updates()
             for update in updates:
@@ -1439,6 +1442,15 @@ class TelegramCommandHandler:
                 # ── Xử lý callback (bấm nút inline keyboard) ──
                 cb = update.get("callback_query")
                 if cb:
+                    cb_id = cb.get("id", "")
+                    # Dedup: bỏ qua nếu đã xử lý callback này rồi
+                    if cb_id in _processed_cb_ids:
+                        self._answer_callback(cb_id)
+                        continue
+                    _processed_cb_ids.add(cb_id)
+                    # Giữ set nhỏ — chỉ cần nhớ 100 callback gần nhất
+                    if len(_processed_cb_ids) > 100:
+                        _processed_cb_ids.pop()
                     if str(cb.get("from", {}).get("id")) != str(self.chat_id):
                         continue
                     data = cb.get("data", "")
