@@ -1356,10 +1356,12 @@ class TelegramCommandHandler:
 
             import time as _time
             _time.sleep(1)
-            try: exchange.place_stop_loss_order(symbol, close_side, qty, final_sl)
-            except Exception as e: logger.error(f"SL failed: {e}")
-            try: exchange.place_take_profit_order(symbol, close_side, qty, final_tp)
-            except Exception as e: logger.error(f"TP failed: {e}")
+            # Chỉ đặt SL/TP khi LIMIT order (place_smart_order đã tự đặt cho MARKET)
+            if placed_type == "LIMIT":
+                try: exchange.place_stop_loss_order(symbol, close_side, qty, final_sl)
+                except Exception as e: logger.error(f"SL failed: {e}")
+                try: exchange.place_take_profit_order(symbol, close_side, qty, final_tp)
+                except Exception as e: logger.error(f"TP failed: {e}")
 
             notional = qty * entry_price
             order_tag = "⏳ LIMIT" if placed_type == "LIMIT" else "⚡ MARKET"
