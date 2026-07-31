@@ -95,6 +95,11 @@ class TelegramCommandHandler:
                 self.last_update_id = results[-1]["update_id"]
                 logger.warning(f"Telegram: skipped {len(results)} stale updates")
                 return []
+            # ── Fix dup: update offset NGAY sau khi nhận —
+            # Không để vòng loop ngoài update sau → tránh poll lại cùng update
+            # khi thread đặt lệnh chạy lâu hơn 1 poll cycle
+            if results:
+                self.last_update_id = results[-1]["update_id"]
             return results
         except Exception:
             return []
