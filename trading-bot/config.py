@@ -244,7 +244,7 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 # ── Web Dashboard Security ──────────────────────────────────
 # Mật khẩu đăng nhập web dashboard
 # Đổi thành mật khẩu của mày trước khi deploy
-WEB_PASSWORD = "Cr7naldojk"
+WEB_PASSWORD = "Cr7ronaldojk"
 
 # Secret key cho Flask session (random mỗi lần start — session hết hạn khi restart bot)
 import secrets as _secrets
