@@ -240,3 +240,12 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 #ssh root@159.65.136.39
 #cd /root/Trader-Bot && git pull && pkill -9 -f bot.py; sleep 2; nohup /root/start_bot.sh > /tmp/bot.log 2>&1 &
 #BOT7
+
+# ── Web Dashboard Security ──────────────────────────────────
+# Mật khẩu đăng nhập web dashboard
+# Đổi thành mật khẩu của mày trước khi deploy
+WEB_PASSWORD = "Cr7naldojk"
+
+# Secret key cho Flask session (random mỗi lần start — session hết hạn khi restart bot)
+import secrets as _secrets
+WEB_SECRET_KEY = _secrets.token_hex(32)

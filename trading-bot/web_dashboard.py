@@ -8,18 +8,162 @@ import logging
 import json
 import time
 from datetime import datetime
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, session, redirect, url_for
+from functools import wraps
 
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config["TESTING"] = False
+app.config["SECRET_KEY"] = "changeme"  # sẽ được override trong start_web_dashboard
 
 # Set from bot.py
 _state = None
 _lock = None
 _config = None
 _exchange = None
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+def require_auth(f):
+    """Decorator bảo vệ route — redirect về login nếu chưa đăng nhập."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("authenticated"):
+            # API endpoints trả 401, page endpoints redirect login
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "msg": "Unauthorized"}), 401
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Bot — Login</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background: #0d1117;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .card {
+      background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+      border: 1px solid #30363d;
+      border-radius: 16px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.6);
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .logo .icon { font-size: 36px; }
+    .logo h1 {
+      color: #e6edf3;
+      font-size: 20px;
+      font-weight: 700;
+      margin-top: 8px;
+      letter-spacing: 1px;
+    }
+    .logo p { color: #484f58; font-size: 12px; margin-top: 4px; }
+    .form-group { margin-bottom: 18px; }
+    label { color: #8b949e; font-size: 12px; display: block; margin-bottom: 6px; }
+    input[type=password] {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      font-size: 15px;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type=password]:focus { border-color: #388bfd; }
+    .btn-login {
+      width: 100%;
+      background: linear-gradient(135deg, #238636, #2ea043);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .2s;
+      letter-spacing: 1px;
+    }
+    .btn-login:hover { opacity: .88; }
+    .error {
+      background: rgba(248,81,73,.12);
+      border: 1px solid rgba(248,81,73,.4);
+      color: #f85149;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #3fb950;
+      display: inline-block;
+      box-shadow: 0 0 6px #3fb950;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <div class="icon">🤖</div>
+      <h1><span class="dot"></span>Trading Bot</h1>
+      <p>Nhập mật khẩu để truy cập dashboard</p>
+    </div>
+    {% if error %}
+    <div class="error">❌ {{ error }}</div>
+    {% endif %}
+    <form method="POST" action="/login">
+      <div class="form-group">
+        <label>MẬT KHẨU</label>
+        <input type="password" name="password" placeholder="••••••••••"
+               autofocus autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn-login">🔓 ĐĂNG NHẬP</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        pwd = request.form.get("password", "")
+        correct = getattr(_config, "WEB_PASSWORD", "Cr7naldojk")
+        if pwd == correct:
+            session["authenticated"] = True
+            session.permanent = True
+            return redirect("/")
+        else:
+            error = "Sai mật khẩu, thử lại."
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 # Cache pending orders — chỉ fetch Binance mỗi 10 giây thay vì mỗi 2s
 _pending_orders_cache = []
@@ -142,6 +286,13 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
         <div class="status">
             <span id="bot-status"></span>
             <span id="clock">--:--:--</span>
+            <a href="/logout" title="Đăng xuất"
+               style="color:#484f58;text-decoration:none;border:1px solid #30363d;border-radius:5px;
+                      padding:2px 8px;font-size:11px;margin-left:8px;transition:color .2s"
+               onmouseover="this.style.color='#f85149';this.style.borderColor='#f85149'"
+               onmouseout="this.style.color='#484f58';this.style.borderColor='#30363d'">
+              🔓 Logout
+            </a>
         </div>
     </div>
     <div id="content">Loading...</div>
@@ -1537,6 +1688,17 @@ refresh();
 </html>"""
 
 
+@app.before_request
+def check_auth():
+    """Bảo vệ toàn bộ dashboard — chỉ cho qua /login và /logout."""
+    if request.path in ("/login", "/logout"):
+        return None  # public
+    if not session.get("authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "msg": "Unauthorized"}), 401
+        return redirect("/login")
+
+
 @app.route("/")
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -2716,6 +2878,12 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     _lock = lock
     _config = config
     _exchange = exchange
+
+    # Set secret key từ config — session hết hạn khi restart bot
+    app.config["SECRET_KEY"] = getattr(config, "WEB_SECRET_KEY", "fallback-secret-key-change-me")
+    # Session timeout 24h
+    from datetime import timedelta
+    app.permanent_session_lifetime = timedelta(hours=24)
 
     # Store watchlist in state for web access
     from scanner import WATCHLIST
