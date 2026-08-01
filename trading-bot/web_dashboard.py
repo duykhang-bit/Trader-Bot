@@ -2806,31 +2806,34 @@ def api_pump_nhe_state():
     # Sort: pump mạnh nhất lên đầu
     rows.sort(key=lambda r: r["change_pct"], reverse=True)
 
-    # ── Noti Telegram khi coin pump nhẹ chuyển full đỏ (≥20%) ──
-    # Chỉ gửi 1 lần mỗi coin, cooldown 30 phút
-    _noti_cache = getattr(api_pump_nhe_state, "_noti_cache", {})
-    for row in rows:
-        sym = row["symbol"]
-        if row["change_pct"] >= 20:
-            last_noti = _noti_cache.get(sym, 0)
-            if now_ts - last_noti > 1800:
-                _noti_cache[sym] = now_ts
-                try:
-                    notifier = _state.get("_notifier") if _state else None
-                    if notifier:
-                        notifier.telegram.send(
-                            f"🔴 <b>PUMP NHẸ RADAR — FULL ĐỎ</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🪙 <b>{sym}</b>\n"
-                            f"📈 +{row['change_pct']:.1f}% trong 24h\n"
-                            f"⬆️ +{row['pump_from_low']:.1f}% từ đáy\n"
-                            f"💰 Giá: ${row['price']:,.6g}\n"
-                            f"📊 Vol: ${row['volume_24h']/1e6:.0f}M\n"
-                            f"⚠️ Cân nhắc SHORT nếu có dấu hiệu đỉnh"
-                        )
-                except Exception as _ne:
-                    logger.debug(f"[PumpNhe] noti error: {_ne}")
-    api_pump_nhe_state._noti_cache = _noti_cache
+    # ── Noti Telegram khi TOÀN BỘ coin trong list đều full đỏ (≥20%) ──
+    # "Full đỏ" = tất cả coin ≥20%, không phải từng coin riêng lẻ
+    if rows and all(r["change_pct"] >= 20 for r in rows):
+        _noti_cache = getattr(api_pump_nhe_state, "_noti_cache", {})
+        _last_full_red = _noti_cache.get("__full_red__", 0)
+        if now_ts - _last_full_red > 1800:  # cooldown 30 phút
+            _noti_cache["__full_red__"] = now_ts
+            api_pump_nhe_state._noti_cache = _noti_cache
+            try:
+                notifier = _state.get("_notifier") if _state else None
+                if notifier:
+                    top3 = rows[:3]
+                    coins_str = "\n".join(
+                        f"🔴 {r['symbol'].replace('USDT','')} +{r['change_pct']:.1f}%"
+                        for r in top3
+                    )
+                    notifier.telegram.send(
+                        f"🔴 <b>PUMP NHẸ RADAR — FULL ĐỎ</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Tất cả {len(rows)} coin đều ≥20%\n\n"
+                        f"{coins_str}\n"
+                        f"⚠️ Thị trường đang pump mạnh — cân nhắc SHORT đỉnh"
+                    )
+            except Exception as _ne:
+                logger.debug(f"[PumpNhe] full-red noti error: {_ne}")
+    else:
+        if not hasattr(api_pump_nhe_state, "_noti_cache"):
+            api_pump_nhe_state._noti_cache = {}
 
     return jsonify({
         "ok":        True,
