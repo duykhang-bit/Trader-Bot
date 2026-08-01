@@ -862,6 +862,20 @@ async function togglePumpNheAutoShort(enabled) {
     fetchPumpNhe();
 }
 
+async function savePumpNheConfig() {
+    const score = parseInt(document.getElementById('pnhe-score-input')?.value || 60);
+    const rise  = parseFloat(document.getElementById('pnhe-rise-input')?.value || 10);
+    const r = await apiPost('/api/pump-nhe/config', {min_score: score, min_rise: rise});
+    const msgEl = document.getElementById('pnhe-config-msg');
+    if (msgEl) {
+        msgEl.textContent = r.ok ? '✅ Đã lưu' : ('❌ ' + r.msg);
+        msgEl.style.color = r.ok ? '#3fb950' : '#f85149';
+        setTimeout(() => { if(msgEl) msgEl.textContent = ''; }, 3000);
+    }
+    if (r.ok) toast(r.msg, true);
+    fetchPumpNhe();
+}
+
 async function fetchPumpNhe() {
     try {
         const r = await fetch('/api/pump-nhe/state');
@@ -952,6 +966,28 @@ function renderPumpNhe(d) {
       <span style="color:#388bfd">🔵 3-10% pump nhẹ</span>
       <span style="color:#a371f7">🟣 dump</span>
       <span style="color:#484f58">⚫ đi ngang</span>
+    </div>
+
+    <!-- Config panel -->
+    <div style="background:#0a0d14;border:1px solid #1a2a3d;border-radius:7px;padding:8px 12px;
+                margin-bottom:12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:11px">
+      <span style="color:#484f58">⚙️ Config:</span>
+      <label style="color:#1a3a5a;display:flex;align-items:center;gap:5px">
+        Score ≥
+        <input id="pnhe-score-input" type="number" min="30" max="90" value="${d.min_score || 60}"
+               style="width:48px;background:#0d1117;border:1px solid #1a2a3d;color:#388bfd;
+                      border-radius:4px;padding:2px 5px;font-size:11px;text-align:center">
+      </label>
+      <label style="color:#1a3a5a;display:flex;align-items:center;gap:5px">
+        Rise ≥
+        <input id="pnhe-rise-input" type="number" min="3" max="50" step="0.5" value="${d.min_rise || 10}"
+               style="width:48px;background:#0d1117;border:1px solid #1a2a3d;color:#388bfd;
+                      border-radius:4px;padding:2px 5px;font-size:11px;text-align:center">%
+      </label>
+      <button onclick="savePumpNheConfig()"
+              style="background:#0d1a2a;color:#388bfd;border:1px solid #1a3a5a;border-radius:4px;
+                     padding:2px 10px;font-size:11px;cursor:pointer;font-weight:700">💾 Lưu</button>
+      <span id="pnhe-config-msg" style="font-size:10px;color:#3fb950"></span>
     </div>`;
 
     if (coins.length === 0) {
@@ -2770,6 +2806,32 @@ def api_pump_nhe_state():
     # Sort: pump mạnh nhất lên đầu
     rows.sort(key=lambda r: r["change_pct"], reverse=True)
 
+    # ── Noti Telegram khi coin pump nhẹ chuyển full đỏ (≥20%) ──
+    # Chỉ gửi 1 lần mỗi coin, cooldown 30 phút
+    _noti_cache = getattr(api_pump_nhe_state, "_noti_cache", {})
+    for row in rows:
+        sym = row["symbol"]
+        if row["change_pct"] >= 20:
+            last_noti = _noti_cache.get(sym, 0)
+            if now_ts - last_noti > 1800:
+                _noti_cache[sym] = now_ts
+                try:
+                    notifier = _state.get("_notifier") if _state else None
+                    if notifier:
+                        notifier.telegram.send(
+                            f"🔴 <b>PUMP NHẸ RADAR — FULL ĐỎ</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🪙 <b>{sym}</b>\n"
+                            f"📈 +{row['change_pct']:.1f}% trong 24h\n"
+                            f"⬆️ +{row['pump_from_low']:.1f}% từ đáy\n"
+                            f"💰 Giá: ${row['price']:,.6g}\n"
+                            f"📊 Vol: ${row['volume_24h']/1e6:.0f}M\n"
+                            f"⚠️ Cân nhắc SHORT nếu có dấu hiệu đỉnh"
+                        )
+                except Exception as _ne:
+                    logger.debug(f"[PumpNhe] noti error: {_ne}")
+    api_pump_nhe_state._noti_cache = _noti_cache
+
     return jsonify({
         "ok":        True,
         "coins":     rows,
@@ -2822,6 +2884,38 @@ def api_pump_nhe_add():
     _save_pump_nhe_coins(coins)
     logger.info(f"[PumpNhe] Added: {symbol}")
     return jsonify({"ok": True, "msg": f"Đã thêm {symbol} ✅"})
+
+
+@app.route("/api/pump-nhe/config", methods=["POST"])
+def api_pump_nhe_config():
+    """Cập nhật config Pump Nhẹ: min_score và min_rise từ web UI."""
+    data      = request.get_json() or {}
+    min_score = data.get("min_score")
+    min_rise  = data.get("min_rise")
+    try:
+        import config as _cfg
+        if min_score is not None:
+            _cfg.PUMP_NHE_MIN_SCORE = int(min_score)
+        if min_rise is not None:
+            _cfg.PUMP_NHE_PRICE_RISE_PCT = float(min_rise)
+        # Persist vào file config.py
+        import os, re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if min_score is not None:
+            content = re.sub(r'PUMP_NHE_MIN_SCORE\s*=\s*\d+',
+                             f'PUMP_NHE_MIN_SCORE = {int(min_score)}', content)
+        if min_rise is not None:
+            content = re.sub(r'PUMP_NHE_PRICE_RISE_PCT\s*=\s*[\d.]+',
+                             f'PUMP_NHE_PRICE_RISE_PCT = {float(min_rise)}', content)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[PumpNhe] Config updated: score={min_score} rise={min_rise}")
+        return jsonify({"ok": True,
+                        "msg": f"✅ Đã lưu: score≥{int(min_score) if min_score else '—'} | rise≥{float(min_rise) if min_rise else '—'}%"})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"❌ Lỗi: {e}"})
 
 
 @app.route("/api/pump-nhe/toggle_auto", methods=["POST"])

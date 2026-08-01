@@ -3535,10 +3535,10 @@ def position_advisor(exchange, notifier):
                            if abs(float(p.get("positionAmt", 0))) > 0]
 
             if not open_pos:
-                time.sleep(1800)  # 30 phút
+                time.sleep(3600)  # 1 tiếng
                 continue
 
-            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (30 phút)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (1 tiếng)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
 
             for p in open_pos:
                 sym = p["symbol"]
@@ -3643,11 +3643,7 @@ def position_advisor(exchange, notifier):
         except Exception as e:
             logger.error(f"[PositionAdvisor] Error: {e}")
 
-        time.sleep(1800)  # 30 phút
-
-
-# ============================================================
-# THREAD 11: Orphan Order Cleanup — mỗi 20 phút xóa SL/TP mồ côi
+        time.sleep(3600)  # 1 tiếng
 # ============================================================
 def orphan_order_cleanup(exchange, notifier):
     """Nếu coin có SL/TP order nhưng KHÔNG có position → hủy"""
