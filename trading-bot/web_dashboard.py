@@ -351,6 +351,11 @@ async function toggleScanProtector(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleProfitLock(enabled) {
+    const r = await apiPost('/api/profit_lock', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function cancelAllPending() {
     if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
     await apiPost('/api/cancel_all_pending');
@@ -470,6 +475,20 @@ function renderDashboard(d) {
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
                     ${en?'Đang chốt lời sớm khi lệnh scan đảo chiều':'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:#8b949e">&#x1F512; Profit Lock:</span>
+            ${(() => {
+                const en = d.profit_lock_enabled !== false;
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleProfitLock(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleProfitLock(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
+                    ${en?'Đang tự chốt lời khi coin bay mạnh mà TP xa':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -1857,6 +1876,7 @@ def api_state():
         "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
+        "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
@@ -2648,6 +2668,25 @@ def api_scan_protector():
     return jsonify({
         "ok":  True,
         "msg": f"Scan Protector: {status}",
+        "enabled": bool(enabled),
+    })
+
+
+@app.route("/api/profit_lock", methods=["POST"])
+@require_auth
+def api_profit_lock():
+    """Bật/tắt Auto Profit Lock — tự chốt lời khi coin bay mạnh mà TP xa."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    try:
+        import config as _cfg
+        _cfg.PROFIT_LOCK_ENABLED = bool(enabled)
+    except Exception:
+        pass
+    status = "bật" if enabled else "tắt"
+    return jsonify({
+        "ok":  True,
+        "msg": f"Profit Lock: {status}",
         "enabled": bool(enabled),
     })
 

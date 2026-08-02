@@ -1609,6 +1609,235 @@ def scan_position_protector(exchange, notifier):
 
         _time.sleep(15)
 
+# ============================================================
+# THREAD: Auto Profit Lock — chốt lời sớm khi coin bay mạnh mà TP xa
+# Mỗi 5s: scan tất cả open positions
+# Nếu đang lời >= PROFIT_LOCK_MIN_PCT + phát hiện tốc độ bay giảm/đảo chiều
+# → chốt market ngay, không chờ TP
+# ============================================================
+# Track giá WS cho tốc độ bay — {symbol: deque of (ts, price)}
+_profit_lock_price_history: dict = {}
+
+def profit_lock_monitor(exchange, notifier):
+    """
+    Auto Profit Lock — chốt lời khi coin bay mạnh nhưng TP còn xa.
+    
+    Logic:
+    1. Position đang lời >= PROFIT_LOCK_MIN_PCT (3% default, đã nhân lev)
+    2. Giá đã đi được >= PROFIT_LOCK_TP_PROGRESS_PCT (40%) quãng entry→TP
+    3. Phát hiện 1 trong các dấu hiệu coin sắp quay đầu:
+       a) Nến đỏ mạnh (LONG) hoặc nến xanh mạnh (SHORT) - thân >= 50% range
+       b) Tốc độ bay giảm: 3 nến gần nhất chậm dần
+       c) RSI cực đoan + quay đầu (RSI > 75 rồi giảm, hoặc RSI < 25 rồi tăng)
+    4. Nếu lời >= PROFIT_LOCK_HIGH_PCT (8%) + 1 signal bất kỳ → chốt luôn
+    """
+    import time as _time
+    from collections import deque
+    _time.sleep(20)  # Đợi bot ổn định
+    logger.info("[ProfitLock] Started — auto close khi coin bay mạnh rồi yếu đà")
+
+    _max_price = {}  # LONG: giá cao nhất
+    _min_price = {}  # SHORT: giá thấp nhất
+
+    while state["running"]:
+        try:
+            if not getattr(config, "PROFIT_LOCK_ENABLED", True):
+                _time.sleep(10)
+                continue
+
+            interval = getattr(config, "PROFIT_LOCK_INTERVAL", 5)
+
+            with lock:
+                open_positions = list(state.get("open_positions", []))
+
+            for pos in open_positions:
+                symbol = pos.get("symbol", "")
+                amt    = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+
+                side       = "LONG" if amt > 0 else "SHORT"
+                entry      = float(pos.get("entryPrice", 0))
+                mark_price = pos.get("_mark", 0) or float(pos.get("markPrice", 0))
+                lev        = pos.get("_lev", getattr(config, "LEVERAGE", 10))
+                pnl_pct    = pos.get("_pct", 0)  # đã nhân leverage
+
+                if entry <= 0 or mark_price <= 0:
+                    continue
+
+                # ── Điều kiện 1: Lời tối thiểu ────────────────────────
+                min_pct = getattr(config, "PROFIT_LOCK_MIN_PCT", 3.0)
+                if pnl_pct < min_pct:
+                    continue
+
+                # ── Điều kiện 2: Tính TP progress ─────────────────────
+                # Tìm TP từ trade_log hoặc từ open orders
+                tp_price = 0.0
+                with lock:
+                    for t in reversed(state.get("trade_log", [])):
+                        if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                            tp_price = t.get("tp", 0)
+                            break
+
+                if tp_price > 0 and entry > 0:
+                    tp_distance = abs(tp_price - entry)
+                    if tp_distance > 0:
+                        current_distance = abs(mark_price - entry)
+                        tp_progress = (current_distance / tp_distance) * 100
+                    else:
+                        tp_progress = 100
+                else:
+                    # Không có TP → tính progress dựa trên unrealized %
+                    tp_progress = 50.0  # default cho phép check signals
+
+                progress_threshold = getattr(config, "PROFIT_LOCK_TP_PROGRESS_PCT", 40.0)
+
+                # Nếu chưa đi được đủ xa VÀ lời chưa đủ cao → skip
+                high_pct = getattr(config, "PROFIT_LOCK_HIGH_PCT", 8.0)
+                if tp_progress < progress_threshold and pnl_pct < high_pct:
+                    continue
+
+                # ── Điều kiện 3: Check dấu hiệu yếu đà ───────────────
+                try:
+                    klines = exchange.get_klines(symbol, "1m", limit=10)
+                    df = _klines_to_df(klines)
+                    if df is None or len(df) < 5:
+                        continue
+
+                    signals = []
+
+                    # 3a. Nến đảo chiều mạnh — nến gần nhất
+                    last = df.iloc[-1]
+                    o, h, l, c = last["open"], last["high"], last["low"], last["close"]
+                    body = abs(c - o)
+                    rng  = h - l if h > l else 0.0001
+
+                    if side == "LONG" and c < o and body >= rng * 0.50:
+                        # LONG mà nến đỏ mạnh = đang xả
+                        signals.append(f"Nến đỏ mạnh ({body/rng*100:.0f}% thân)")
+                    elif side == "SHORT" and c > o and body >= rng * 0.50:
+                        # SHORT mà nến xanh mạnh = đang hồi
+                        signals.append(f"Nến xanh mạnh ({body/rng*100:.0f}% thân)")
+
+                    # 3b. Tốc độ bay giảm — 3 nến liên tiếp chậm dần
+                    if len(df) >= 4:
+                        changes = []
+                        for i in range(-3, 0):
+                            prev_c = df["close"].iloc[i - 1]
+                            cur_c  = df["close"].iloc[i]
+                            if prev_c > 0:
+                                chg = (cur_c - prev_c) / prev_c * 100
+                                if side == "LONG":
+                                    changes.append(chg)  # LONG: muốn tăng
+                                else:
+                                    changes.append(-chg)  # SHORT: muốn giảm (đảo dấu)
+
+                        if len(changes) == 3:
+                            # Đà giảm dần: mỗi nến yếu hơn nến trước
+                            if changes[0] > changes[1] > changes[2]:
+                                signals.append(f"Đà giảm dần ({changes[0]:.2f}%→{changes[2]:.2f}%)")
+                            # Nến cuối âm (đảo chiều) sau 2 nến dương
+                            if changes[0] > 0 and changes[1] > 0 and changes[2] < 0:
+                                signals.append(f"Nến cuối đảo chiều ({changes[2]:.2f}%)")
+
+                    # 3c. RSI cực đoan + quay đầu
+                    from indicators import calculate_rsi
+                    rsi_series = calculate_rsi(df["close"], 6)  # RSI 6 nhanh hơn
+                    if len(rsi_series) >= 2:
+                        rsi_now  = rsi_series.iloc[-1]
+                        rsi_prev = rsi_series.iloc[-2]
+                        if side == "LONG" and rsi_prev > 75 and rsi_now < rsi_prev - 3:
+                            signals.append(f"RSI quay đầu {rsi_prev:.0f}→{rsi_now:.0f}")
+                        elif side == "SHORT" and rsi_prev < 25 and rsi_now > rsi_prev + 3:
+                            signals.append(f"RSI quay đầu {rsi_prev:.0f}→{rsi_now:.0f}")
+
+                    # 3d. Giá đã quay đầu từ đỉnh/đáy đạt được >= 30%
+                    if side == "LONG":
+                        if symbol not in _max_price or mark_price > _max_price[symbol]:
+                            _max_price[symbol] = mark_price
+                        peak = _max_price[symbol]
+                        if peak > entry:
+                            retrace = (peak - mark_price) / (peak - entry) * 100
+                            if retrace >= 30:
+                                signals.append(f"Quay đầu {retrace:.0f}% từ đỉnh")
+                    else:
+                        if symbol not in _min_price or mark_price < _min_price[symbol]:
+                            _min_price[symbol] = mark_price
+                        bottom = _min_price[symbol]
+                        if bottom < entry:
+                            retrace = (mark_price - bottom) / (entry - bottom) * 100
+                            if retrace >= 30:
+                                signals.append(f"Quay đầu {retrace:.0f}% từ đáy")
+
+                    # ── Quyết định chốt ──────────────────────────────
+                    should_close = False
+
+                    # Lời cao (>= 8%) + 1 signal bất kỳ → chốt luôn
+                    if pnl_pct >= high_pct and len(signals) >= 1:
+                        should_close = True
+
+                    # Lời trung bình (>= 3%) + đã đi >= 40% TP + 2 signals → chốt
+                    elif pnl_pct >= min_pct and tp_progress >= progress_threshold and len(signals) >= 2:
+                        should_close = True
+
+                    if not should_close:
+                        continue
+
+                    # ── Đóng position ─────────────────────────────────
+                    qty        = abs(amt)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    cur_price  = exchange.get_ticker_price(symbol)
+                    actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
+
+                    exchange.place_market_order(symbol, close_side, qty)
+                    exchange.cancel_all_orders(symbol)
+
+                    icon = "✅" if actual_pnl >= 0 else "⚠️"
+
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                t.update({
+                                    "status":   "CLOSED",
+                                    "close":    cur_price,
+                                    "pnl_usdt": round(actual_pnl, 2),
+                                    "pnl_pct":  round(pnl_pct, 2),
+                                    "note":     "profit_lock",
+                                })
+                                break
+                        _max_price.pop(symbol, None)
+                        _min_price.pop(symbol, None)
+
+                    from trade_history import save_history
+                    save_history(state["trade_log"])
+
+                    notifier.telegram.send(
+                        f"🔒 <b>PROFIT LOCK — Chốt lời tự động</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 {symbol} {side} | Lời <b>{pnl_pct:.1f}%</b>\n"
+                        f"📍 Entry: ${entry:.6g} → Close: ${cur_price:.6g}\n"
+                        f"📊 TP progress: {tp_progress:.0f}%\n"
+                        f"⚠️ Lý do chốt:\n"
+                        + "\n".join([f"  • {s}" for s in signals]) + "\n"
+                        f"{icon} PnL: <b>${actual_pnl:+.2f}</b>\n"
+                        f"💡 <i>Coin bay mạnh nhưng đà yếu — lock profit</i>\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    logger.info(
+                        f"[ProfitLock] CLOSED {symbol} {side} "
+                        f"pnl={actual_pnl:+.2f} ({pnl_pct:.1f}%) "
+                        f"tp_progress={tp_progress:.0f}% signals={signals}"
+                    )
+
+                except Exception as e:
+                    logger.debug(f"[ProfitLock] {symbol}: {e}")
+
+        except Exception as e:
+            logger.error(f"[ProfitLock] Loop error: {e}")
+
+        _time.sleep(interval)
+
+
 # ── Interruptible sleep: wake up sớm khi phát hiện spike giá ──────────────
 # Dùng giá WS đã có trong state["prices"] — không tốn API call
 # Trả về symbol bị spike (để scan ngay), hoặc None nếu hết thời gian
@@ -4020,6 +4249,8 @@ if __name__ == "__main__":
         _t2a2.start()
         _t2a3 = threading.Thread(target=scan_position_protector, args=(exchange, notifier), daemon=True)
         _t2a3.start()
+        _t_plock = threading.Thread(target=profit_lock_monitor, args=(exchange, notifier), daemon=True)
+        _t_plock.start()
         _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
         _t2b.start()
         _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)

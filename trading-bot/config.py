@@ -84,6 +84,35 @@ MAX_LOSS_PCT_PER_POSITION = 0.20
 REVERSAL_MONITOR_ENABLED = True
 REVERSAL_ALERT_ONLY      = False   # True = chỉ alert, không đóng lệnh
 
+# ============================================================
+# AUTO PROFIT LOCK — Tự chốt lời khi coin bay mạnh mà TP còn xa
+# ============================================================
+# Khi LONG mà coin bay lên mạnh bất ngờ nhưng TP xa → giá quay đầu mất lời
+# Khi SHORT mà coin dump nhanh nhưng TP xa → giá hồi lại mất lời
+# Feature này phát hiện tốc độ bay + unrealized profit cao → chốt ngay
+
+# Bật/tắt Auto Profit Lock
+PROFIT_LOCK_ENABLED = True
+
+# Ngưỡng % lời TỐI THIỂU để bắt đầu xét chốt (unrealized PnL %)
+# Ví dụ: 3.0 = cần lời ít nhất 3% (đã nhân leverage) mới xét
+PROFIT_LOCK_MIN_PCT = 3.0
+
+# Ngưỡng % lời CAO để chốt ngay khi có dấu hiệu yếu (không cần đủ 2/3 signal)
+# Ví dụ: 8.0 = lời >= 8% + 1 signal yếu → chốt luôn
+PROFIT_LOCK_HIGH_PCT = 8.0
+
+# Tốc độ bay: giá thay đổi >= X% trong 3 nến 1m gần nhất → coi là "bay mạnh"
+# Ví dụ: 2.0 = giá tăng/giảm >= 2% trong 3 phút
+PROFIT_LOCK_SPEED_PCT = 2.0
+
+# Tỷ lệ TP đã đạt được (%) — nếu giá đã đi được >= X% khoảng cách entry→TP
+# mà đang quay đầu → chốt. Ví dụ: 40 = đã đi được 40% quãng đường đến TP
+PROFIT_LOCK_TP_PROGRESS_PCT = 40.0
+
+# Interval check (giây) — mỗi bao lâu check 1 lần
+PROFIT_LOCK_INTERVAL = 5
+
 # --- Strategy ---
 MIN_SCORE           = 50.0
 COOLDOWN_AFTER_LOSS = 300
