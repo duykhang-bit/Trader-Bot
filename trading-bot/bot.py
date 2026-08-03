@@ -1680,13 +1680,13 @@ def _ws_profit_lock_check(sym: str, price: float, exchange_ref, notifier_ref):
 
     # ── Track giá history (mỗi 1s) ───────────────────────────
     if sym not in _profit_lock_price_history:
-        _profit_lock_price_history[sym] = deque(maxlen=10)  # giữ 10 tick (10 giây)
+        _profit_lock_price_history[sym] = deque(maxlen=15)  # giữ 15 tick (15 giây)
     _profit_lock_price_history[sym].append((now, price))
 
     # ══════════════════════════════════════════════════════════
     # TRIGGER 1: Lời >= HIGH_PCT → CHỐT NGAY, không cần check gì
     # ══════════════════════════════════════════════════════════
-    high_pct = getattr(config, "PROFIT_LOCK_HIGH_PCT", 8.0)
+    high_pct = getattr(config, "PROFIT_LOCK_HIGH_PCT", 5.0)
     should_close = False
     reason = ""
 
@@ -1698,7 +1698,7 @@ def _ws_profit_lock_check(sym: str, price: float, exchange_ref, notifier_ref):
     # TRIGGER 2: Giá bay nhanh >= SPEED_PCT trong 2-3 giây → chốt ngay tại đỉnh
     # ══════════════════════════════════════════════════════════
     if not should_close:
-        speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT", 2.0)
+        speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT", 0.5)
         history = _profit_lock_price_history[sym]
 
         # So sánh giá hiện tại vs giá 3 giây trước
@@ -1712,21 +1712,41 @@ def _ws_profit_lock_check(sym: str, price: float, exchange_ref, notifier_ref):
 
                 if speed >= speed_pct:
                     should_close = True
-                    reason = f"Bay +{speed:.1f}% trong {now - old_ts:.0f}s — lock tại đỉnh!"
+                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — lock tại đỉnh!"
 
-        # So sánh vs 2 giây trước nếu speed cao hơn
-        if not should_close and len(history) >= 2:
-            old_ts, old_price = history[-2]
+    # ══════════════════════════════════════════════════════════
+    # TRIGGER 3: Giá bay >= SPEED_10S_PCT trong 10 giây (bắt coin bay đều)
+    # TUT bay kiểu tăng đều 0.1%/s × 10s = 1% → trigger
+    # ══════════════════════════════════════════════════════════
+    if not should_close:
+        speed_10s = getattr(config, "PROFIT_LOCK_SPEED_10S_PCT", 1.0)
+        history = _profit_lock_price_history[sym]
+
+        if len(history) >= 10:
+            old_ts, old_price = history[-10]  # 10 tick trước (~10 giây)
             if old_price > 0:
                 if side == "LONG":
                     speed = (price - old_price) / old_price * 100
                 else:
                     speed = (old_price - price) / old_price * 100
 
-                # Cần bay nhanh hơn cho window 2s (threshold * 1.2)
-                if speed >= speed_pct * 1.2:
+                if speed >= speed_10s:
                     should_close = True
-                    reason = f"Bay +{speed:.1f}% trong {now - old_ts:.0f}s — spike cực nhanh!"
+                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — pump liên tục!"
+
+        # Fallback: check 5 giây nếu chưa đủ 10 tick
+        if not should_close and len(history) >= 5:
+            old_ts, old_price = history[-5]
+            if old_price > 0:
+                if side == "LONG":
+                    speed = (price - old_price) / old_price * 100
+                else:
+                    speed = (old_price - price) / old_price * 100
+
+                # 5 giây cần bay >= 60% ngưỡng 10s
+                if speed >= speed_10s * 0.6:
+                    should_close = True
+                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — tốc độ cao!"
 
     if not should_close:
         return

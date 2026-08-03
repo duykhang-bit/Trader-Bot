@@ -99,12 +99,17 @@ PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_MIN_PCT = 3.0
 
 # Ngưỡng % lời CAO để chốt ngay khi có dấu hiệu yếu (không cần đủ 2/3 signal)
-# Ví dụ: 8.0 = lời >= 8% + 1 signal yếu → chốt luôn
-PROFIT_LOCK_HIGH_PCT = 8.0
+# Ví dụ: 5.0 = lời >= 5% (đã nhân leverage) → chốt luôn không cần tín hiệu
+PROFIT_LOCK_HIGH_PCT = 5.0
 
 # Tốc độ bay: giá thay đổi >= X% trong 3 nến 1m gần nhất → coi là "bay mạnh"
-# Ví dụ: 2.0 = giá tăng/giảm >= 2% trong 3 phút
-PROFIT_LOCK_SPEED_PCT = 2.0
+# Ví dụ: 0.5 = giá tăng/giảm >= 0.5% trong 3 giây (× lev 15x = 7.5% PnL)
+# Coin altcoin bay 0.5% trong 3s là rất nhanh rồi
+PROFIT_LOCK_SPEED_PCT = 0.5
+
+# Cửa sổ dài hơn: giá bay >= X% trong 10 giây → cũng trigger
+# TUT bay +9% trong vài phút → mỗi 10s khoảng +1%
+PROFIT_LOCK_SPEED_10S_PCT = 1.0
 
 # Tỷ lệ TP đã đạt được (%) — nếu giá đã đi được >= X% khoảng cách entry→TP
 # mà đang quay đầu → chốt. Ví dụ: 40 = đã đi được 40% quãng đường đến TP
