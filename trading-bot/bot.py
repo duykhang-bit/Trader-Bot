@@ -930,9 +930,13 @@ def price_ws_streamer():
             # Rebuild stream URL mỗi lần reconnect (watchlist có thể thay đổi)
             with lock:
                 pump_watch = list(state.get("pump_watch_coins", []))
+                # Thêm coin đang có position vào stream — để profit lock hoạt động
+                pos_syms = [p["symbol"] for p in state.get("open_positions", [])
+                            if abs(float(p.get("positionAmt", 0))) > 0]
             all_syms = list(dict.fromkeys(
                 [s.lower() for s in WATCHLIST] +
-                [s.lower() for s in pump_watch]
+                [s.lower() for s in pump_watch] +
+                [s.lower() for s in pos_syms]
             ))
             streams = "/".join([f"{s}@markPrice@1s" for s in all_syms])
             url = f"{base_ws}/stream?streams={streams}"
@@ -1077,6 +1081,24 @@ def price_updater(exchange):
                             break
 
                 state["open_positions"] = open_pos
+
+            # ── Profit Lock fallback: check cho coin KHÔNG nằm trong WS stream ──
+            # WS chỉ stream WATCHLIST + pump_watch — coin vào position giữa chừng
+            # (ví dụ TUT) sẽ không có WS price → dùng REST price ở đây (mỗi 3s)
+            if getattr(config, "PROFIT_LOCK_ENABLED", True):
+                ws_syms = set(s.upper() for s in WATCHLIST)
+                with lock:
+                    pw = set(state.get("pump_watch_coins", []))
+                ws_syms.update(pw)
+                exchange_ref = state.get("_exchange")
+                notifier_ref = state.get("_notifier")
+                if exchange_ref and notifier_ref:
+                    for p in open_pos:
+                        p_sym = p.get("symbol", "")
+                        if p_sym not in ws_syms and abs(float(p.get("positionAmt", 0))) > 0:
+                            p_mark = p.get("_mark", 0)
+                            if p_mark > 0:
+                                _ws_profit_lock_check(p_sym, p_mark, exchange_ref, notifier_ref)
 
             # ── Max loss check: đóng lệnh nếu lỗ > $20 ──
             max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
