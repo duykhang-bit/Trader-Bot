@@ -332,6 +332,18 @@ async function apiPost(url, body={}) {
 }
 
 async function toggleBot() { await apiPost('/api/toggle'); refresh(); }
+async function quickShort() {
+    const sym = document.getElementById('qs-symbol').value.trim().toUpperCase();
+    if (!sym) { toast('Nhập coin!', false); return; }
+    const r = await apiPost('/api/quick_trade', {symbol: sym, side: 'SHORT'});
+    if (r && r.ok) { toast(r.msg); refresh(); } else { toast(r?.msg || 'Lỗi', false); }
+}
+async function quickLong() {
+    const sym = document.getElementById('qs-symbol').value.trim().toUpperCase();
+    if (!sym) { toast('Nhập coin!', false); return; }
+    const r = await apiPost('/api/quick_trade', {symbol: sym, side: 'LONG'});
+    if (r && r.ok) { toast(r.msg); refresh(); } else { toast(r?.msg || 'Lỗi', false); }
+}
 async function toggleOrphan(enabled) {
     await apiPost('/api/set_auto_cancel', {enabled: enabled});
     refresh();
@@ -425,6 +437,17 @@ function renderDashboard(d) {
         : '<span class="dot dot-red"></span> Paused';
 
     let html = '';
+
+    // ── Quick SHORT/LONG — bấm 1 nút vào ngay ──
+    html += `<div class="section" style="background:linear-gradient(135deg,#0d1117,#1a0a0a);border:1px solid #5a1a1a;border-radius:12px;padding:14px;margin-bottom:12px">
+        <h2 style="font-size:14px;margin:0 0 10px 0;color:#f85149">&#x26A1; Quick Trade</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <input id="qs-symbol" placeholder="HEIUSDT" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:13px;width:130px">
+            <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">&#x1F534; SHORT</button>
+            <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">&#x1F7E2; LONG</button>
+            <span style="font-size:11px;color:#8b949e">$${d.settings?.max_order_usdt||15} × ${d.settings?.leverage||15}x</span>
+        </div>
+    </div>`;
 
     // Control Panel
     html += `<div class="section"><h2>&#x2699; Controls</h2>
@@ -2069,6 +2092,74 @@ def api_remove_coin():
     logger.info(f"Coin removed: {symbol}")
     _save_coins_to_config(wl)
     return jsonify({"ok": True, "msg": f"Removed {symbol}"})
+
+
+@app.route("/api/quick_trade", methods=["POST"])
+def api_quick_trade():
+    """Quick SHORT/LONG — market order ngay, dùng config USDT + leverage."""
+    data   = request.get_json() or {}
+    symbol = data.get("symbol", "").upper().strip()
+    side   = data.get("side", "").upper().strip()
+    if not symbol or side not in ("LONG", "SHORT"):
+        return jsonify({"ok": False, "msg": "Thiếu symbol hoặc side"})
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+    if _exchange is None:
+        return jsonify({"ok": False, "msg": "Exchange not connected"})
+    try:
+        usdt = float(getattr(_config, "MAX_ORDER_USDT", 15))
+        leverage = int(getattr(_config, "LEVERAGE", 15))
+        price = _exchange.get_ticker_price(symbol)
+        if not price or float(price) <= 0:
+            return jsonify({"ok": False, "msg": f"Không lấy được giá {symbol}"})
+
+        # Set leverage (tự giảm nếu coin không hỗ trợ)
+        actual_lev = _exchange.set_leverage(symbol, leverage)
+        if isinstance(actual_lev, int) and actual_lev < leverage:
+            leverage = actual_lev
+
+        # Tính qty giữ position size = usdt × config.LEVERAGE gốc
+        from qty_utils import calc_qty_precise
+        target_lev = int(getattr(_config, "LEVERAGE", 15))
+        target_usdt = usdt * target_lev / leverage  # tăng margin nếu lev giảm
+        qty, _ = calc_qty_precise(_exchange, symbol, target_usdt, leverage, price)
+        if qty * price < 5.0:
+            return jsonify({"ok": False, "msg": f"Qty quá nhỏ"})
+
+        order_side = "BUY" if side == "LONG" else "SELL"
+        _exchange.place_market_order(symbol, order_side, qty)
+
+        # Auto SL/TP
+        import time as _t; _t.sleep(0.5)
+        sl = tp = 0
+        try:
+            from auto_sltp import suggest_sltp
+            s = suggest_sltp(_exchange, symbol, side, price, liq_tracker=None)
+            sl, tp = s["sl"], s["tp"]
+            close_side = "SELL" if side == "LONG" else "BUY"
+            try: _exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+            except: pass
+            try: _exchange.place_take_profit_order(symbol, close_side, qty, tp)
+            except: pass
+        except: pass
+
+        with _lock:
+            _state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": side,
+                "entry": price, "sl": sl, "tp": tp,
+                "qty": qty, "status": "OPEN", "note": "quick_trade",
+            })
+
+        msg = f"{'🔴' if side=='SHORT' else '🟢'} {side} {symbol} @ ${price:.6g} qty={qty} lev={leverage}x"
+        logger.info(f"[QuickTrade] {msg}")
+        if _notifier:
+            try: _notifier.telegram.send(f"⚡ <b>QUICK {side}</b>\n🪙 {symbol} @ ${price:,.6g}\n📦 qty={qty} {leverage}x")
+            except: pass
+        return jsonify({"ok": True, "msg": msg})
+    except Exception as e:
+        logger.error(f"[QuickTrade] {symbol} {side}: {e}")
+        return jsonify({"ok": False, "msg": str(e)[:200]})
 
 
 @app.route("/api/order", methods=["POST"])
