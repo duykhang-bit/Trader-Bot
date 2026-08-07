@@ -2236,6 +2236,22 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
+                # Filter: không SHORT nếu giá đã rớt nhiều từ đỉnh (đã dump xong, đang hồi)
+                # Không LONG nếu giá đã tăng nhiều từ đáy (đã bay xong)
+                if not skip_reason:
+                    if best.signal == "SHORT":
+                        recent_high = df["high"].iloc[-20:].max()
+                        if recent_high > 0:
+                            drop_pct = (recent_high - price) / recent_high * 100
+                            if drop_pct > 5.0:
+                                skip_reason = f"Giá đã rớt {drop_pct:.1f}% từ đỉnh — SHORT quá trễ"
+                    elif best.signal == "LONG":
+                        recent_low = df["low"].iloc[-20:].min()
+                        if recent_low > 0:
+                            rise_pct = (price - recent_low) / recent_low * 100
+                            if rise_pct > 5.0:
+                                skip_reason = f"Giá đã tăng {rise_pct:.1f}% từ đáy — LONG quá trễ"
+
                 # Filter LIQ: không vào lệnh khi thanh khoản kẹp 2 bên sát nhau
                 # LONG: liq sát dưới + trên → giá quét dưới trước → SL
                 # SHORT: liq sát trên + dưới → giá quét trên trước → SL
