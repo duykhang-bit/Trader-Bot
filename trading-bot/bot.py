@@ -2236,6 +2236,35 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
+                # Filter LIQ: không vào lệnh khi thanh khoản kẹp 2 bên sát nhau
+                # LONG: liq sát dưới + trên → giá quét dưới trước → SL
+                # SHORT: liq sát trên + dưới → giá quét trên trước → SL
+                if not skip_reason and liq_inst:
+                    try:
+                        liq_below = liq_inst.get_nearest_liq_below(
+                            best.symbol, price, min_usd=50_000
+                        )
+                        liq_above = liq_inst.get_nearest_liq_above(
+                            best.symbol, price, min_usd=50_000
+                        )
+                        dist_below = ((price - liq_below) / price * 100) if liq_below else 99
+                        dist_above = ((liq_above - price) / price * 100) if liq_above else 99
+
+                        if best.signal == "LONG" and dist_below <= 3.0 and dist_above <= 5.0:
+                            skip_reason = (
+                                f"LIQ: kẹp 2 bên — dưới {dist_below:.1f}% "
+                                f"trên {dist_above:.1f}% → giá quét dưới trước"
+                            )
+                            logger.info(f"[LiqFilter] {best.symbol}: {skip_reason}")
+                        elif best.signal == "SHORT" and dist_above <= 3.0 and dist_below <= 5.0:
+                            skip_reason = (
+                                f"LIQ: kẹp 2 bên — trên {dist_above:.1f}% "
+                                f"dưới {dist_below:.1f}% → giá quét trên trước"
+                            )
+                            logger.info(f"[LiqFilter] {best.symbol}: {skip_reason}")
+                    except Exception as _e:
+                        logger.debug(f"LiqFilter skip: {_e}")
+
                 # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
                 # Đây là bước cuối cùng trước khi vào lệnh
                 # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
