@@ -645,6 +645,30 @@ class TelegramCommandHandler:
             )
             return None
 
+        # /ql — QUICK LONG: bấm = vào ngay, không phân tích
+        elif cmd == "/ql":
+            with self.lock:
+                ql_coins = list(self.state.get("quick_long_coins", []))
+            if not ql_coins:
+                return "❌ Danh sách Quick LONG trống.\nThêm coin: /qla HEI"
+            buttons = []
+            row = []
+            for sym in ql_coins:
+                name = sym.replace("USDT", "")
+                row.append({"text": f"🟢 {name}", "callback_data": f"ql_{sym}"})
+                if len(row) == 3:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            buttons.append([{"text": "❌ Hủy", "callback_data": "cancel_trade"}])
+            self.send(
+                "⚡ <b>QUICK LONG — Bấm = vào ngay!</b>\n"
+                f"💰 ${getattr(self.config, 'MAX_ORDER_USDT', 15)} × {getattr(self.config, 'LEVERAGE', 15)}x",
+                markup={"inline_keyboard": buttons}
+            )
+            return None
+
         # /qsa — Add coin vào quick short list
         elif cmd == "/qsa":
             if len(parts) < 2:
@@ -670,6 +694,33 @@ class TelegramCommandHandler:
                 if symbol in qs:
                     qs.remove(symbol)
                     return f"✅ Xóa <b>{symbol}</b> ({len(qs)} coin còn)"
+            return f"⚠️ {symbol} không có trong list"
+
+        # /qla — Add coin vào quick long list
+        elif cmd == "/qla":
+            if len(parts) < 2:
+                return "Dùng: /qla BTC"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            with self.lock:
+                ql = self.state.setdefault("quick_long_coins", [])
+                if symbol not in ql:
+                    ql.append(symbol)
+            return f"✅ Thêm <b>{symbol}</b> vào Quick LONG ({len(ql)} coin)"
+
+        # /qlr — Remove coin khỏi quick long list
+        elif cmd == "/qlr":
+            if len(parts) < 2:
+                return "Dùng: /qlr BTC"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            with self.lock:
+                ql = self.state.setdefault("quick_long_coins", [])
+                if symbol in ql:
+                    ql.remove(symbol)
+                    return f"✅ Xóa <b>{symbol}</b> ({len(ql)} coin còn)"
             return f"⚠️ {symbol} không có trong list"
 
         # /history
@@ -1600,6 +1651,16 @@ class TelegramCommandHandler:
                         t = threading.Thread(
                             target=self._quick_trade_now,
                             args=(sym, "SHORT"),
+                            daemon=True
+                        )
+                        t.start()
+
+                    elif data.startswith("ql_"):
+                        # Quick LONG — bấm = vào ngay
+                        sym = data.replace("ql_", "")
+                        t = threading.Thread(
+                            target=self._quick_trade_now,
+                            args=(sym, "LONG"),
                             daemon=True
                         )
                         t.start()
