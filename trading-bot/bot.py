@@ -2236,36 +2236,6 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
-                # Filter LIQ: không vào lệnh khi thanh khoản KẸP 2 BÊN sát nhau
-                # Giá bị kẹt giữa 2 vùng liq → quét hết 1 bên rồi mới đi → chờ
-                if not skip_reason and liq_inst:
-                    try:
-                        liq_below = liq_inst.get_nearest_liq_below(
-                            best.symbol, price, min_usd=50_000
-                        )
-                        liq_above = liq_inst.get_nearest_liq_above(
-                            best.symbol, price, min_usd=50_000
-                        )
-                        dist_below = ((price - liq_below) / price * 100) if liq_below else 99
-                        dist_above = ((liq_above - price) / price * 100) if liq_above else 99
-
-                        # Chỉ skip khi CẢ 2 BÊN đều sát (kẹp giữa)
-                        both_close = dist_below <= 2.0 and dist_above <= 2.0
-                        if both_close:
-                            if best.signal == "LONG":
-                                skip_reason = (
-                                    f"LIQ kẹp: dưới {dist_below:.1f}% + trên {dist_above:.1f}% "
-                                    f"→ chờ quét xong"
-                                )
-                            else:
-                                skip_reason = (
-                                    f"LIQ kẹp: trên {dist_above:.1f}% + dưới {dist_below:.1f}% "
-                                    f"→ chờ quét xong"
-                                )
-                            logger.info(f"[LiqFilter] {best.symbol}: {skip_reason}")
-                    except Exception as _e:
-                        logger.debug(f"LiqFilter skip: {_e}")
-
                 # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
                 # Đây là bước cuối cùng trước khi vào lệnh
                 # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
@@ -3949,12 +3919,13 @@ def orphan_order_cleanup(exchange, notifier):
                             pass
 
                     # Auto cancel entry orders nếu được bật
+                    # Chỉ cancel nếu lệnh đã chờ > 5 phút (tránh cancel lệnh vừa đặt)
                     order_time_ms = int(o.get("time", 0))
                     order_age_sec = (time.time() * 1000 - order_time_ms) / 1000 if order_time_ms else 999
                     if (sym and sym not in open_syms
                             and not o.get("reduceOnly", False)
                             and state.get("auto_cancel_orphan", False)
-                            and order_age_sec > 300):
+                            and order_age_sec > 300):   # phải chờ ít nhất 5 phút
                         try:
                             exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
                             cancelled.append(f"{sym} ({o.get('type','')} entry-orphan {order_age_sec/60:.0f}m)")
