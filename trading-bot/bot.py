@@ -2252,9 +2252,8 @@ def scan_engine(exchange, notifier):
                             if rise_pct > 5.0:
                                 skip_reason = f"Giá đã tăng {rise_pct:.1f}% từ đáy — LONG quá trễ"
 
-                # Filter LIQ: không vào lệnh khi thanh khoản gần sát chưa quét xong
-                # LONG: nếu có liq lớn sát dưới → giá sẽ quét dưới trước → chờ quét xong
-                # SHORT: nếu có liq lớn sát trên → giá sẽ quét trên trước → chờ quét xong
+                # Filter LIQ: không vào lệnh khi thanh khoản KẸP 2 BÊN sát nhau
+                # Giá bị kẹt giữa 2 vùng liq → quét hết 1 bên rồi mới đi → chờ
                 if not skip_reason and liq_inst:
                     try:
                         liq_below = liq_inst.get_nearest_liq_below(
@@ -2266,17 +2265,19 @@ def scan_engine(exchange, notifier):
                         dist_below = ((price - liq_below) / price * 100) if liq_below else 99
                         dist_above = ((liq_above - price) / price * 100) if liq_above else 99
 
-                        if best.signal == "LONG" and dist_below <= 3.0:
-                            skip_reason = (
-                                f"LIQ: còn thanh khoản dưới {dist_below:.1f}% chưa quét "
-                                f"→ chờ quét xong"
-                            )
-                            logger.info(f"[LiqFilter] {best.symbol}: {skip_reason}")
-                        elif best.signal == "SHORT" and dist_above <= 3.0:
-                            skip_reason = (
-                                f"LIQ: còn thanh khoản trên {dist_above:.1f}% chưa quét "
-                                f"→ chờ quét xong"
-                            )
+                        # Chỉ skip khi CẢ 2 BÊN đều sát (kẹp giữa)
+                        both_close = dist_below <= 2.0 and dist_above <= 2.0
+                        if both_close:
+                            if best.signal == "LONG":
+                                skip_reason = (
+                                    f"LIQ kẹp: dưới {dist_below:.1f}% + trên {dist_above:.1f}% "
+                                    f"→ chờ quét xong"
+                                )
+                            else:
+                                skip_reason = (
+                                    f"LIQ kẹp: trên {dist_above:.1f}% + dưới {dist_below:.1f}% "
+                                    f"→ chờ quét xong"
+                                )
                             logger.info(f"[LiqFilter] {best.symbol}: {skip_reason}")
                     except Exception as _e:
                         logger.debug(f"LiqFilter skip: {_e}")
