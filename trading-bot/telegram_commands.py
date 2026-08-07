@@ -621,6 +621,57 @@ class TelegramCommandHandler:
                 self.send("🔴 <b>SHORT — Chọn coin:</b>", markup={"inline_keyboard": buttons})
                 return None
 
+        # /qs — QUICK SHORT: bấm = vào ngay, không phân tích
+        elif cmd == "/qs":
+            with self.lock:
+                qs_coins = list(self.state.get("quick_short_coins", []))
+            if not qs_coins:
+                return "❌ Danh sách Quick SHORT trống.\nThêm coin: /qsa HEI"
+            buttons = []
+            row = []
+            for sym in qs_coins:
+                name = sym.replace("USDT", "")
+                row.append({"text": f"🔴 {name}", "callback_data": f"qs_{sym}"})
+                if len(row) == 3:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            buttons.append([{"text": "❌ Hủy", "callback_data": "cancel_trade"}])
+            self.send(
+                "⚡ <b>QUICK SHORT — Bấm = vào ngay!</b>\n"
+                f"💰 ${getattr(self.config, 'MAX_ORDER_USDT', 15)} × {getattr(self.config, 'LEVERAGE', 15)}x",
+                markup={"inline_keyboard": buttons}
+            )
+            return None
+
+        # /qsa — Add coin vào quick short list
+        elif cmd == "/qsa":
+            if len(parts) < 2:
+                return "Dùng: /qsa HEI"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            with self.lock:
+                qs = self.state.setdefault("quick_short_coins", [])
+                if symbol not in qs:
+                    qs.append(symbol)
+            return f"✅ Thêm <b>{symbol}</b> vào Quick SHORT ({len(qs)} coin)"
+
+        # /qsr — Remove coin khỏi quick short list
+        elif cmd == "/qsr":
+            if len(parts) < 2:
+                return "Dùng: /qsr HEI"
+            symbol = parts[1].upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            with self.lock:
+                qs = self.state.setdefault("quick_short_coins", [])
+                if symbol in qs:
+                    qs.remove(symbol)
+                    return f"✅ Xóa <b>{symbol}</b> ({len(qs)} coin còn)"
+            return f"⚠️ {symbol} không có trong list"
+
         # /history
         elif cmd == "/history":
             from trade_history import load_history
@@ -820,6 +871,59 @@ class TelegramCommandHandler:
         lines.append(f"🔄 Gõ /dashboard để refresh")
 
         return "\n".join(lines)
+
+    def _quick_trade_now(self, symbol: str, side: str):
+        """Vào lệnh NGAY market order — không phân tích."""
+        try:
+            exchange = self._get_exchange()
+            if not exchange:
+                self.send("❌ Exchange không kết nối")
+                return
+            usdt = float(getattr(self.config, "MAX_ORDER_USDT", 15))
+            leverage = int(getattr(self.config, "LEVERAGE", 15))
+            price = exchange.get_ticker_price(symbol)
+            if not price or price <= 0:
+                self.send(f"❌ Không lấy được giá {symbol}")
+                return
+            actual_lev = exchange.set_leverage(symbol, leverage)
+            if isinstance(actual_lev, int) and actual_lev < leverage:
+                leverage = actual_lev
+            from qty_utils import calc_qty_precise
+            target_usdt = usdt * int(getattr(self.config, "LEVERAGE", 15)) / leverage
+            qty, _ = calc_qty_precise(exchange, symbol, target_usdt, leverage, price)
+            if qty * price < 5.0:
+                self.send(f"❌ Qty quá nhỏ")
+                return
+            order_side = "BUY" if side == "LONG" else "SELL"
+            exchange.place_market_order(symbol, order_side, qty)
+            import time as _t; _t.sleep(0.5)
+            sl = tp = 0
+            try:
+                from auto_sltp import suggest_sltp
+                s = suggest_sltp(exchange, symbol, side, price, liq_tracker=None)
+                sl, tp = s["sl"], s["tp"]
+                close_side = "SELL" if side == "LONG" else "BUY"
+                try: exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+                except: pass
+                try: exchange.place_take_profit_order(symbol, close_side, qty, tp)
+                except: pass
+            except: pass
+            with self.lock:
+                from datetime import datetime as _dt
+                self.state["trade_log"].append({
+                    "time": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": symbol, "side": side,
+                    "entry": price, "sl": sl, "tp": tp,
+                    "qty": qty, "status": "OPEN", "note": "quick_telegram",
+                })
+            icon = "🔴" if side == "SHORT" else "🟢"
+            self.send(
+                f"{icon} <b>QUICK {side} — Done!</b>\n"
+                f"🪙 {symbol} @ ${price:,.6g}\n"
+                f"📦 qty={qty} | {leverage}x"
+            )
+        except Exception as e:
+            self.send(f"❌ {side} {symbol}: {str(e)[:100]}")
 
     def _analyze_and_send(self, symbol: str):
         """
@@ -1489,6 +1593,16 @@ class TelegramCommandHandler:
                                 daemon=True
                             )
                             t.start()
+
+                    elif data.startswith("qs_"):
+                        # Quick SHORT — bấm = vào ngay
+                        sym = data.replace("qs_", "")
+                        t = threading.Thread(
+                            target=self._quick_trade_now,
+                            args=(sym, "SHORT"),
+                            daemon=True
+                        )
+                        t.start()
 
                     elif data.startswith("cancelorders_"):
                         # Format: cancelorders_BTCUSDT or cancelorders_ALL
