@@ -2081,6 +2081,106 @@ def scan_engine(exchange, notifier):
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
 
+            # ── FAST CHECK: coin đang pending liq entry → giá tới zone chưa? ──
+            # Không cần scan lại 4h/1h/15m — chỉ check giá + 1m trigger
+            with lock:
+                pending_liq = dict(state.get("pending_liq_entries", {}))
+            if pending_liq:
+                for p_sym, p_info in list(pending_liq.items()):
+                    try:
+                        # Bỏ pending quá 30 phút
+                        if time.time() - p_info["ts"] > 1800:
+                            with lock:
+                                state.get("pending_liq_entries", {}).pop(p_sym, None)
+                            continue
+
+                        # Skip nếu đã có position
+                        with lock:
+                            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                                         if abs(float(p.get("positionAmt", 0))) > 0}
+                        if p_sym in open_syms:
+                            with lock:
+                                state.get("pending_liq_entries", {}).pop(p_sym, None)
+                            continue
+
+                        cur_p = exchange.get_ticker_price(p_sym)
+                        dist = abs(cur_p - p_info["entry_price"]) / cur_p * 100
+
+                        if dist <= 3.0:
+                            # Giá ĐÃ VÀO vùng liq → check 1m trigger
+                            klines_1m = exchange.get_klines(p_sym, "1m", limit=5)
+                            df_1m = _klines_to_df(klines_1m)
+
+                            c_close = df_1m["close"].iloc[-1]
+                            c_open  = df_1m["open"].iloc[-1]
+                            c_body  = abs(c_close - c_open)
+                            p_close = df_1m["close"].iloc[-2]
+                            p_open  = df_1m["open"].iloc[-2]
+                            p_body  = abs(p_close - p_open)
+
+                            triggered = False
+                            if p_info["signal"] == "LONG":
+                                low_recent = df_1m["low"].iloc[-2]
+                                low_3ago = df_1m["low"].iloc[-4] if len(df_1m) >= 5 else df_1m["low"].iloc[0]
+                                if c_close > c_open and c_body > p_body * 0.8 and (low_recent < low_3ago or dist <= 1.0):
+                                    triggered = True
+                            else:
+                                high_recent = df_1m["high"].iloc[-2]
+                                high_3ago = df_1m["high"].iloc[-4] if len(df_1m) >= 5 else df_1m["high"].iloc[0]
+                                if c_close < c_open and c_body > p_body * 0.8 and (high_recent > high_3ago or dist <= 1.0):
+                                    triggered = True
+
+                            if triggered:
+                                # VÀO LỆNH NGAY
+                                signal = p_info["signal"]
+                                side = "BUY" if signal == "LONG" else "SELL"
+                                close_side = "SELL" if signal == "LONG" else "BUY"
+                                sl = p_info["sl"]
+                                tp = p_info["tp"]
+
+                                try:
+                                    exchange.set_leverage(p_sym, config.LEVERAGE)
+                                except Exception:
+                                    pass
+                                bal = exchange.get_account_balance()
+                                qty = calc_qty(bal, cur_p, sl, symbol=p_sym, exchange=exchange)
+                                if qty * cur_p < 5.0:
+                                    qty = round(5.0 / cur_p + 0.001, 3)
+
+                                exchange.place_market_order(p_sym, side, qty)
+                                time.sleep(1)
+                                try:
+                                    exchange.place_stop_loss_order(p_sym, close_side, qty, sl)
+                                except Exception:
+                                    pass
+                                try:
+                                    exchange.place_take_profit_order(p_sym, close_side, qty, tp)
+                                except Exception:
+                                    pass
+
+                                with lock:
+                                    state.get("pending_liq_entries", {}).pop(p_sym, None)
+                                    state["trade_log"].append({
+                                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        "symbol": p_sym, "side": signal,
+                                        "entry": cur_p, "sl": sl, "tp": tp,
+                                        "qty": qty, "status": "OPEN",
+                                        "note": "pending_liq_trigger"
+                                    })
+
+                                icon = "🟢" if signal == "LONG" else "🔴"
+                                rr = abs(tp - cur_p) / abs(cur_p - sl) if abs(cur_p - sl) > 0 else 0
+                                notifier.telegram.send(
+                                    f"{icon} <b>⚡ LIQ TRIGGER | {signal} {p_sym}</b>\n"
+                                    f"Entry: {cur_p:.6f} | SL: {sl:.6f} | TP: {tp:.6f}\n"
+                                    f"RR: 1:{rr:.1f} | Score: {p_info['score']}\n"
+                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                )
+                                logger.info(f"[PendingLiq] ✅ TRIGGERED {p_sym} {signal} @ {cur_p:.6f}")
+                                break  # 1 lệnh/lần
+                    except Exception as _e:
+                        logger.debug(f"[PendingLiq] {p_sym}: {_e}")
+
             # ── Fast path: đã được thay bằng ScanPriceMonitor ở cuối vòng lặp ──
             # (wake up sớm qua ws_signal ở dưới)
 
