@@ -2129,24 +2129,11 @@ def scan_engine(exchange, notifier):
                 order_type_used = "SKIP"
                 skip_reason = None
 
-                # Filter 1: Score >= 65
-                if best.score < 65:
-                    skip_reason = f"Score {best.score} < 65"
+                # ═══ BƯỚC 4: Score >= 70 ═══
+                if best.score < 70:
+                    skip_reason = f"Score {best.score} < 70"
 
-                # Filter 2: MACD momentum
-                if not skip_reason:
-                    try:
-                        from indicators import calculate_macd
-                        _, _, histogram = calculate_macd(df["close"])
-                        hist_val = histogram.iloc[-1]
-                        if best.signal == "LONG" and hist_val <= 0:
-                            skip_reason = f"MACD hist={hist_val:.5f} (cần dương cho LONG)"
-                        elif best.signal == "SHORT" and hist_val >= 0:
-                            skip_reason = f"MACD hist={hist_val:.5f} (cần âm cho SHORT)"
-                    except Exception:
-                        pass
-
-                # Filter 3: Correlation — không vào 2 coin cùng nhóm cùng chiều
+                # ═══ BƯỚC 5: Correlation — không vào 2 coin cùng nhóm ═══
                 if not skip_reason:
                     try:
                         from quant_correlation import is_correlated_with_open
@@ -2160,319 +2147,187 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # Filter 4: Liquidity Cluster Entry — tìm entry + SL/TP
+                # ═══ BƯỚC 6: Liquidity Zones — xác định vùng liq để entry ═══
                 if not skip_reason:
-                    # Ưu tiên: websocket tracker (nếu có data)
-                    # Fallback: REST API cache (có data ngay từ đầu)
-                    liq_source = None
-                    if liq_inst and liq_inst.is_connected() and liq_inst.total_liq_usd(best.symbol) > 0:
-                        liq_source = liq_inst
-                        logger.debug(f"[LiqSource] {best.symbol}: dùng WS tracker")
-                    else:
-                        liq_api = state.get("liq_api_cache")
-                        if liq_api and liq_api.is_ready(best.symbol):
-                            liq_source = liq_api
-                            logger.debug(f"[LiqSource] {best.symbol}: dùng REST API cache")
+                    from liq_heatmap_api import calc_liq_zones_from_oi
 
-                    if liq_source:
-                        cur_price = exchange.get_ticker_price(best.symbol)
+                    # Lấy liq data trực tiếp (đã verify hoạt động)
+                    liq_data = calc_liq_zones_from_oi(best.symbol, "1h", 24)
 
-                        cluster = liq_source.get_best_entry_cluster(
-                            symbol        = best.symbol,
-                            current_price = cur_price,
-                            direction     = best.signal,
-                            min_usd       = 30_000,
-                            cluster_gap_pct = 0.008,
-                        )
-                        if not cluster:
-                            cluster = liq_source.get_best_entry_cluster(
-                                symbol        = best.symbol,
-                                current_price = cur_price,
-                                direction     = best.signal,
-                                min_usd       = 10_000,
-                                cluster_gap_pct = 0.012,
-                            )
-
-                        if not cluster:
-                            skip_reason = "Không tìm được cluster liq"
-                        elif cluster["dist_pct"] > 10.0:
-                            skip_reason = f"Cluster quá xa {cluster['dist_pct']:.1f}% > 10%"
+                    if not liq_data:
+                        # Fallback: dùng liq_api_cache hoặc WS tracker
+                        liq_source = None
+                        if liq_inst and liq_inst.is_connected() and liq_inst.total_liq_usd(best.symbol) > 0:
+                            liq_source = liq_inst
                         else:
-                            # ── Check giá đang TIẾN VỀ cluster không ────
-                            # Lấy giá 3 nến 15m gần nhất để xem momentum
-                            klines_check = exchange.get_klines(best.symbol, "15m", limit=5)
-                            df_check = _klines_to_df(klines_check)
-                            price_3ago = df_check["close"].iloc[-4]
-                            price_now  = df_check["close"].iloc[-1]
+                            liq_api = state.get("liq_api_cache")
+                            if liq_api and liq_api.is_ready(best.symbol):
+                                liq_source = liq_api
+                        if liq_source:
+                            liq_data = liq_source.get_liq_heatmap(best.symbol) or {}
 
-                            if best.signal == "LONG":
-                                # Giá đang giảm về cluster phía dưới → đúng hướng
-                                price_moving_toward = price_now < price_3ago
-                                # Hoặc giá đã ở gần cluster (trong 1%)
-                                near_cluster = cluster["dist_pct"] <= 1.0
-                            else:  # SHORT
-                                # Giá đang tăng về cluster phía trên → đúng hướng
-                                price_moving_toward = price_now > price_3ago
-                                near_cluster = cluster["dist_pct"] <= 1.0
+                    cur_price = exchange.get_ticker_price(best.symbol)
 
-                            # Sweep: giá đã quét qua cluster (chạm đáy/đỉnh)
-                            sweep_check = (
-                                df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
-                                if best.signal == "LONG" else
-                                df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
-                            )
-
-                            # Chỉ vào khi:
-                            # 1. Giá đang đi đúng hướng về cluster, HOẶC
-                            # 2. Giá đã sweep qua cluster (bất kể momentum)
-                            # KHÔNG vào khi near_cluster nhưng giá đang hồi ngược
-                            if not price_moving_toward and not sweep_check:
-                                _pending_watch.pop(best.symbol, None)
-                                skip_reason = (f"Giá đang hồi ngược chiều cluster "
-                                               f"({'↗' if price_now > price_3ago else '↘'} "
-                                               f"dist={cluster['dist_pct']:.1f}%)")
+                    if liq_data:
+                        if best.signal == "LONG":
+                            # Tìm vùng liq LỚN NHẤT phía DƯỚI giá
+                            below = [(p, u) for p, u in liq_data.items()
+                                     if p < cur_price and u >= 10_000]
+                            if below:
+                                # Chọn vùng có USD lớn nhất
+                                liq_zone_price, liq_zone_usd = max(below, key=lambda x: x[1])
+                                entry_price = round(liq_zone_price, 8)
                             else:
-                                # ── Entry: tại ĐÚNG vùng liq ──────────────
-                                # LONG:  entry = đỉnh cluster phía DƯỚI giá (giá dump xuống chạm là vào)
-                                # SHORT: entry = đáy cluster phía TRÊN giá (giá pump lên chạm là vào)
-                                entry_price = cluster["entry"]
-
-                                # Safety validate: entry phải đúng phía so với giá hiện tại
-                                # LONG: entry phải < cur_price (cluster phía dưới)
-                                # SHORT: entry phải > cur_price (cluster phía trên)
-                                if best.signal == "LONG" and entry_price >= cur_price:
-                                    skip_reason = (f"Entry LONG {entry_price:.4f} >= giá hiện tại "
-                                                   f"{cur_price:.4f} — cluster sai phía")
-                                elif best.signal == "SHORT" and entry_price <= cur_price:
-                                    skip_reason = (f"Entry SHORT {entry_price:.4f} <= giá hiện tại "
-                                                   f"{cur_price:.4f} — cluster sai phía")
-
-                                if not skip_reason:
-                                    # ── SL: ngoài cluster + buffer ────────────
-                                    sl = cluster["sl_zone"]
-                                    if best.signal == "LONG":
-                                        sl = round(max(sl, entry_price * 0.95), 8)
-                                    else:
-                                        sl = round(min(sl, entry_price * 1.05), 8)
-
-                                    # ── TP: cluster lớn nhất USD phía target ──
-                                    heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
-                                    if best.signal == "LONG":
-                                        tp_cluster = liq_source.get_best_entry_cluster(
-                                            symbol        = best.symbol,
-                                            current_price = entry_price,
-                                            direction     = "SHORT",
-                                            min_usd       = 10_000,
-                                            cluster_gap_pct = 0.012,
-                                        )
-                                        if tp_cluster and tp_cluster["entry"] > entry_price:
-                                            tp = round(tp_cluster["cluster_low"] * 0.999, 8)
-                                        else:
-                                            above = [(p, u) for p, u in heatmap.items()
-                                                     if p > cur_price and u >= 10_000]
-                                            if above:
-                                                liq_tp = max(above, key=lambda x: x[1])[0]
-                                                tp = round(liq_tp * 0.998, 8)
-                                            else:
-                                                tp = round(entry_price + (entry_price - sl) * 3.0, 8)
-                                    else:  # SHORT
-                                        tp_cluster = liq_source.get_best_entry_cluster(
-                                            symbol        = best.symbol,
-                                            current_price = entry_price,
-                                            direction     = "LONG",
-                                            min_usd       = 10_000,
-                                            cluster_gap_pct = 0.012,
-                                        )
-                                        if tp_cluster and tp_cluster["entry"] < entry_price:
-                                            tp = round(tp_cluster["cluster_high"] * 1.001, 8)
-                                        else:
-                                            below = [(p, u) for p, u in heatmap.items()
-                                                     if p < cur_price and u >= 10_000]
-                                            if below:
-                                                liq_tp = min(below, key=lambda x: -x[1])[0]
-                                                tp = round(liq_tp * 1.002, 8)
-                                            else:
-                                                tp = round(entry_price - (sl - entry_price) * 3.0, 8)
-
-                                # ── Validate RR ──────────────────────────
-                                risk   = abs(entry_price - sl)
-                                reward = abs(tp - entry_price)
-                                rr = reward / risk if risk > 0 else 0
-
-                                if rr < 1.5:
-                                    skip_reason = f"RR={rr:.1f} < 1.5"
-                                else:
-                                    order_type_used = "LIMIT"
-                                    sweep_done = (
-                                        df["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.002
-                                        if best.signal == "LONG" else
-                                        df["high"].iloc[-1] >= cluster["cluster_high"] * 0.998
-                                    )
-                                    mode = "SWEEP" if sweep_done else ("TOWARD" if price_moving_toward else "NEAR")
-                                    logger.info(
-                                        f"[ClusterEntry] {best.signal} {best.symbol} {mode} | "
-                                        f"cluster=[{cluster['cluster_low']:.4f}-{cluster['cluster_high']:.4f}] "
-                                        f"${cluster['total_usd']/1e3:.0f}k | "
-                                        f"entry={entry_price:.6f} dist={cluster['dist_pct']:.1f}% | "
-                                        f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | "
-                                        f"price {'↘' if price_now < price_3ago else '↗'} toward={'Y' if price_moving_toward else 'N'}"
-                                    )
-
+                                skip_reason = "Không có vùng liq dưới đủ lớn"
+                        else:  # SHORT
+                            # Tìm vùng liq LỚN NHẤT phía TRÊN giá
+                            above = [(p, u) for p, u in liq_data.items()
+                                     if p > cur_price and u >= 10_000]
+                            if above:
+                                liq_zone_price, liq_zone_usd = max(above, key=lambda x: x[1])
+                                entry_price = round(liq_zone_price, 8)
+                            else:
+                                skip_reason = "Không có vùng liq trên đủ lớn"
                     else:
-                        # Cả WS lẫn REST API cache đều không có data → ATR fallback
-                        if best.score >= 65:
-                            try:
-                                from auto_sltp import suggest_sltp
-                                suggestion = suggest_sltp(
-                                    exchange, best.symbol, best.signal,
-                                    price, liq_tracker=None
-                                )
-                                sl = suggestion["sl"]
-                                tp = suggestion["tp"]
-                                logger.info(
-                                    f"[FallbackSLTP] {best.symbol} {best.signal} | "
-                                    f"SL={sl} TP={tp} RR=1:{suggestion['rr']} | {suggestion['method']}"
-                                )
-                            except Exception as _e:
-                                logger.warning(f"[FallbackSLTP] suggest_sltp failed: {_e}, using ATR")
-                                if best.signal == "LONG":
-                                    sl = price - max(atr * 2.0, price * config.STOP_LOSS_PCT)
-                                    tp = price + (price - sl) * 3.0
-                                else:
-                                    sl = price + max(atr * 2.0, price * config.STOP_LOSS_PCT)
-                                    tp = price - (sl - price) * 3.0
-                            order_type_used = "MARKET"
-                        else:
-                            skip_reason = f"Không có liq data và score {best.score} < 70"
+                        skip_reason = "Không có liq data"
 
-                # Filter 5 (CUỐI): 15m + 1m timing — xác nhận entry trước khi đặt lệnh
-                # Đã pass trend + MACD + corr + liq → giờ check nến 1m confirm
-                if not skip_reason and order_type_used != "SKIP":
-                    try:
-                        from indicators import get_smart_entry_signal
-                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
-                        df_1m_chk  = _klines_to_df(klines_1m)
-                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
-                        if smart["signal"] == "WAIT" and smart["score"] < 30:
-                            # Chỉ skip khi score rất thấp — nới lỏng hơn
-                            skip_reason = f"1m chưa confirm: {smart['reason'][:50]}"
+                # ═══ BƯỚC 7: Tính SL / TP + RR ═══
+                if not skip_reason:
+                    if best.signal == "LONG":
+                        # SL: dưới vùng liq 2%
+                        sl = round(entry_price * 0.98, 8)
+                        # TP: vùng liq lớn nhất phía TRÊN
+                        above_for_tp = [(p, u) for p, u in liq_data.items()
+                                        if p > cur_price and u >= 10_000]
+                        if above_for_tp:
+                            tp = round(max(above_for_tp, key=lambda x: x[1])[0], 8)
                         else:
-                            logger.info(f"[Entry1m] {best.symbol}: score={smart['score']} | {smart['reason'][:50]}")
-                    except Exception as _e:
-                        # Nếu lỗi thì bỏ qua filter này, vẫn vào lệnh
-                        logger.debug(f"SmartEntry skip: {_e}")
+                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                    else:  # SHORT
+                        # SL: trên vùng liq 2%
+                        sl = round(entry_price * 1.02, 8)
+                        # TP: vùng liq lớn nhất phía DƯỚI
+                        below_for_tp = [(p, u) for p, u in liq_data.items()
+                                        if p < cur_price and u >= 10_000]
+                        if below_for_tp:
+                            tp = round(max(below_for_tp, key=lambda x: x[1])[0], 8)
+                        else:
+                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+
+                    # RR check (sau phí + slippage ~0.1%)
+                    risk   = abs(entry_price - sl)
+                    reward = abs(tp - entry_price)
+                    rr = reward / risk if risk > 0 else 0
+                    if rr < 1.5:
+                        skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
+
+                # ═══ BƯỚC 8-9: Chờ giá vào liq zone + 1M entry trigger ═══
+                if not skip_reason:
+                    # Check giá hiện tại có TRONG hoặc GẦN vùng liq không
+                    dist_to_liq = abs(cur_price - entry_price) / cur_price * 100
+
+                    if dist_to_liq > 3.0:
+                        # Giá còn xa vùng liq → lưu pending, chờ giá tới
+                        with lock:
+                            pending_liq = state.setdefault("pending_liq_entries", {})
+                            pending_liq[best.symbol] = {
+                                "signal": best.signal,
+                                "entry_price": entry_price,
+                                "sl": sl, "tp": tp, "rr": rr,
+                                "score": best.score,
+                                "ts": time.time(),
+                            }
+                        logger.info(
+                            f"[LiqEntry] PENDING {best.symbol} {best.signal} | "
+                            f"liq_zone={entry_price:.6f} dist={dist_to_liq:.1f}% | "
+                            f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | chờ giá tới"
+                        )
+                        skip_reason = f"Giá còn xa liq zone {dist_to_liq:.1f}% → pending"
+                    else:
+                        # Giá ĐÃ TRONG vùng liq → check 1m trigger
+                        klines_1m = exchange.get_klines(best.symbol, "1m", limit=5)
+                        df_1m = _klines_to_df(klines_1m)
+
+                        c_close = df_1m["close"].iloc[-1]
+                        c_open  = df_1m["open"].iloc[-1]
+                        c_body  = abs(c_close - c_open)
+
+                        p_close = df_1m["close"].iloc[-2]
+                        p_open  = df_1m["open"].iloc[-2]
+                        p_body  = abs(p_close - p_open)
+
+                        triggered = False
+
+                        if best.signal == "LONG":
+                            # LONG trigger: nến xanh + body > body trước
+                            # + low gần đây tạo đáy mới (low[-2] < low[-4])
+                            low_recent = df_1m["low"].iloc[-2]
+                            low_3ago   = df_1m["low"].iloc[-4] if len(df_1m) >= 5 else df_1m["low"].iloc[0]
+                            is_green   = c_close > c_open
+                            body_bigger = c_body > p_body * 0.8  # nới lỏng: 80% body trước
+                            made_low   = low_recent < low_3ago
+
+                            if is_green and body_bigger and made_low:
+                                triggered = True
+                            elif is_green and body_bigger and dist_to_liq <= 1.0:
+                                triggered = True  # Rất gần liq, bỏ qua made_low
+                        else:  # SHORT
+                            # SHORT trigger: nến đỏ + body > body trước
+                            # + high gần đây tạo đỉnh mới (high[-2] > high[-4])
+                            high_recent = df_1m["high"].iloc[-2]
+                            high_3ago   = df_1m["high"].iloc[-4] if len(df_1m) >= 5 else df_1m["high"].iloc[0]
+                            is_red     = c_close < c_open
+                            body_bigger = c_body > p_body * 0.8
+                            made_high  = high_recent > high_3ago
+
+                            if is_red and body_bigger and made_high:
+                                triggered = True
+                            elif is_red and body_bigger and dist_to_liq <= 1.0:
+                                triggered = True
+
+                        if triggered:
+                            order_type_used = "MARKET"
+                            entry_price = cur_price  # MARKET vào ngay giá hiện tại
+                            logger.info(
+                                f"[1mTrigger] ✅ {best.symbol} {best.signal} | "
+                                f"body={c_body:.6f} > prev={p_body:.6f} | "
+                                f"liq_zone={liq_zone_price:.6f} dist={dist_to_liq:.1f}%"
+                            )
+                        else:
+                            skip_reason = (f"1m chưa trigger: "
+                                          f"{'xanh' if best.signal=='LONG' else 'đỏ'}={c_close>c_open if best.signal=='LONG' else c_close<c_open} "
+                                          f"body={c_body:.6f} vs prev={p_body:.6f}")
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                # ── 2 lệnh LIMIT đồng thời ──────────────────────────────
-                # Lệnh 1 (near zone): cluster gần nhất                → 50% size
-                # Lệnh 2 (deep zone): cluster tối ưu đã tính ở trên  → 100% size
-                cur_p = exchange.get_ticker_price(best.symbol)
+                # ═══ BƯỚC 10: ĐẶT LỆNH MARKET + SL/TP ═══
+                qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                if qty * entry_price < 5.0:
+                    qty = round(5.0 / entry_price + 0.001, 3)
 
-                if best.signal == "LONG":
-                    near_cluster = (liq_inst.get_best_entry_cluster(
-                        best.symbol, cur_p, "LONG",
-                        min_usd=10_000, cluster_gap_pct=0.012
-                    ) if (liq_inst and liq_inst.is_connected()) else None)
-                    # near_zone phải < cur_p (phía dưới giá) và > entry_price (gần hơn deep)
-                    near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster
-                                 and near_cluster["entry"] < cur_p   # đúng phía
-                                 and near_cluster["entry"] > entry_price  # gần hơn deep
-                                 else None)
-                    deep_zone = entry_price
-                else:
-                    near_cluster = (liq_inst.get_best_entry_cluster(
-                        best.symbol, cur_p, "SHORT",
-                        min_usd=10_000, cluster_gap_pct=0.012
-                    ) if (liq_inst and liq_inst.is_connected()) else None)
-                    # near_zone phải > cur_p (phía trên giá) và < entry_price (gần hơn deep)
-                    near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster
-                                 and near_cluster["entry"] > cur_p   # đúng phía
-                                 and near_cluster["entry"] < entry_price  # gần hơn deep
-                                 else None)
-                    deep_zone = entry_price
-
-                # Tính qty full (cho deep zone = $20)
-                qty_full = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
-                if qty_full * entry_price < 5.0:
-                    qty_full = round(5.0 / entry_price + 0.001, 3)
-
-                orders_placed = []
-
-                # ── Lệnh 1: near zone, 50% size ──
-                if near_zone and near_zone != deep_zone:
-                    if best.signal == "LONG":
-                        near_entry = round(near_zone * 1.001, 8)
-                    else:
-                        near_entry = round(near_zone * 0.999, 8)
-                    qty_near = round(qty_full * 0.5, 8)
-                    if qty_near * near_entry >= 5.0:
-                        try:
-                            exchange.place_limit_order(best.symbol, side, qty_near, near_entry)
-                            orders_placed.append(f"NEAR ${near_entry:.6f} qty={qty_near} (50%)")
-                            logger.info(f"[DualLimit] NEAR {side} {best.symbol} @ {near_entry:.6f} qty={qty_near}")
-                        except Exception as e:
-                            logger.error(f"[DualLimit] NEAR order failed: {e}")
-
-                # ── Lệnh 2: deep zone, full size ──
-                qty_deep = qty_full
                 try:
-                    exchange.place_limit_order(best.symbol, side, qty_deep, deep_zone)
-                    orders_placed.append(f"DEEP ${deep_zone:.6f} qty={qty_deep} (100%)")
-                    logger.info(f"[DualLimit] DEEP {side} {best.symbol} @ {deep_zone:.6f} qty={qty_deep}")
-                    order_type_used = "LIMIT"
+                    exchange.place_market_order(best.symbol, side, qty)
+                    logger.info(f"[ENTRY] ✅ MARKET {side} {best.symbol} qty={qty} @ ~{entry_price:.6f}")
                 except Exception as e:
-                    logger.error(f"[DualLimit] DEEP order failed → MARKET: {e}")
-                    exchange.place_market_order(best.symbol, side, qty_deep)
-                    order_type_used = "MARKET"
+                    logger.error(f"[ENTRY] MARKET order failed: {e}")
+                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
+                    continue
 
-                if not orders_placed:
-                    # fallback market
-                    exchange.place_market_order(best.symbol, side, qty_full)
-                    order_type_used = "MARKET"
-
-                qty = qty_full  # dùng qty_full cho SL/TP
-
-                # ── SL/TP: chỉ đặt ngay khi MARKET order ────────────
-                # LIMIT order: chờ limit_order_monitor phát hiện khớp → đặt SL/TP
-                # Tránh duplicate: không đặt SL/TP trước khi lệnh khớp
-                if order_type_used == "MARKET":
-                    time.sleep(1)
-                    try: exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
-                    except Exception as e: logger.error(f"SL failed: {e}")
-                    try: exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
-                    except Exception as e: logger.error(f"TP failed: {e}")
-                else:
-                    # LIMIT: lưu order IDs + sl/tp vào pending_smart_orders để limit_order_monitor xử lý
-                    # limit_order_monitor sẽ poll từng order_id, khi FILLED → đặt SL/TP ngay
-                    try:
-                        open_orders = exchange._get("/fapi/v1/openOrders",
-                                                    {"symbol": best.symbol}, signed=True)
-                        # Lấy tất cả LIMIT entry orders vừa đặt (non-reduceOnly)
-                        entry_orders = [o for o in open_orders
-                                        if not o.get("reduceOnly", False)
-                                        and o.get("type") == "LIMIT"]
-                        with lock:
-                            psm = state.setdefault("pending_smart_orders", {})
-                            for o in entry_orders:
-                                oid = str(o["orderId"])
-                                psm[oid] = {
-                                    "symbol":   best.symbol,
-                                    "side":     best.signal,
-                                    "qty":      float(o.get("origQty", qty)),
-                                    "sl":       sl,
-                                    "tp":       tp,
-                                    "ts":       time.time(),
-                                }
-                        logger.info(f"[SL/TP] {len(entry_orders)} LIMIT order(s) registered → "
-                                    f"limit_order_monitor sẽ đặt SL={sl} TP={tp} khi fill")
-                    except Exception as _e:
-                        logger.error(f"[SL/TP] Failed to register pending orders: {_e}")
+                # Đặt SL + TP ngay sau entry
+                time.sleep(1)
+                try:
+                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
+                    logger.info(f"[SL] {best.symbol} {close_side} qty={qty} @ {sl:.6f}")
+                except Exception as e:
+                    logger.error(f"SL failed: {e}")
+                try:
+                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
+                    logger.info(f"[TP] {best.symbol} {close_side} qty={qty} @ {tp:.6f}")
+                except Exception as e:
+                    logger.error(f"TP failed: {e}")
 
                 with lock:
                     state["position"]  = best.signal
@@ -2492,17 +2347,16 @@ def scan_engine(exchange, notifier):
 
                 icon      = "🟢" if best.signal == "LONG" else "🔴"
                 margin    = qty * entry_price / config.LEVERAGE
-                order_tag = "⏳ DUAL LIMIT" if order_type_used == "LIMIT" else "⚡ MARKET"
+                order_tag = "⚡ MARKET"
                 rr_actual = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
-                orders_str = "\n".join([f"  📌 {o}" for o in orders_placed]) if orders_placed else f"  📌 {entry_price:.6f}"
                 notifier.telegram.send(
                     f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"{orders_str}\n"
+                    f"  📌 Entry: {entry_price:.6f}\n"
                     f"🛑 SL     : <b>${sl:.6f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
                     f"🎯 TP     : <b>${tp:.6f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
                     f"📐 RR     : <b>1:{rr_actual:.1f}</b>\n"
-                    f"💵 Full   : ${qty_full*entry_price:,.2f} | Half: ${qty_full*0.5*entry_price:,.2f}\n"
+                    f"💵 Size   : ${qty*entry_price:,.2f} | Margin: ${margin:,.2f}\n"
                     f"⭐ Score  : {best.score}đ | {best.reason}\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
