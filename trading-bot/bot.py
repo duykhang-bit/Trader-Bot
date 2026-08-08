@@ -2236,28 +2236,6 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
-                # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
-                # Đây là bước cuối cùng trước khi vào lệnh
-                # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
-                if not skip_reason:
-                    try:
-                        from indicators import get_smart_entry_signal
-                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
-                        df_1m_chk  = _klines_to_df(klines_1m)
-                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
-                        if smart["signal"] == "WAIT":
-                            # Chưa có trigger 1m — nhưng nếu 15m score >= 55 thì vẫn vào (không quá chặt)
-                            if smart["score"] < 40:
-                                skip_reason = f"15m/1m chưa sẵn sàng: {smart['reason'][:60]}"
-                            else:
-                                logger.info(f"[SmartEntry] {best.symbol}: 15m ok, 1m chưa trigger "
-                                            f"score={smart['score']} — vào bình thường")
-                        else:
-                            logger.info(f"[SmartEntry] {best.symbol}: {smart['signal']} "
-                                        f"quality={smart['quality']} score={smart['score']} | {smart['reason'][:60]}")
-                    except Exception as _e:
-                        logger.debug(f"SmartEntry skip: {_e}")
-
                 # Filter 3: Liquidity Cluster Entry
                 if not skip_reason:
                     # Ưu tiên: websocket tracker (nếu có data)
@@ -2314,83 +2292,64 @@ def scan_engine(exchange, notifier):
                                 near_cluster = cluster["dist_pct"] <= 1.0
 
                             # Sweep: giá đã quét qua cluster (chạm đáy/đỉnh)
-                            sweep_check = (
-                                df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
-                                if best.signal == "LONG" else
-                                df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
-                            )
-
-                            # Chỉ vào khi:
-                            # 1. Giá đang đi đúng hướng về cluster, HOẶC
-                            # 2. Giá đã sweep qua cluster (bất kể momentum)
-                            # KHÔNG vào khi near_cluster nhưng giá đang hồi ngược
-                            if not price_moving_toward and not sweep_check:
+                            # Hoặc giá đã ở gần cluster (trong 1%)
+                            if not price_moving_toward and not near_cluster:
+                                # Giá đang đi ngược → pending, chờ lần scan sau
                                 _pending_watch.pop(best.symbol, None)
-                                skip_reason = (f"Giá đang hồi ngược chiều cluster "
+                                skip_reason = (f"Giá chưa tiến về cluster "
                                                f"({'↗' if price_now > price_3ago else '↘'} "
-                                               f"dist={cluster['dist_pct']:.1f}%)")
+                                               f"vs cluster {cluster['dist_pct']:.1f}% away)")
                             else:
                                 # ── Entry: tại ĐÚNG vùng liq ──────────────
-                                # LONG:  entry = đỉnh cluster phía DƯỚI giá (giá dump xuống chạm là vào)
-                                # SHORT: entry = đáy cluster phía TRÊN giá (giá pump lên chạm là vào)
+                                # SHORT: entry = đáy cluster (giá pump lên chạm là vào)
+                                # LONG:  entry = đỉnh cluster (giá dump xuống chạm là vào)
                                 entry_price = cluster["entry"]
 
-                                # Safety validate: entry phải đúng phía so với giá hiện tại
-                                # LONG: entry phải < cur_price (cluster phía dưới)
-                                # SHORT: entry phải > cur_price (cluster phía trên)
-                                if best.signal == "LONG" and entry_price >= cur_price:
-                                    skip_reason = (f"Entry LONG {entry_price:.4f} >= giá hiện tại "
-                                                   f"{cur_price:.4f} — cluster sai phía")
-                                elif best.signal == "SHORT" and entry_price <= cur_price:
-                                    skip_reason = (f"Entry SHORT {entry_price:.4f} <= giá hiện tại "
-                                                   f"{cur_price:.4f} — cluster sai phía")
+                                # ── SL: ngoài cluster + buffer ────────────
+                                sl = cluster["sl_zone"]
+                                if best.signal == "LONG":
+                                    sl = round(max(sl, entry_price * 0.95), 8)
+                                else:
+                                    sl = round(min(sl, entry_price * 1.05), 8)
 
-                                if not skip_reason:
-                                    # ── SL: ngoài cluster + buffer ────────────
-                                    sl = cluster["sl_zone"]
-                                    if best.signal == "LONG":
-                                        sl = round(max(sl, entry_price * 0.95), 8)
+                                # ── TP: cluster lớn nhất USD phía target ──
+                                heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
+                                if best.signal == "LONG":
+                                    tp_cluster = liq_source.get_best_entry_cluster(
+                                        symbol        = best.symbol,
+                                        current_price = entry_price,
+                                        direction     = "SHORT",
+                                        min_usd       = 10_000,
+                                        cluster_gap_pct = 0.012,
+                                    )
+                                    if tp_cluster and tp_cluster["entry"] > entry_price:
+                                        tp = round(tp_cluster["cluster_low"] * 0.999, 8)
                                     else:
-                                        sl = round(min(sl, entry_price * 1.05), 8)
-
-                                    # ── TP: cluster lớn nhất USD phía target ──
-                                    heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
-                                    if best.signal == "LONG":
-                                        tp_cluster = liq_source.get_best_entry_cluster(
-                                            symbol        = best.symbol,
-                                            current_price = entry_price,
-                                            direction     = "SHORT",
-                                            min_usd       = 10_000,
-                                            cluster_gap_pct = 0.012,
-                                        )
-                                        if tp_cluster and tp_cluster["entry"] > entry_price:
-                                            tp = round(tp_cluster["cluster_low"] * 0.999, 8)
+                                        above = [(p, u) for p, u in heatmap.items()
+                                                 if p > cur_price and u >= 10_000]
+                                        if above:
+                                            liq_tp = max(above, key=lambda x: x[1])[0]
+                                            tp = round(liq_tp * 0.998, 8)
                                         else:
-                                            above = [(p, u) for p, u in heatmap.items()
-                                                     if p > cur_price and u >= 10_000]
-                                            if above:
-                                                liq_tp = max(above, key=lambda x: x[1])[0]
-                                                tp = round(liq_tp * 0.998, 8)
-                                            else:
-                                                tp = round(entry_price + (entry_price - sl) * 3.0, 8)
-                                    else:  # SHORT
-                                        tp_cluster = liq_source.get_best_entry_cluster(
-                                            symbol        = best.symbol,
-                                            current_price = entry_price,
-                                            direction     = "LONG",
-                                            min_usd       = 10_000,
-                                            cluster_gap_pct = 0.012,
-                                        )
-                                        if tp_cluster and tp_cluster["entry"] < entry_price:
-                                            tp = round(tp_cluster["cluster_high"] * 1.001, 8)
+                                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                                else:  # SHORT
+                                    tp_cluster = liq_source.get_best_entry_cluster(
+                                        symbol        = best.symbol,
+                                        current_price = entry_price,
+                                        direction     = "LONG",
+                                        min_usd       = 10_000,
+                                        cluster_gap_pct = 0.012,
+                                    )
+                                    if tp_cluster and tp_cluster["entry"] < entry_price:
+                                        tp = round(tp_cluster["cluster_high"] * 1.001, 8)
+                                    else:
+                                        below = [(p, u) for p, u in heatmap.items()
+                                                 if p < cur_price and u >= 10_000]
+                                        if below:
+                                            liq_tp = min(below, key=lambda x: -x[1])[0]
+                                            tp = round(liq_tp * 1.002, 8)
                                         else:
-                                            below = [(p, u) for p, u in heatmap.items()
-                                                     if p < cur_price and u >= 10_000]
-                                            if below:
-                                                liq_tp = min(below, key=lambda x: -x[1])[0]
-                                                tp = round(liq_tp * 1.002, 8)
-                                            else:
-                                                tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+                                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
 
                                 # ── Validate RR ──────────────────────────
                                 risk   = abs(entry_price - sl)
@@ -2458,11 +2417,8 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "LONG",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
-                    # near_zone phải < cur_p (phía dưới giá) và > entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster
-                                 and near_cluster["entry"] < cur_p   # đúng phía
-                                 and near_cluster["entry"] > entry_price  # gần hơn deep
+                                 if near_cluster and near_cluster["entry"] > entry_price
                                  else None)
                     deep_zone = entry_price
                 else:
@@ -2470,11 +2426,8 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "SHORT",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
-                    # near_zone phải > cur_p (phía trên giá) và < entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster
-                                 and near_cluster["entry"] > cur_p   # đúng phía
-                                 and near_cluster["entry"] < entry_price  # gần hơn deep
+                                 if near_cluster and near_cluster["entry"] < entry_price
                                  else None)
                     deep_zone = entry_price
 
