@@ -208,7 +208,7 @@ DECEL_CANDLES = 3
 # Score tối thiểu để xác nhận đỉnh pump (0-100)
 # 65 = cần đủ 65/100 điểm từ 6 tín hiệu mới gửi SHORT alert
 # Nâng lên 65 (từ 60) để lọc bớt false positive
-PUMP_TOP_MIN_SCORE = 65
+PUMP_TOP_MIN_SCORE = 50
 
 # Cooldown: không spam signal cho cùng 1 coin (giây)
 PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
