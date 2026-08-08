@@ -3596,20 +3596,55 @@ def limit_order_monitor(exchange, notifier):
                             qty      = abs(float(pos["positionAmt"]))
                             sl_price = info["sl_price"]
                             tp_price = info["tp1_price"]
+                            fill_price = float(pos.get("entryPrice", info["entry_price"]))
+                            cur_mark = float(pos.get("markPrice", 0)) or exchange.get_ticker_price(sym)
 
-                            time.sleep(0.5)
-                            try:
-                                exchange.place_stop_loss_order(sym, "BUY", qty, sl_price)
+                            time.sleep(0.3)
+
+                            # SL retry 3 lần — nếu giá đã bay quá SL gốc → dùng SL mới
+                            sl_ok = False
+                            for _sl_try in range(3):
+                                try:
+                                    exchange.place_stop_loss_order(sym, "BUY", qty, sl_price)
+                                    sl_ok = True
+                                    break
+                                except Exception as e:
+                                    # SL fail → có thể giá đã vượt SL → tính SL mới
+                                    if "price" in str(e).lower() or "400" in str(e):
+                                        # SHORT: SL phải > giá hiện tại
+                                        new_sl = round(cur_mark * 1.03, 8)  # 3% trên giá hiện tại
+                                        try:
+                                            exchange.place_stop_loss_order(sym, "BUY", qty, new_sl)
+                                            sl_price = new_sl
+                                            sl_ok = True
+                                            logger.warning(f"[PumpLimit] SL adjusted: {sym} → ${new_sl:.6g} (giá đã bay)")
+                                            break
+                                        except Exception:
+                                            pass
+                                    time.sleep(0.5)
+
+                            if not sl_ok:
+                                # SL thất bại hoàn toàn → đóng lệnh ngay
+                                logger.error(f"[PumpLimit] ⚠️ SL FAILED {sym} — emergency close!")
+                                try:
+                                    exchange.place_market_order(sym, "BUY", qty)
+                                    notifier.telegram.send(
+                                        f"⚠️ <b>EMERGENCY CLOSE</b> {sym}\n"
+                                        f"SL không đặt được → đóng ngay để tránh cháy"
+                                    )
+                                except Exception as ce:
+                                    logger.error(f"[PumpLimit] Emergency close failed: {ce}")
+                                with lock:
+                                    state.get("pump_limit_orders", {}).pop(sym, None)
+                                continue
+                            else:
                                 logger.info(f"[PumpLimit] SL placed: {sym} @ {sl_price}")
-                            except Exception as e:
-                                logger.error(f"[PumpLimit] SL failed {sym}: {e}")
+
                             try:
                                 exchange.place_take_profit_order(sym, "BUY", qty, tp_price)
                                 logger.info(f"[PumpLimit] TP placed: {sym} @ {tp_price}")
                             except Exception as e:
                                 logger.error(f"[PumpLimit] TP failed {sym}: {e}")
-
-                            fill_price = float(pos.get("entryPrice", info["entry_price"]))
                             notifier.telegram.send(
                                 f"🔴 <b>PUMP LIMIT FILLED!</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━━\n"
