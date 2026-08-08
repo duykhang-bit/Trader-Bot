@@ -2146,7 +2146,7 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # Filter Q1: Correlation — không vào 2 coin cùng nhóm cùng chiều
+                # Filter 3: Correlation — không vào 2 coin cùng nhóm cùng chiều
                 if not skip_reason:
                     try:
                         from quant_correlation import is_correlated_with_open
@@ -2160,63 +2160,7 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # Filter Q2: Order Flow — delta/CVD xác nhận
-                if not skip_reason:
-                    try:
-                        from quant_orderflow import get_orderflow_signal, orderflow_confirms
-                        klines_of = exchange.get_klines(best.symbol, "15m", limit=50)
-                        df_of     = _klines_to_df(klines_of)
-                        of_result = get_orderflow_signal(df_of, bias=best.signal)
-                        if not orderflow_confirms(of_result, best.signal):
-                            skip_reason = (f"OrderFlow: {of_result['pressure']} ngược "
-                                           f"{best.signal} | {of_result['reason']}")
-                        else:
-                            logger.info(f"[OF] {best.symbol}: {of_result['pressure']} "
-                                        f"score={of_result['score']} CVD={of_result['cvd']:+.0f} "
-                                        f"ratio={of_result['buy_ratio']:.0%}")
-                    except Exception as _e:
-                        logger.debug(f"OrderFlow skip: {_e}")
-
-                # Filter Q3: Volume Profile — VWAP/POC xác nhận
-                if not skip_reason:
-                    try:
-                        from quant_volume_profile import get_vp_signal, vp_confirms
-                        klines_vp = exchange.get_klines(best.symbol, "1h", limit=100)
-                        df_vp     = _klines_to_df(klines_vp)
-                        vp_result = get_vp_signal(df_vp, bias=best.signal, window=50)
-                        ok, vp_reason = vp_confirms(vp_result, best.signal)
-                        if not ok:
-                            skip_reason = f"VP: {vp_reason}"
-                        else:
-                            logger.info(f"[VP] {best.symbol}: {vp_result['price_vs']} "
-                                        f"VWAP={vp_result['vwap']:.4f} POC={vp_result['poc']:.4f} "
-                                        f"score={vp_result['score']}")
-                    except Exception as _e:
-                        logger.debug(f"VolumeProfile skip: {_e}")
-
-                # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
-                # Đây là bước cuối cùng trước khi vào lệnh
-                # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
-                if not skip_reason:
-                    try:
-                        from indicators import get_smart_entry_signal
-                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
-                        df_1m_chk  = _klines_to_df(klines_1m)
-                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
-                        if smart["signal"] == "WAIT":
-                            # Chưa có trigger 1m — nhưng nếu 15m score >= 55 thì vẫn vào (không quá chặt)
-                            if smart["score"] < 40:
-                                skip_reason = f"15m/1m chưa sẵn sàng: {smart['reason'][:60]}"
-                            else:
-                                logger.info(f"[SmartEntry] {best.symbol}: 15m ok, 1m chưa trigger "
-                                            f"score={smart['score']} — vào bình thường")
-                        else:
-                            logger.info(f"[SmartEntry] {best.symbol}: {smart['signal']} "
-                                        f"quality={smart['quality']} score={smart['score']} | {smart['reason'][:60]}")
-                    except Exception as _e:
-                        logger.debug(f"SmartEntry skip: {_e}")
-
-                # Filter 3: Liquidity Cluster Entry
+                # Filter 4: Liquidity Cluster Entry — tìm entry + SL/TP
                 if not skip_reason:
                     # Ưu tiên: websocket tracker (nếu có data)
                     # Fallback: REST API cache (có data ngay từ đầu)
@@ -2400,6 +2344,23 @@ def scan_engine(exchange, notifier):
                             order_type_used = "MARKET"
                         else:
                             skip_reason = f"Không có liq data và score {best.score} < 70"
+
+                # Filter 5 (CUỐI): 15m + 1m timing — xác nhận entry trước khi đặt lệnh
+                # Đã pass trend + MACD + corr + liq → giờ check nến 1m confirm
+                if not skip_reason and order_type_used != "SKIP":
+                    try:
+                        from indicators import get_smart_entry_signal
+                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
+                        df_1m_chk  = _klines_to_df(klines_1m)
+                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
+                        if smart["signal"] == "WAIT" and smart["score"] < 30:
+                            # Chỉ skip khi score rất thấp — nới lỏng hơn
+                            skip_reason = f"1m chưa confirm: {smart['reason'][:50]}"
+                        else:
+                            logger.info(f"[Entry1m] {best.symbol}: score={smart['score']} | {smart['reason'][:50]}")
+                    except Exception as _e:
+                        # Nếu lỗi thì bỏ qua filter này, vẫn vào lệnh
+                        logger.debug(f"SmartEntry skip: {_e}")
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
