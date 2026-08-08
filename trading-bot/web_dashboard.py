@@ -829,6 +829,7 @@ function renderPnlStats() {
         <div class="pnl-tab ${_pnlTab==='daily'?'active':''}" onclick="setPnlTab('daily')">Theo Ngày</div>
         <div class="pnl-tab ${_pnlTab==='weekly'?'active':''}" onclick="setPnlTab('weekly')">Theo Tuần</div>
         <div class="pnl-tab ${_pnlTab==='monthly'?'active':''}" onclick="setPnlTab('monthly')">Theo Tháng</div>
+        <div class="pnl-tab ${_pnlTab==='by_coin'?'active':''}" onclick="setPnlTab('by_coin')">Theo Coin</div>
     </div>
     <div class="pnl-summary-row">
         <div class="pnl-summary-card">
@@ -3237,7 +3238,20 @@ def api_pnl_stats():
         label = "Tháng này" if mk == current_month else f"T{int(m)}/{y[2:]}"
         monthly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
 
-    return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly})
+    # ── BY COIN: PnL từng coin ──────────────────────────────
+    coin_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
+    for t in closed:
+        sym = t.get("symbol", "???")
+        coin_map[sym]["pnl"]    += t.get("pnl_usdt", 0)
+        coin_map[sym]["trades"] += 1
+        coin_map[sym]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+
+    by_coin = []
+    for sym, v in sorted(coin_map.items(), key=lambda x: x[1]["pnl"], reverse=True):
+        by_coin.append({"label": sym.replace("USDT", ""), "pnl": round(v["pnl"], 2),
+                        "trades": v["trades"], "wins": v["wins"]})
+
+    return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly, "by_coin": by_coin})
 
 
 @app.route("/api/clear_trade_history", methods=["POST"])
