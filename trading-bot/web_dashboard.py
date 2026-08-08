@@ -368,6 +368,11 @@ async function toggleProfitLock(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleTrailingLock(enabled) {
+    const r = await apiPost('/api/trailing_lock', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function cancelAllPending() {
     if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
     await apiPost('/api/cancel_all_pending');
@@ -512,6 +517,20 @@ function renderDashboard(d) {
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
                     ${en?'Đang tự chốt lời khi coin bay mạnh mà TP xa':'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F4C8; Trailing Lock:</span>
+            ${(() => {
+                const en = d.trailing_lock_enabled !== false;
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleTrailingLock(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleTrailingLock(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
+                    ${en?'Dời SL lên lock lãi khi gần TP':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -1916,6 +1935,7 @@ def api_state():
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
+        "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
@@ -2796,6 +2816,20 @@ def api_profit_lock():
         "msg": f"Profit Lock: {status}",
         "enabled": bool(enabled),
     })
+
+@app.route("/api/trailing_lock", methods=["POST"])
+@require_auth
+def api_trailing_lock():
+    """Bật/tắt Trailing Profit Lock — dời SL lên lock lãi khi gần TP."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    try:
+        import config as _cfg
+        _cfg.TRAILING_LOCK_ENABLED = bool(enabled)
+    except Exception:
+        pass
+    status = "bật" if enabled else "tắt"
+    return jsonify({"ok": True, "msg": f"Trailing Lock: {status}", "enabled": bool(enabled)})
 
 @app.route("/api/reversal_monitor", methods=["POST"])
 def api_reversal_monitor():

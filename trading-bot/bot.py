@@ -1626,7 +1626,7 @@ def trailing_profit_lock(exchange, notifier):
 
     while state["running"]:
         try:
-            if not getattr(config, "PROFIT_LOCK_ENABLED", True):
+            if not getattr(config, "TRAILING_LOCK_ENABLED", True):
                 time.sleep(10)
                 continue
 
