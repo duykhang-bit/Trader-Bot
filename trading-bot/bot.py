@@ -1875,6 +1875,182 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
         logger.error(f"[FastSpike] LONG execute {symbol}: {e}")
 
 
+# ============================================================
+# LIQ SWEEP REVERSAL — vào lệnh khi giá quét hết liq 1 phía rồi đảo chiều
+# Bypass trend filter: không cần EMA/MTF align, chỉ cần liq + price action
+# ============================================================
+def _liq_sweep_reversal_scan(exchange, config):
+    """
+    Quét FIXED_COINS tìm coin vừa sweep liq + bounce/reject.
+    
+    LONG khi:
+      - Có cluster liq lớn phía DƯỚI (đã bị sweep trong 3 nến gần nhất)
+      - Giá đang bounce lên (nến hiện tại close > open, hoặc wick dưới dài)
+      - RSI < 35 (oversold)
+    
+    SHORT khi:
+      - Có cluster liq lớn phía TRÊN (đã bị sweep trong 3 nến gần nhất)  
+      - Giá đang reject xuống (nến hiện tại close < open, hoặc wick trên dài)
+      - RSI > 65 (overbought)
+    
+    Returns: CoinScore hoặc None
+    """
+    from scanner import CoinScore, _klines_to_df
+    from indicators import calculate_rsi, calculate_atr
+
+    liq_inst = state.get("liq_tracker")
+    liq_api  = state.get("liq_api_cache")
+
+    # Chọn liq source
+    liq_source = None
+    if liq_inst and liq_inst.is_connected():
+        liq_source = liq_inst
+    elif liq_api:
+        liq_source = liq_api
+
+    if not liq_source:
+        return None
+
+    # Quét FIXED_COINS (hoặc active universe)
+    try:
+        import config as _cfg
+        coins = list(getattr(_cfg, "FIXED_COINS", []))
+        if not coins:
+            from scanner import get_active_universe
+            base_url = getattr(config, "LIVE_BASE_URL", "https://demo-fapi.binance.com")
+            coins = get_active_universe(base_url, top_n=10)
+    except Exception:
+        return None
+
+    # Skip coin đã có position
+    with lock:
+        open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                     if abs(float(p.get("positionAmt", 0))) > 0}
+
+    best_candidate = None
+
+    for symbol in coins:
+        if symbol in open_syms:
+            continue
+        if not liq_source.is_ready(symbol) if hasattr(liq_source, 'is_ready') else liq_source.total_liq_usd(symbol) <= 0:
+            continue
+
+        try:
+            cur_price = exchange.get_ticker_price(symbol)
+            if cur_price <= 0:
+                continue
+
+            # Lấy klines 15m
+            klines_15m = exchange.get_klines(symbol, "15m", limit=30)
+            df = _klines_to_df(klines_15m)
+            close = df["close"]
+            high = df["high"]
+            low = df["low"]
+
+            rsi = calculate_rsi(close, 14).iloc[-1]
+            atr = calculate_atr(high, low, close).iloc[-1]
+            atr_pct = (atr / cur_price) * 100
+
+            # ── Check LONG: liq dưới đã bị sweep + bounce ──
+            cluster_below = liq_source.get_best_entry_cluster(
+                symbol=symbol, current_price=cur_price,
+                direction="LONG", min_usd=30_000, cluster_gap_pct=0.008
+            )
+            if not cluster_below:
+                cluster_below = liq_source.get_best_entry_cluster(
+                    symbol=symbol, current_price=cur_price,
+                    direction="LONG", min_usd=10_000, cluster_gap_pct=0.012
+                )
+
+            if cluster_below and cluster_below["dist_pct"] <= 3.0:
+                # Cluster gần (<=3%) → check xem giá đã sweep chưa
+                # Sweep = low của 3 nến gần nhất chạm cluster
+                recent_low = low.iloc[-3:].min()
+                swept = recent_low <= cluster_below["cluster_high"] * 1.003
+
+                # Bounce = nến hiện tại close > open (xanh) HOẶC wick dưới dài
+                cur_close = close.iloc[-1]
+                cur_open  = df["open"].iloc[-1]
+                cur_low   = low.iloc[-1]
+                body = abs(cur_close - cur_open)
+                wick_below = min(cur_close, cur_open) - cur_low
+                is_bounce = (cur_close > cur_open) or (wick_below > body * 1.5)
+
+                if swept and is_bounce and rsi < 40:
+                    score = 70.0
+                    # Bonus nếu RSI rất thấp
+                    if rsi < 25:
+                        score += 10
+                    elif rsi < 30:
+                        score += 5
+
+                    candidate = CoinScore(
+                        symbol=symbol,
+                        signal="LONG",
+                        score=round(score, 1),
+                        rsi=round(rsi, 1),
+                        trend="REVERSAL",
+                        atr_pct=round(atr_pct, 2),
+                        reason=f"🔄LIQ SWEEP LONG | swept ${cluster_below['total_usd']/1e3:.0f}k @ {cluster_below['cluster_high']:.6f} | bounce RSI={rsi:.0f}"
+                    )
+                    if not best_candidate or candidate.score > best_candidate.score:
+                        best_candidate = candidate
+                    continue  # Không check SHORT cho cùng coin
+
+            # ── Check SHORT: liq trên đã bị sweep + reject ──
+            cluster_above = liq_source.get_best_entry_cluster(
+                symbol=symbol, current_price=cur_price,
+                direction="SHORT", min_usd=30_000, cluster_gap_pct=0.008
+            )
+            if not cluster_above:
+                cluster_above = liq_source.get_best_entry_cluster(
+                    symbol=symbol, current_price=cur_price,
+                    direction="SHORT", min_usd=10_000, cluster_gap_pct=0.012
+                )
+
+            if cluster_above and cluster_above["dist_pct"] <= 3.0:
+                # Cluster gần (<=3%) → check xem giá đã sweep chưa
+                recent_high = high.iloc[-3:].max()
+                swept = recent_high >= cluster_above["cluster_low"] * 0.997
+
+                # Reject = nến hiện tại close < open (đỏ) HOẶC wick trên dài
+                cur_close = close.iloc[-1]
+                cur_open  = df["open"].iloc[-1]
+                cur_high  = high.iloc[-1]
+                body = abs(cur_close - cur_open)
+                wick_above = cur_high - max(cur_close, cur_open)
+                is_reject = (cur_close < cur_open) or (wick_above > body * 1.5)
+
+                if swept and is_reject and rsi > 60:
+                    score = 70.0
+                    if rsi > 75:
+                        score += 10
+                    elif rsi > 70:
+                        score += 5
+
+                    candidate = CoinScore(
+                        symbol=symbol,
+                        signal="SHORT",
+                        score=round(score, 1),
+                        rsi=round(rsi, 1),
+                        trend="REVERSAL",
+                        atr_pct=round(atr_pct, 2),
+                        reason=f"🔄LIQ SWEEP SHORT | swept ${cluster_above['total_usd']/1e3:.0f}k @ {cluster_above['cluster_low']:.6f} | reject RSI={rsi:.0f}"
+                    )
+                    if not best_candidate or candidate.score > best_candidate.score:
+                        best_candidate = candidate
+
+        except Exception as e:
+            logger.debug(f"[LiqSweep] {symbol}: {e}")
+            continue
+
+    if best_candidate:
+        logger.info(f"🔄 [LiqSweepReversal] {best_candidate.symbol} {best_candidate.signal} "
+                    f"score={best_candidate.score} | {best_candidate.reason}")
+
+    return best_candidate
+
+
 def scan_engine(exchange, notifier):
     _spike_symbol = None   # coin được wake up sớm bởi spike detector
 
@@ -1910,6 +2086,13 @@ def scan_engine(exchange, notifier):
             best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
+
+            # ── Liq Sweep Reversal — vào lệnh counter-trend khi liq đã bị quét ──
+            # Bypass trend filter: khi giá sweep hết liq 1 phía → đảo chiều
+            # LONG: giá dump chạm cluster liq dưới + bounce (wick rejection)
+            # SHORT: giá pump chạm cluster liq trên + reject (wick rejection)
+            if not best:
+                best = _liq_sweep_reversal_scan(exchange, config)
 
             if best:
                 with lock:
