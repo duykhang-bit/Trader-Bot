@@ -1866,6 +1866,23 @@ def api_state():
             except Exception:
                 pass
 
+        # Fallback: dùng liq_api_cache (REST API — có data ngay)
+        if not has_real_data:
+            liq_api = _state.get("liq_api_cache") if _state else None
+            if liq_api and liq_api.is_ready(sym):
+                try:
+                    heatmap = liq_api.get_heatmap(sym) or {}
+                    if heatmap:
+                        above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 10_000]
+                        below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 10_000]
+                        if above:
+                            short_trigger = max(above, key=lambda x: x[1])[0]
+                        if below:
+                            long_trigger = max(below, key=lambda x: x[1])[0]
+                        has_real_data = True
+                except Exception:
+                    pass
+
         if not has_real_data:
             # Chưa có data thật → dùng ±1% tạm thời, đánh dấu là estimate
             short_trigger = round(p * 1.01, 2 if p >= 100 else 6)
