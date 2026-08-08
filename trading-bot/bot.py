@@ -2665,13 +2665,13 @@ def pump_scan_engine(exchange, notifier):
 
             # Soft mode dùng ngưỡng thấp hơn
             if soft_short and not auto_short:
-                detector.cfg["PUMP_TOP_MIN_SCORE"] = 50
+                detector.cfg["PUMP_TOP_MIN_SCORE"] = 60
                 detector.cfg["PUMP_PRICE_RISE_PCT"] = 15.0
-                _soft_rsi_min = 60
+                _soft_rsi_min = 65
             else:
-                detector.cfg["PUMP_TOP_MIN_SCORE"] = getattr(config, "PUMP_TOP_MIN_SCORE", 50)
+                detector.cfg["PUMP_TOP_MIN_SCORE"] = getattr(config, "PUMP_TOP_MIN_SCORE", 75)
                 detector.cfg["PUMP_PRICE_RISE_PCT"] = getattr(config, "PUMP_PRICE_RISE_PCT", 20.0)
-                _soft_rsi_min = 68
+                _soft_rsi_min = 72
 
             # Interval thông minh:
             # - Có pump coins → 5s (cần bắt đỉnh trong vài giây)
