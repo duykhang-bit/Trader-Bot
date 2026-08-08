@@ -858,12 +858,6 @@ def price_ws_streamer():
                 with lock:
                     state["prices"][sym] = mark
 
-                # ── PROFIT LOCK — detect spike giá realtime, chốt trong <1s ──
-                exc  = _ws_exchange_ref[0]
-                noti = _ws_notifier_ref[0]
-                if exc and noti:
-                    _ws_profit_lock_check(sym, mark, exc, noti)
-
                 # ── SCAN PRICE MONITOR — phát hiện dump/bounce cho scan engine ──
                 # Chỉ forward tick cho monitor, không chạy indicators ở đây
                 _scan_monitor.on_price_tick(sym, mark)
@@ -930,13 +924,9 @@ def price_ws_streamer():
             # Rebuild stream URL mỗi lần reconnect (watchlist có thể thay đổi)
             with lock:
                 pump_watch = list(state.get("pump_watch_coins", []))
-                # Thêm coin đang có position vào stream — để profit lock hoạt động
-                pos_syms = [p["symbol"] for p in state.get("open_positions", [])
-                            if abs(float(p.get("positionAmt", 0))) > 0]
             all_syms = list(dict.fromkeys(
                 [s.lower() for s in WATCHLIST] +
-                [s.lower() for s in pump_watch] +
-                [s.lower() for s in pos_syms]
+                [s.lower() for s in pump_watch]
             ))
             streams = "/".join([f"{s}@markPrice@1s" for s in all_syms])
             url = f"{base_ws}/stream?streams={streams}"
@@ -1081,24 +1071,6 @@ def price_updater(exchange):
                             break
 
                 state["open_positions"] = open_pos
-
-            # ── Profit Lock fallback: check cho coin KHÔNG nằm trong WS stream ──
-            # WS chỉ stream WATCHLIST + pump_watch — coin vào position giữa chừng
-            # (ví dụ TUT) sẽ không có WS price → dùng REST price ở đây (mỗi 3s)
-            if getattr(config, "PROFIT_LOCK_ENABLED", True):
-                ws_syms = set(s.upper() for s in WATCHLIST)
-                with lock:
-                    pw = set(state.get("pump_watch_coins", []))
-                ws_syms.update(pw)
-                exchange_ref = state.get("_exchange")
-                notifier_ref = state.get("_notifier")
-                if exchange_ref and notifier_ref:
-                    for p in open_pos:
-                        p_sym = p.get("symbol", "")
-                        if p_sym not in ws_syms and abs(float(p.get("positionAmt", 0))) > 0:
-                            p_mark = p.get("_mark", 0)
-                            if p_mark > 0:
-                                _ws_profit_lock_check(p_sym, p_mark, exchange_ref, notifier_ref)
 
             # ── Max loss check: đóng lệnh nếu lỗ > $20 ──
             max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
@@ -1637,204 +1609,6 @@ def scan_position_protector(exchange, notifier):
 
         _time.sleep(15)
 
-# ============================================================
-# THREAD: Auto Profit Lock — chốt lời sớm khi coin bay mạnh mà TP xa
-# Mỗi 5s: scan tất cả open positions
-# Nếu đang lời >= PROFIT_LOCK_MIN_PCT + phát hiện tốc độ bay giảm/đảo chiều
-# → chốt market ngay, không chờ TP
-# ============================================================
-# Track giá WS cho tốc độ bay — {symbol: deque of (ts, price)}
-_profit_lock_price_history: dict = {}
-_profit_lock_cooldown: dict = {}  # {symbol: timestamp} tránh close 2 lần
-
-def _ws_profit_lock_check(sym: str, price: float, exchange_ref, notifier_ref):
-    """
-    Được gọi MỖI GIÂY từ WS on_message.
-    Detect coin bay mạnh bất thường trong 1-3 giây → close market NGAY.
-    
-    KHÔNG dùng klines/REST — chỉ dựa vào giá WS realtime.
-    Tốc độ phản ứng: < 1 giây từ lúc giá spike đến lúc đặt market order.
-    """
-    import time as _t
-    from collections import deque
-
-    if not getattr(config, "PROFIT_LOCK_ENABLED", True):
-        return
-    if not exchange_ref or not notifier_ref:
-        return
-
-    now = _t.time()
-
-    # Cooldown: không close 2 lần cùng coin trong 60s
-    if now - _profit_lock_cooldown.get(sym, 0) < 60:
-        return
-
-    # Kiểm tra coin này có đang có position không
-    with lock:
-        open_positions = state.get("open_positions", [])
-        pos_match = None
-        for p in open_positions:
-            if p.get("symbol") == sym and abs(float(p.get("positionAmt", 0))) > 0:
-                pos_match = p
-                break
-
-    if not pos_match:
-        return
-
-    amt   = float(pos_match.get("positionAmt", 0))
-    entry = float(pos_match.get("entryPrice", 0))
-    lev   = int(float(pos_match.get("leverage", getattr(config, "LEVERAGE", 10))))
-    side  = "LONG" if amt > 0 else "SHORT"
-
-    if entry <= 0:
-        return
-
-    # Tính PnL realtime
-    if side == "LONG":
-        pnl_pct = (price - entry) / entry * 100 * lev
-    else:
-        pnl_pct = (entry - price) / entry * 100 * lev
-
-    # Chưa lời → skip
-    min_pct = getattr(config, "PROFIT_LOCK_MIN_PCT", 3.0)
-    if pnl_pct < min_pct:
-        return
-
-    # ── Track giá history (mỗi 1s) ───────────────────────────
-    if sym not in _profit_lock_price_history:
-        _profit_lock_price_history[sym] = deque(maxlen=15)  # giữ 15 tick (15 giây)
-    _profit_lock_price_history[sym].append((now, price))
-
-    # ══════════════════════════════════════════════════════════
-    # TRIGGER 1: Lời >= HIGH_PCT → CHỐT NGAY, không cần check gì
-    # ══════════════════════════════════════════════════════════
-    high_pct = getattr(config, "PROFIT_LOCK_HIGH_PCT", 5.0)
-    should_close = False
-    reason = ""
-
-    if pnl_pct >= high_pct:
-        should_close = True
-        reason = f"Lời {pnl_pct:.1f}% >= {high_pct:.0f}% — lock ngay!"
-
-    # ══════════════════════════════════════════════════════════
-    # TRIGGER 2: Giá bay nhanh >= SPEED_PCT trong 2-3 giây → chốt ngay tại đỉnh
-    # ══════════════════════════════════════════════════════════
-    if not should_close:
-        speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT", 0.5)
-        history = _profit_lock_price_history[sym]
-
-        # So sánh giá hiện tại vs giá 3 giây trước
-        if len(history) >= 3:
-            old_ts, old_price = history[-3]  # 3 tick trước (~3 giây)
-            if old_price > 0:
-                if side == "LONG":
-                    speed = (price - old_price) / old_price * 100
-                else:
-                    speed = (old_price - price) / old_price * 100
-
-                if speed >= speed_pct:
-                    should_close = True
-                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — lock tại đỉnh!"
-
-    # ══════════════════════════════════════════════════════════
-    # TRIGGER 3: Giá bay >= SPEED_10S_PCT trong 10 giây (bắt coin bay đều)
-    # TUT bay kiểu tăng đều 0.1%/s × 10s = 1% → trigger
-    # ══════════════════════════════════════════════════════════
-    if not should_close:
-        speed_10s = getattr(config, "PROFIT_LOCK_SPEED_10S_PCT", 1.0)
-        history = _profit_lock_price_history[sym]
-
-        if len(history) >= 10:
-            old_ts, old_price = history[-10]  # 10 tick trước (~10 giây)
-            if old_price > 0:
-                if side == "LONG":
-                    speed = (price - old_price) / old_price * 100
-                else:
-                    speed = (old_price - price) / old_price * 100
-
-                if speed >= speed_10s:
-                    should_close = True
-                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — pump liên tục!"
-
-        # Fallback: check 5 giây nếu chưa đủ 10 tick
-        if not should_close and len(history) >= 5:
-            old_ts, old_price = history[-5]
-            if old_price > 0:
-                if side == "LONG":
-                    speed = (price - old_price) / old_price * 100
-                else:
-                    speed = (old_price - price) / old_price * 100
-
-                # 5 giây cần bay >= 60% ngưỡng 10s
-                if speed >= speed_10s * 0.6:
-                    should_close = True
-                    reason = f"Bay +{speed:.2f}% trong {now - old_ts:.0f}s — tốc độ cao!"
-
-    if not should_close:
-        return
-
-    # ══════════════════════════════════════════════════════════
-    # CLOSE MARKET NGAY — spawn thread để không block WS
-    # ══════════════════════════════════════════════════════════
-    _profit_lock_cooldown[sym] = now
-    import threading as _th
-    _th.Thread(
-        target=_do_profit_lock_close,
-        args=(sym, side, amt, entry, price, pnl_pct, reason, exchange_ref, notifier_ref),
-        daemon=True
-    ).start()
-
-
-def _do_profit_lock_close(sym, side, amt, entry, trigger_price, pnl_pct,
-                           reason, exchange_ref, notifier_ref):
-    """Đóng position market — chạy trong thread riêng, không block WS."""
-    try:
-        qty        = abs(amt)
-        close_side = "SELL" if side == "LONG" else "BUY"
-
-        exchange_ref.place_market_order(sym, close_side, qty)
-        exchange_ref.cancel_all_orders(sym)
-
-        # Lấy giá fill thật
-        import time as _t
-        _t.sleep(0.3)
-        cur_price = exchange_ref.get_ticker_price(sym)
-        actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
-
-        icon = "✅" if actual_pnl >= 0 else "⚠️"
-
-        with lock:
-            for t in reversed(state.get("trade_log", [])):
-                if t.get("symbol") == sym and t.get("status") == "OPEN":
-                    t.update({
-                        "status":   "CLOSED",
-                        "close":    cur_price,
-                        "pnl_usdt": round(actual_pnl, 2),
-                        "pnl_pct":  round(pnl_pct, 2),
-                        "note":     "profit_lock_ws",
-                    })
-                    break
-
-        from trade_history import save_history
-        save_history(state["trade_log"])
-
-        notifier_ref.telegram.send(
-            f"🔒 <b>PROFIT LOCK — Chốt ngay khi bay!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 {sym} {side} | Lời <b>{pnl_pct:.1f}%</b>\n"
-            f"📍 Entry: ${entry:.6g} → Close: ${cur_price:.6g}\n"
-            f"⚡ {reason}\n"
-            f"{icon} PnL: <b>${actual_pnl:+.2f}</b>\n"
-            f"💡 <i>Lock tại đỉnh — không để mất lời</i>\n"
-            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
-        )
-        logger.info(f"[ProfitLock] CLOSED {sym} {side} pnl=${actual_pnl:+.2f} | {reason}")
-
-    except Exception as e:
-        logger.error(f"[ProfitLock] Close {sym} failed: {e}")
-        _profit_lock_cooldown.pop(sym, None)  # reset cooldown để retry
-
-
 # ── Interruptible sleep: wake up sớm khi phát hiện spike giá ──────────────
 # Dùng giá WS đã có trong state["prices"] — không tốn API call
 # Trả về symbol bị spike (để scan ngay), hoặc None nếu hết thời gian
@@ -2236,6 +2010,28 @@ def scan_engine(exchange, notifier):
                     except Exception as _e:
                         logger.debug(f"VolumeProfile skip: {_e}")
 
+                # Filter Q4: 15m + 1m timing — xác nhận entry chính xác trước khi đặt lệnh
+                # Đây là bước cuối cùng trước khi vào lệnh
+                # 15m xác nhận trend, 1m xác nhận timing (pinbar, engulfing, burst)
+                if not skip_reason:
+                    try:
+                        from indicators import get_smart_entry_signal
+                        klines_1m  = exchange.get_klines(best.symbol, "1m", limit=60)
+                        df_1m_chk  = _klines_to_df(klines_1m)
+                        smart = get_smart_entry_signal(df, df_1m_chk, best.signal)
+                        if smart["signal"] == "WAIT":
+                            # Chưa có trigger 1m — nhưng nếu 15m score >= 55 thì vẫn vào (không quá chặt)
+                            if smart["score"] < 40:
+                                skip_reason = f"15m/1m chưa sẵn sàng: {smart['reason'][:60]}"
+                            else:
+                                logger.info(f"[SmartEntry] {best.symbol}: 15m ok, 1m chưa trigger "
+                                            f"score={smart['score']} — vào bình thường")
+                        else:
+                            logger.info(f"[SmartEntry] {best.symbol}: {smart['signal']} "
+                                        f"quality={smart['quality']} score={smart['score']} | {smart['reason'][:60]}")
+                    except Exception as _e:
+                        logger.debug(f"SmartEntry skip: {_e}")
+
                 # Filter 3: Liquidity Cluster Entry
                 if not skip_reason:
                     # Ưu tiên: websocket tracker (nếu có data)
@@ -2292,64 +2088,83 @@ def scan_engine(exchange, notifier):
                                 near_cluster = cluster["dist_pct"] <= 1.0
 
                             # Sweep: giá đã quét qua cluster (chạm đáy/đỉnh)
-                            # Hoặc giá đã ở gần cluster (trong 1%)
-                            if not price_moving_toward and not near_cluster:
-                                # Giá đang đi ngược → pending, chờ lần scan sau
+                            sweep_check = (
+                                df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
+                                if best.signal == "LONG" else
+                                df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
+                            )
+
+                            # Chỉ vào khi:
+                            # 1. Giá đang đi đúng hướng về cluster, HOẶC
+                            # 2. Giá đã sweep qua cluster (bất kể momentum)
+                            # KHÔNG vào khi near_cluster nhưng giá đang hồi ngược
+                            if not price_moving_toward and not sweep_check:
                                 _pending_watch.pop(best.symbol, None)
-                                skip_reason = (f"Giá chưa tiến về cluster "
+                                skip_reason = (f"Giá đang hồi ngược chiều cluster "
                                                f"({'↗' if price_now > price_3ago else '↘'} "
-                                               f"vs cluster {cluster['dist_pct']:.1f}% away)")
+                                               f"dist={cluster['dist_pct']:.1f}%)")
                             else:
                                 # ── Entry: tại ĐÚNG vùng liq ──────────────
-                                # SHORT: entry = đáy cluster (giá pump lên chạm là vào)
-                                # LONG:  entry = đỉnh cluster (giá dump xuống chạm là vào)
+                                # LONG:  entry = đỉnh cluster phía DƯỚI giá (giá dump xuống chạm là vào)
+                                # SHORT: entry = đáy cluster phía TRÊN giá (giá pump lên chạm là vào)
                                 entry_price = cluster["entry"]
 
-                                # ── SL: ngoài cluster + buffer ────────────
-                                sl = cluster["sl_zone"]
-                                if best.signal == "LONG":
-                                    sl = round(max(sl, entry_price * 0.95), 8)
-                                else:
-                                    sl = round(min(sl, entry_price * 1.05), 8)
+                                # Safety validate: entry phải đúng phía so với giá hiện tại
+                                # LONG: entry phải < cur_price (cluster phía dưới)
+                                # SHORT: entry phải > cur_price (cluster phía trên)
+                                if best.signal == "LONG" and entry_price >= cur_price:
+                                    skip_reason = (f"Entry LONG {entry_price:.4f} >= giá hiện tại "
+                                                   f"{cur_price:.4f} — cluster sai phía")
+                                elif best.signal == "SHORT" and entry_price <= cur_price:
+                                    skip_reason = (f"Entry SHORT {entry_price:.4f} <= giá hiện tại "
+                                                   f"{cur_price:.4f} — cluster sai phía")
 
-                                # ── TP: cluster lớn nhất USD phía target ──
-                                heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
-                                if best.signal == "LONG":
-                                    tp_cluster = liq_source.get_best_entry_cluster(
-                                        symbol        = best.symbol,
-                                        current_price = entry_price,
-                                        direction     = "SHORT",
-                                        min_usd       = 10_000,
-                                        cluster_gap_pct = 0.012,
-                                    )
-                                    if tp_cluster and tp_cluster["entry"] > entry_price:
-                                        tp = round(tp_cluster["cluster_low"] * 0.999, 8)
+                                if not skip_reason:
+                                    # ── SL: ngoài cluster + buffer ────────────
+                                    sl = cluster["sl_zone"]
+                                    if best.signal == "LONG":
+                                        sl = round(max(sl, entry_price * 0.95), 8)
                                     else:
-                                        above = [(p, u) for p, u in heatmap.items()
-                                                 if p > cur_price and u >= 10_000]
-                                        if above:
-                                            liq_tp = max(above, key=lambda x: x[1])[0]
-                                            tp = round(liq_tp * 0.998, 8)
+                                        sl = round(min(sl, entry_price * 1.05), 8)
+
+                                    # ── TP: cluster lớn nhất USD phía target ──
+                                    heatmap = liq_source.get_liq_heatmap(best.symbol) or {}
+                                    if best.signal == "LONG":
+                                        tp_cluster = liq_source.get_best_entry_cluster(
+                                            symbol        = best.symbol,
+                                            current_price = entry_price,
+                                            direction     = "SHORT",
+                                            min_usd       = 10_000,
+                                            cluster_gap_pct = 0.012,
+                                        )
+                                        if tp_cluster and tp_cluster["entry"] > entry_price:
+                                            tp = round(tp_cluster["cluster_low"] * 0.999, 8)
                                         else:
-                                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
-                                else:  # SHORT
-                                    tp_cluster = liq_source.get_best_entry_cluster(
-                                        symbol        = best.symbol,
-                                        current_price = entry_price,
-                                        direction     = "LONG",
-                                        min_usd       = 10_000,
-                                        cluster_gap_pct = 0.012,
-                                    )
-                                    if tp_cluster and tp_cluster["entry"] < entry_price:
-                                        tp = round(tp_cluster["cluster_high"] * 1.001, 8)
-                                    else:
-                                        below = [(p, u) for p, u in heatmap.items()
-                                                 if p < cur_price and u >= 10_000]
-                                        if below:
-                                            liq_tp = min(below, key=lambda x: -x[1])[0]
-                                            tp = round(liq_tp * 1.002, 8)
+                                            above = [(p, u) for p, u in heatmap.items()
+                                                     if p > cur_price and u >= 10_000]
+                                            if above:
+                                                liq_tp = max(above, key=lambda x: x[1])[0]
+                                                tp = round(liq_tp * 0.998, 8)
+                                            else:
+                                                tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                                    else:  # SHORT
+                                        tp_cluster = liq_source.get_best_entry_cluster(
+                                            symbol        = best.symbol,
+                                            current_price = entry_price,
+                                            direction     = "LONG",
+                                            min_usd       = 10_000,
+                                            cluster_gap_pct = 0.012,
+                                        )
+                                        if tp_cluster and tp_cluster["entry"] < entry_price:
+                                            tp = round(tp_cluster["cluster_high"] * 1.001, 8)
                                         else:
-                                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+                                            below = [(p, u) for p, u in heatmap.items()
+                                                     if p < cur_price and u >= 10_000]
+                                            if below:
+                                                liq_tp = min(below, key=lambda x: -x[1])[0]
+                                                tp = round(liq_tp * 1.002, 8)
+                                            else:
+                                                tp = round(entry_price - (sl - entry_price) * 3.0, 8)
 
                                 # ── Validate RR ──────────────────────────
                                 risk   = abs(entry_price - sl)
@@ -2417,8 +2232,11 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "LONG",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
+                    # near_zone phải < cur_p (phía dưới giá) và > entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster and near_cluster["entry"] > entry_price
+                                 if near_cluster
+                                 and near_cluster["entry"] < cur_p   # đúng phía
+                                 and near_cluster["entry"] > entry_price  # gần hơn deep
                                  else None)
                     deep_zone = entry_price
                 else:
@@ -2426,8 +2244,11 @@ def scan_engine(exchange, notifier):
                         best.symbol, cur_p, "SHORT",
                         min_usd=10_000, cluster_gap_pct=0.012
                     ) if (liq_inst and liq_inst.is_connected()) else None)
+                    # near_zone phải > cur_p (phía trên giá) và < entry_price (gần hơn deep)
                     near_zone = (round(near_cluster["entry"], 8)
-                                 if near_cluster and near_cluster["entry"] < entry_price
+                                 if near_cluster
+                                 and near_cluster["entry"] > cur_p   # đúng phía
+                                 and near_cluster["entry"] < entry_price  # gần hơn deep
                                  else None)
                     deep_zone = entry_price
 
@@ -3714,10 +3535,10 @@ def position_advisor(exchange, notifier):
                            if abs(float(p.get("positionAmt", 0))) > 0]
 
             if not open_pos:
-                time.sleep(3600)  # 1 tiếng
+                time.sleep(1800)  # 30 phút
                 continue
 
-            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (1 tiếng)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (30 phút)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
 
             for p in open_pos:
                 sym = p["symbol"]
@@ -3822,7 +3643,11 @@ def position_advisor(exchange, notifier):
         except Exception as e:
             logger.error(f"[PositionAdvisor] Error: {e}")
 
-        time.sleep(3600)  # 1 tiếng
+        time.sleep(1800)  # 30 phút
+
+
+# ============================================================
+# THREAD 11: Orphan Order Cleanup — mỗi 20 phút xóa SL/TP mồ côi
 # ============================================================
 def orphan_order_cleanup(exchange, notifier):
     """Nếu coin có SL/TP order nhưng KHÔNG có position → hủy
