@@ -1881,17 +1881,16 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
 # ============================================================
 def _liq_sweep_reversal_scan(exchange, config):
     """
-    Quét FIXED_COINS tìm coin vừa sweep liq + bounce/reject.
+    Liq Pre-Position: đặt LIMIT order SẴN ở vùng liq, chờ giá tới khớp.
+    Không chờ bounce/reject → không bị trễ.
     
-    LONG khi:
-      - Có cluster liq lớn phía DƯỚI (đã bị sweep trong 3 nến gần nhất)
-      - Giá đang bounce lên (nến hiện tại close > open, hoặc wick dưới dài)
-      - RSI < 35 (oversold)
-    
-    SHORT khi:
-      - Có cluster liq lớn phía TRÊN (đã bị sweep trong 3 nến gần nhất)  
-      - Giá đang reject xuống (nến hiện tại close < open, hoặc wick trên dài)
-      - RSI > 65 (overbought)
+    LONG: tìm cluster liq DƯỚI giá → đặt LIMIT BUY tại đó
+      - Giá đang giảm hoặc gần cluster (≤8%)
+      - Cluster lớn (USD) = xác suất bounce cao
+      
+    SHORT: tìm cluster liq TRÊN giá → đặt LIMIT SELL tại đó
+      - Giá đang tăng hoặc gần cluster (≤8%)
+      - Cluster lớn (USD) = xác suất reject cao
     
     Returns: CoinScore hoặc None
     """
@@ -1922,15 +1921,20 @@ def _liq_sweep_reversal_scan(exchange, config):
     except Exception:
         return None
 
-    # Skip coin đã có position
+    # Skip coin đã có position hoặc pending order
     with lock:
         open_syms = {p["symbol"] for p in state.get("open_positions", [])
                      if abs(float(p.get("positionAmt", 0))) > 0}
+    try:
+        pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+        pending_syms = {o["symbol"] for o in pending_orders if not o.get("reduceOnly", False)}
+    except Exception:
+        pending_syms = set()
 
     best_candidate = None
 
     for symbol in coins:
-        if symbol in open_syms:
+        if symbol in open_syms or symbol in pending_syms:
             continue
         if not liq_source.is_ready(symbol) if hasattr(liq_source, 'is_ready') else liq_source.total_liq_usd(symbol) <= 0:
             continue
@@ -1951,7 +1955,7 @@ def _liq_sweep_reversal_scan(exchange, config):
             atr = calculate_atr(high, low, close).iloc[-1]
             atr_pct = (atr / cur_price) * 100
 
-            # ── Check LONG: liq dưới đã bị sweep + bounce ──
+            # ── LONG: tìm cluster liq DƯỚI → đặt LIMIT BUY đón sẵn ──
             cluster_below = liq_source.get_best_entry_cluster(
                 symbol=symbol, current_price=cur_price,
                 direction="LONG", min_usd=30_000, cluster_gap_pct=0.008
@@ -1963,41 +1967,39 @@ def _liq_sweep_reversal_scan(exchange, config):
                 )
 
             if cluster_below and cluster_below["dist_pct"] <= 8.0:
-                # Cluster gần (<=3%) → check xem giá đã sweep chưa
-                # Sweep = low của 3 nến gần nhất chạm cluster
-                recent_low = low.iloc[-3:].min()
-                swept = recent_low <= cluster_below["cluster_high"] * 1.003
+                # Giá đang giảm (đi về cluster) HOẶC gần cluster ≤ 2%
+                price_3ago = close.iloc[-4] if len(close) >= 4 else close.iloc[0]
+                going_down = cur_price < price_3ago
+                near = cluster_below["dist_pct"] <= 2.0
 
-                # Bounce = nến hiện tại close > open (xanh) HOẶC wick dưới dài
-                cur_close = close.iloc[-1]
-                cur_open  = df["open"].iloc[-1]
-                cur_low   = low.iloc[-1]
-                body = abs(cur_close - cur_open)
-                wick_below = min(cur_close, cur_open) - cur_low
-                is_bounce = (cur_close > cur_open) or (wick_below > body * 1.5)
-
-                if swept and is_bounce and rsi < 40:
-                    score = 70.0
-                    # Bonus nếu RSI rất thấp
-                    if rsi < 25:
-                        score += 10
-                    elif rsi < 30:
+                if going_down or near:
+                    # Score dựa trên: cluster size + khoảng cách + RSI
+                    score = 68.0
+                    if cluster_below["total_usd"] >= 50_000:
                         score += 5
+                    if cluster_below["dist_pct"] <= 2.0:
+                        score += 5
+                    if rsi < 35:
+                        score += 7
+                    elif rsi < 45:
+                        score += 3
 
                     candidate = CoinScore(
                         symbol=symbol,
                         signal="LONG",
-                        score=round(score, 1),
+                        score=round(min(score, 90), 1),
                         rsi=round(rsi, 1),
-                        trend="REVERSAL",
+                        trend="LIQ_PREPOSITION",
                         atr_pct=round(atr_pct, 2),
-                        reason=f"🔄LIQ SWEEP LONG | swept ${cluster_below['total_usd']/1e3:.0f}k @ {cluster_below['cluster_high']:.6f} | bounce RSI={rsi:.0f}"
+                        reason=(f"📍LIQ PRE-LONG | cluster ${cluster_below['total_usd']/1e3:.0f}k "
+                                f"dist={cluster_below['dist_pct']:.1f}% | "
+                                f"{'↘giá đang giảm' if going_down else '⚡gần cluster'} | RSI={rsi:.0f}")
                     )
                     if not best_candidate or candidate.score > best_candidate.score:
                         best_candidate = candidate
-                    continue  # Không check SHORT cho cùng coin
+                    continue
 
-            # ── Check SHORT: liq trên đã bị sweep + reject ──
+            # ── SHORT: tìm cluster liq TRÊN → đặt LIMIT SELL đón sẵn ──
             cluster_above = liq_source.get_best_entry_cluster(
                 symbol=symbol, current_price=cur_price,
                 direction="SHORT", min_usd=30_000, cluster_gap_pct=0.008
@@ -2009,43 +2011,42 @@ def _liq_sweep_reversal_scan(exchange, config):
                 )
 
             if cluster_above and cluster_above["dist_pct"] <= 8.0:
-                # Cluster gần (<=3%) → check xem giá đã sweep chưa
-                recent_high = high.iloc[-3:].max()
-                swept = recent_high >= cluster_above["cluster_low"] * 0.997
+                # Giá đang tăng (đi về cluster) HOẶC gần cluster ≤ 2%
+                price_3ago = close.iloc[-4] if len(close) >= 4 else close.iloc[0]
+                going_up = cur_price > price_3ago
+                near = cluster_above["dist_pct"] <= 2.0
 
-                # Quét xong liq trên = vào SHORT ngay, không cần chờ reject
-                if swept:
-                    score = 72.0
-                    # Bonus nếu có thêm tín hiệu reject
-                    cur_close = close.iloc[-1]
-                    cur_open  = df["open"].iloc[-1]
-                    cur_high  = high.iloc[-1]
-                    body = abs(cur_close - cur_open)
-                    wick_above = cur_high - max(cur_close, cur_open)
-                    is_reject = (cur_close < cur_open) or (wick_above > body * 1.5)
-                    if is_reject:
-                        score += 8
-                    if rsi > 70:
+                if going_up or near:
+                    score = 70.0
+                    if cluster_above["total_usd"] >= 50_000:
                         score += 5
+                    if cluster_above["dist_pct"] <= 2.0:
+                        score += 5
+                    if rsi > 65:
+                        score += 7
+                    elif rsi > 55:
+                        score += 3
 
                     candidate = CoinScore(
                         symbol=symbol,
                         signal="SHORT",
-                        score=round(score, 1),
+                        score=round(min(score, 90), 1),
                         rsi=round(rsi, 1),
-                        trend="REVERSAL",
+                        trend="LIQ_PREPOSITION",
                         atr_pct=round(atr_pct, 2),
-                        reason=f"🔄LIQ SWEEP SHORT | swept ${cluster_above['total_usd']/1e3:.0f}k @ {cluster_above['cluster_low']:.6f} | reject RSI={rsi:.0f}"
+                        reason=(f"📍LIQ PRE-SHORT | cluster ${cluster_above['total_usd']/1e3:.0f}k "
+                                f"dist={cluster_above['dist_pct']:.1f}% | "
+                                f"{'↗giá đang tăng' if going_up else '⚡gần cluster'} | RSI={rsi:.0f}")
                     )
                     if not best_candidate or candidate.score > best_candidate.score:
                         best_candidate = candidate
 
         except Exception as e:
-            logger.debug(f"[LiqSweep] {symbol}: {e}")
+            logger.debug(f"[LiqPrePos] {symbol}: {e}")
             continue
 
     if best_candidate:
-        logger.info(f"🔄 [LiqSweepReversal] {best_candidate.symbol} {best_candidate.signal} "
+        logger.info(f"📍 [LiqPrePosition] {best_candidate.symbol} {best_candidate.signal} "
                     f"score={best_candidate.score} | {best_candidate.reason}")
 
     return best_candidate
