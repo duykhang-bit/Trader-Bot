@@ -420,6 +420,11 @@ class PumpDetector:
             and (use_limit_top or use_market)
         )
 
+        # Pump CỰC MẠNH (>= 50%) → bypass score + RSI, SHORT luôn
+        if not is_top and pump_pct >= 50.0 and (use_limit_top or use_market):
+            is_top = True
+            logger.info(f"[PumpDetector] {symbol}: FORCE TOP — pump +{pump_pct:.0f}% bypass score/RSI")
+
         if is_top:
             self._cooldown[symbol] = now
             logger.info(
