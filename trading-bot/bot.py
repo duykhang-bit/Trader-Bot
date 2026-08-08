@@ -1962,7 +1962,7 @@ def _liq_sweep_reversal_scan(exchange, config):
                     direction="LONG", min_usd=10_000, cluster_gap_pct=0.012
                 )
 
-            if cluster_below and cluster_below["dist_pct"] <= 3.0:
+            if cluster_below and cluster_below["dist_pct"] <= 8.0:
                 # Cluster gần (<=3%) → check xem giá đã sweep chưa
                 # Sweep = low của 3 nến gần nhất chạm cluster
                 recent_low = low.iloc[-3:].min()
@@ -2008,7 +2008,7 @@ def _liq_sweep_reversal_scan(exchange, config):
                     direction="SHORT", min_usd=10_000, cluster_gap_pct=0.012
                 )
 
-            if cluster_above and cluster_above["dist_pct"] <= 3.0:
+            if cluster_above and cluster_above["dist_pct"] <= 8.0:
                 # Cluster gần (<=3%) → check xem giá đã sweep chưa
                 recent_high = high.iloc[-3:].max()
                 swept = recent_high >= cluster_above["cluster_low"] * 0.997
