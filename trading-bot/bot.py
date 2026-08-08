@@ -1614,6 +1614,142 @@ def scan_position_protector(exchange, notifier):
 # Trả về symbol bị spike (để scan ngay), hoặc None nếu hết thời gian
 _spike_price_baseline: dict = {}   # {symbol: (price, timestamp)}
 
+# ============================================================
+# THREAD: Trailing Profit Lock — dời SL lên theo lợi nhuận
+# Khi lãi >= 3% → dời SL lên breakeven
+# Khi giá đi 50% tới TP → lock 40% lợi nhuận
+# Khi giá đi 70% tới TP → lock 60% lợi nhuận
+# ============================================================
+def trailing_profit_lock(exchange, notifier):
+    """Dời SL lên theo lợi nhuận để không bị quay lại lỗ."""
+    time.sleep(30)  # chờ bot khởi động
+
+    while state["running"]:
+        try:
+            if not getattr(config, "PROFIT_LOCK_ENABLED", True):
+                time.sleep(10)
+                continue
+
+            # Lấy positions đang mở
+            all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+            open_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0]
+
+            for pos in open_pos:
+                sym = pos["symbol"]
+                amt = float(pos.get("positionAmt", 0))
+                entry = float(pos.get("entryPrice", 0))
+                mark = float(pos.get("markPrice", 0))
+
+                if entry <= 0 or mark <= 0:
+                    continue
+
+                is_long = amt > 0
+                qty = abs(amt)
+
+                # Tính % lợi nhuận hiện tại
+                if is_long:
+                    pnl_pct = (mark - entry) / entry * 100
+                else:
+                    pnl_pct = (entry - mark) / entry * 100
+
+                # Chưa lãi đủ → skip
+                min_pct = getattr(config, "PROFIT_LOCK_MIN_PCT", 3.0)
+                if pnl_pct < min_pct:
+                    continue
+
+                # Lấy SL hiện tại
+                all_orders = exchange._get("/fapi/v1/openOrders",
+                                          {"symbol": sym}, signed=True)
+                sl_orders = [o for o in all_orders
+                             if o.get("type") in ("STOP_MARKET", "STOP")
+                             and o.get("reduceOnly", False)]
+                if not sl_orders:
+                    continue
+
+                current_sl = float(sl_orders[0].get("stopPrice", 0))
+                if current_sl <= 0:
+                    continue
+
+                # Tính new SL dựa trên % progress tới TP
+                # Lấy TP order
+                tp_orders = [o for o in all_orders
+                             if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
+                             and o.get("reduceOnly", False)]
+                tp_price = float(tp_orders[0].get("stopPrice", 0)) if tp_orders else 0
+
+                if tp_price <= 0:
+                    # Không có TP → dùng đơn giản: lock khi lãi >= min_pct
+                    if is_long:
+                        new_sl = round(entry * 1.005, 8)  # breakeven + 0.5%
+                    else:
+                        new_sl = round(entry * 0.995, 8)
+                else:
+                    # Tính progress tới TP
+                    if is_long:
+                        total_move = tp_price - entry
+                        current_move = mark - entry
+                    else:
+                        total_move = entry - tp_price
+                        current_move = entry - mark
+
+                    if total_move <= 0:
+                        continue
+                    progress = current_move / total_move  # 0.0 → 1.0
+
+                    # Dời SL theo progress
+                    if progress >= 0.70:
+                        # Lock 60% lợi nhuận
+                        lock_pct = 0.60
+                    elif progress >= 0.50:
+                        # Lock 40% lợi nhuận
+                        lock_pct = 0.40
+                    elif progress >= 0.30:
+                        # Breakeven + nhỏ
+                        lock_pct = 0.15
+                    else:
+                        continue  # Chưa đủ progress
+
+                    if is_long:
+                        new_sl = round(entry + total_move * lock_pct, 8)
+                    else:
+                        new_sl = round(entry - total_move * lock_pct, 8)
+
+                # Check: new_sl có tốt hơn current_sl không?
+                if is_long and new_sl <= current_sl:
+                    continue
+                if not is_long and new_sl >= current_sl:
+                    continue
+
+                # Dời SL
+                try:
+                    # Cancel SL cũ
+                    for o in sl_orders:
+                        exchange._delete("/fapi/v1/order",
+                                        {"symbol": sym, "orderId": o["orderId"]})
+
+                    # Đặt SL mới
+                    close_side = "SELL" if is_long else "BUY"
+                    exchange.place_stop_loss_order(sym, close_side, qty, new_sl)
+
+                    logger.info(
+                        f"[TrailingLock] {sym} {'LONG' if is_long else 'SHORT'} | "
+                        f"SL {current_sl:.6f} → {new_sl:.6f} | "
+                        f"PnL={pnl_pct:.1f}% | lock={lock_pct*100:.0f}%"
+                    )
+                    notifier.telegram.send(
+                        f"🔒 <b>PROFIT LOCK</b> {sym}\n"
+                        f"SL dời: {current_sl:.6f} → <b>{new_sl:.6f}</b>\n"
+                        f"💰 Lock {lock_pct*100:.0f}% lợi nhuận | PnL: +{pnl_pct:.1f}%"
+                    )
+                except Exception as e:
+                    logger.error(f"[TrailingLock] Move SL {sym}: {e}")
+
+        except Exception as e:
+            logger.debug(f"[TrailingLock] Error: {e}")
+
+        time.sleep(getattr(config, "PROFIT_LOCK_INTERVAL", 5))
+
+
 def _wait_or_spike(total_seconds: float, check_interval: float = 2,
                    spike_pct: float = 3.0, dump_pct: float = 2.5):
     """
@@ -4132,6 +4268,8 @@ if __name__ == "__main__":
         _t2a2.start()
         _t2a3 = threading.Thread(target=scan_position_protector, args=(exchange, notifier), daemon=True)
         _t2a3.start()
+        _t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
+        _t_trailing.start()
         _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
         _t2b.start()
         _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
@@ -4209,6 +4347,8 @@ if __name__ == "__main__":
     # Orphan order cleanup thread (mỗi 20 phút xóa SL/TP mồ côi)
     t11 = threading.Thread(target=orphan_order_cleanup, args=(exchange, notifier), daemon=True)
     t11.start()
+    t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
+    t_trailing.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
