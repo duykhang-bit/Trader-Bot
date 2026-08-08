@@ -582,7 +582,7 @@ function renderDashboard(d) {
         </div>
     </div>`;
 
-    // Stats
+    // Stats + PnL Chart gộp chung 1 section
     html += `<div class="stats">
         <div class="card"><div class="label">Balance</div><div id="stat-balance" class="value blue">${fmtUsd(d.balance)}</div></div>
         <div class="card"><div class="label">Today PnL</div><div id="stat-today-pnl" class="value ${pnlColor(d.today_pnl)}">${fmtUsd(d.today_pnl)}</div></div>
@@ -590,7 +590,8 @@ function renderDashboard(d) {
         <div class="card"><div class="label">Unrealized</div><div id="stat-unrealized" class="value ${pnlColor(d.unrealized)}">${fmtUsd(d.unrealized)}</div></div>
         <div class="card"><div class="label">Win Rate</div><div id="stat-winrate" class="value">${fmt(d.win_rate,0)}%</div></div>
         <div class="card"><div class="label">Trades</div><div id="stat-trades" class="value">${d.total_trades}</div></div>
-    </div>`;
+    </div>
+    <div id="pnl-stats-section" style="margin-top:8px"><div style="color:#8b949e;font-size:13px">Đang tải PnL...</div></div>`;
 
     // Open Positions
     html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
@@ -768,9 +769,6 @@ function renderDashboard(d) {
         html += `</table>`;
     }
     html += `</div>`;
-
-    // PnL Statistics — thay thế Prices section
-    html += `<div class="section"><h2>&#x1F4C8; PnL Statistics</h2><div id="pnl-stats-section"><div style="color:#8b949e;font-size:13px">Đang tải...</div></div></div>`;
 
     // Trade History
     if (d.trades_history && d.trades_history.length > 0) {
