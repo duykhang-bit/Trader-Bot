@@ -2013,19 +2013,19 @@ def _liq_sweep_reversal_scan(exchange, config):
                 recent_high = high.iloc[-3:].max()
                 swept = recent_high >= cluster_above["cluster_low"] * 0.997
 
-                # Reject = nến hiện tại close < open (đỏ) HOẶC wick trên dài
-                cur_close = close.iloc[-1]
-                cur_open  = df["open"].iloc[-1]
-                cur_high  = high.iloc[-1]
-                body = abs(cur_close - cur_open)
-                wick_above = cur_high - max(cur_close, cur_open)
-                is_reject = (cur_close < cur_open) or (wick_above > body * 1.5)
-
-                if swept and is_reject and rsi > 60:
-                    score = 70.0
-                    if rsi > 75:
-                        score += 10
-                    elif rsi > 70:
+                # Quét xong liq trên = vào SHORT ngay, không cần chờ reject
+                if swept:
+                    score = 72.0
+                    # Bonus nếu có thêm tín hiệu reject
+                    cur_close = close.iloc[-1]
+                    cur_open  = df["open"].iloc[-1]
+                    cur_high  = high.iloc[-1]
+                    body = abs(cur_close - cur_open)
+                    wick_above = cur_high - max(cur_close, cur_open)
+                    is_reject = (cur_close < cur_open) or (wick_above > body * 1.5)
+                    if is_reject:
+                        score += 8
+                    if rsi > 70:
                         score += 5
 
                     candidate = CoinScore(
