@@ -1073,8 +1073,10 @@ def price_updater(exchange):
                 state["open_positions"] = open_pos
 
             # ── Max loss check: đóng lệnh nếu lỗ > $20 ──
+            max_loss_enabled = getattr(config, "MAX_LOSS_ENABLED", True)
             max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
-            for p in open_pos:
+            if max_loss_enabled:
+             for p in open_pos:
                 pnl = p.get("_pnl", 0)
                 sym = p["symbol"]
                 amt = float(p.get("positionAmt", 0))

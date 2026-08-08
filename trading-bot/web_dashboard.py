@@ -373,6 +373,18 @@ async function toggleTrailingLock(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleMaxLoss(enabled) {
+    const r = await apiPost('/api/max_loss', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
+async function setMaxLoss() {
+    const val = parseFloat(document.getElementById('max-loss-input').value);
+    if (!val || val < 5) { toast('Min $5', false); return; }
+    const r = await apiPost('/api/max_loss', {enabled: true, value: val});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function cancelAllPending() {
     if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
     await apiPost('/api/cancel_all_pending');
@@ -531,6 +543,24 @@ function renderDashboard(d) {
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#f85149'}">
                     ${en?'Dời SL lên lock lãi khi gần TP':'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F6A8; Max Loss:</span>
+            ${(() => {
+                const en = d.max_loss_enabled !== false;
+                const val = d.max_loss_value || 20;
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleMaxLoss(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleMaxLoss(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <input id="max-loss-input" type="number" value="${val}" min="5" max="100" step="5"
+                       style="width:60px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px;color:#e6edf3;font-size:12px;margin-left:6px">
+                <button class="btn btn-sm" onclick="setMaxLoss()" style="margin-left:4px;font-size:11px">Set $</button>
+                <span style="font-size:11px;color:${en?'#f85149':'#8b949e'}">
+                    ${en?'Tự đóng khi lỗ > $'+val:'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -1936,6 +1966,8 @@ def api_state():
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
         "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
+        "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
+        "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
@@ -2830,6 +2862,24 @@ def api_trailing_lock():
         pass
     status = "bật" if enabled else "tắt"
     return jsonify({"ok": True, "msg": f"Trailing Lock: {status}", "enabled": bool(enabled)})
+
+@app.route("/api/max_loss", methods=["POST"])
+@require_auth
+def api_max_loss():
+    """Bật/tắt Max Loss Safety Net + config số tiền."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    value   = data.get("value", None)
+    try:
+        import config as _cfg
+        _cfg.MAX_LOSS_ENABLED = bool(enabled)
+        if value is not None:
+            _cfg.MAX_LOSS_PER_POSITION = float(value)
+    except Exception:
+        pass
+    val = getattr(_config, "MAX_LOSS_PER_POSITION", 20.0)
+    status = f"bật (${val:.0f})" if enabled else "tắt"
+    return jsonify({"ok": True, "msg": f"Max Loss: {status}", "enabled": bool(enabled), "value": val})
 
 @app.route("/api/reversal_monitor", methods=["POST"])
 def api_reversal_monitor():

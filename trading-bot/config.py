@@ -80,6 +80,7 @@ TRAILING_STOP_PCT  = 0.015
 TRAILING_LOCK_ENABLED = True
 MAX_LOSS_PER_POSITION = 20.0
 MAX_LOSS_PCT_PER_POSITION = 0.20
+MAX_LOSS_ENABLED = True  # Bật/tắt safety net — tự đóng lệnh khi lỗ vượt MAX_LOSS
 
 # Bật/tắt Position Reversal Monitor — tự động chốt lời khi phát hiện đảo chiều
 # True  = bot tự đóng khi có 2/3 tín hiệu đảo chiều
