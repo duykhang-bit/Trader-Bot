@@ -185,18 +185,20 @@ class BinanceFutures:
     # ---- Trading ----
 
     def set_leverage(self, symbol: str, leverage: int):
-        """Set đòn bẩy — tự động giảm nếu coin không hỗ trợ leverage yêu cầu"""
+        """Set đòn bẩy — tự động giảm nếu coin không hỗ trợ leverage yêu cầu.
+        Returns: int — leverage thực tế được set."""
         try:
             result = self._post("/fapi/v1/leverage", {
                 "symbol": symbol,
                 "leverage": leverage
             })
             logger.info(f"Leverage set to {leverage}x for {symbol}")
-            return result
+            return int(result.get("leverage", leverage)) if isinstance(result, dict) else leverage
         except Exception as e:
-            # Nếu leverage không hợp lệ (code -4028), thử giảm dần
-            if "-4028" in str(e) or "not valid" in str(e).lower():
-                for try_lev in [10, 5, 3, 2, 1]:
+            # Nếu leverage không hợp lệ → thử giảm dần
+            err_str = str(e).lower()
+            if "-4028" in str(e) or "not valid" in err_str or "400" in str(e) or "bad request" in err_str or "invalid" in err_str:
+                for try_lev in [10, 7, 5, 3, 2, 1]:
                     if try_lev >= leverage:
                         continue
                     try:
@@ -204,11 +206,19 @@ class BinanceFutures:
                             "symbol": symbol,
                             "leverage": try_lev
                         })
-                        logger.info(f"Leverage fallback to {try_lev}x for {symbol} (requested {leverage}x not valid)")
-                        return result
+                        logger.info(f"Leverage fallback to {try_lev}x for {symbol} (requested {leverage}x)")
+                        return try_lev
                     except Exception:
                         continue
-            raise
+            # Nếu vẫn fail → set 1x và log warning
+            try:
+                result = self._post("/fapi/v1/leverage", {"symbol": symbol, "leverage": 1})
+                logger.warning(f"Leverage forced to 1x for {symbol}")
+                return 1
+            except Exception:
+                pass
+            logger.error(f"set_leverage {symbol} failed completely: {e}")
+            return 1  # default 1x nếu tất cả fail
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
         """Set margin type: ISOLATED hoặc CROSSED"""

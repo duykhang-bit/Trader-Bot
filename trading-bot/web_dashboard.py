@@ -2131,7 +2131,7 @@ def api_quick_trade():
 
         # Set leverage (tự giảm nếu coin không hỗ trợ)
         actual_lev = _exchange.set_leverage(symbol, leverage)
-        if isinstance(actual_lev, int) and actual_lev < leverage:
+        if actual_lev and actual_lev < leverage:
             leverage = actual_lev
 
         # Tính qty giữ position size = usdt × config.LEVERAGE gốc
