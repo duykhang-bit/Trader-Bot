@@ -2667,7 +2667,7 @@ def pump_scan_engine(exchange, notifier):
 
             # Soft mode dùng ngưỡng thấp hơn
             if soft_short and not auto_short:
-                detector.cfg["PUMP_TOP_MIN_SCORE"] = 60
+                detector.cfg["PUMP_TOP_MIN_SCORE"] = getattr(config, "PUMP_TOP_MIN_SCORE", 50)
                 detector.cfg["PUMP_PRICE_RISE_PCT"] = 15.0
                 _soft_rsi_min = 65
             else:
