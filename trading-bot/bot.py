@@ -2219,120 +2219,97 @@ def scan_engine(exchange, notifier):
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
 
-            # ── FAST CHECK: coin đang pending liq entry → giá tới zone chưa? ──
-            # Không cần scan lại 4h/1h/15m — chỉ check giá + 1m trigger
+            # ── FAST CHECK: armed entries — giá tới zone chưa? ──
             with lock:
-                pending_liq = dict(state.get("pending_liq_entries", {}))
-            if pending_liq:
-                for p_sym, p_info in list(pending_liq.items()):
+                armed = dict(state.get("armed_entries", {}))
+            if armed:
+                for a_sym, a_info in list(armed.items()):
                     try:
-                        # Bỏ pending quá 30 phút
-                        if time.time() - p_info["ts"] > 1800:
+                        # Expiry 15 phút
+                        if time.time() - a_info["ts"] > 900:
                             with lock:
-                                state.get("pending_liq_entries", {}).pop(p_sym, None)
+                                state.get("armed_entries", {}).pop(a_sym, None)
+                            logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>15min)")
                             continue
 
                         # Skip nếu đã có position
                         with lock:
                             open_syms = {p["symbol"] for p in state.get("open_positions", [])
                                          if abs(float(p.get("positionAmt", 0))) > 0}
-                        if p_sym in open_syms:
+                            n_open = len(state.get("open_positions", []))
+                        if a_sym in open_syms or n_open >= config.MAX_OPEN_POSITIONS:
                             with lock:
-                                state.get("pending_liq_entries", {}).pop(p_sym, None)
+                                state.get("armed_entries", {}).pop(a_sym, None)
                             continue
 
-                        cur_p = exchange.get_ticker_price(p_sym)
-                        entry_zone = p_info["entry_price"]
+                        # Check giá
+                        cur_p = exchange.get_ticker_price(a_sym)
+                        entry_p = a_info["entry_price"]
 
-                        # Check giá ĐÃ QUÉT vùng liq chưa (không chỉ gần)
-                        klines_1m = exchange.get_klines(p_sym, "1m", limit=5)
-                        df_1m = _klines_to_df(klines_1m)
+                        # LONG: giá <= entry (dump xuống vùng liq)
+                        # SHORT: giá >= entry (pump lên vùng liq)
+                        hit = False
+                        if a_info["signal"] == "LONG" and cur_p <= entry_p:
+                            hit = True
+                        elif a_info["signal"] == "SHORT" and cur_p >= entry_p:
+                            hit = True
 
-                        swept = False
-                        if p_info["signal"] == "LONG":
-                            # LONG: low của nến gần nhất phải CHẠM hoặc xuyên qua liq zone
-                            recent_low = df_1m["low"].iloc[-3:].min()
-                            swept = recent_low <= entry_zone * 1.005  # chạm zone (buffer 0.5%)
-                        else:
-                            # SHORT: high của nến gần nhất phải CHẠM hoặc xuyên qua liq zone
-                            recent_high = df_1m["high"].iloc[-3:].max()
-                            swept = recent_high >= entry_zone * 0.995
+                        if hit:
+                            # MARKET ORDER ngay
+                            try:
+                                exchange.set_leverage(a_sym, config.LEVERAGE)
+                            except Exception:
+                                pass
+                            bal = exchange.get_account_balance()
+                            qty = calc_qty(bal, cur_p, a_info["sl"], symbol=a_sym, exchange=exchange)
+                            if qty * cur_p < 5.0:
+                                qty = round(5.0 / cur_p + 0.001, 3)
 
-                        if not swept:
-                            continue  # Chưa quét liq → chờ tiếp
+                            exchange.place_market_order(a_sym, a_info["side"], qty)
+                            time.sleep(0.5)
 
-                        # ĐÃ QUÉT LIQ → check 1m trigger
-                        c_close = df_1m["close"].iloc[-1]
-                        c_open  = df_1m["open"].iloc[-1]
-                        c_body  = abs(c_close - c_open)
-                        p_close = df_1m["close"].iloc[-2]
-                        p_open  = df_1m["open"].iloc[-2]
-                        p_body  = abs(p_close - p_open)
-
-                        triggered = False
-                        if p_info["signal"] == "LONG":
-                            # LONG: giá đã quét đáy + nến xanh + body > prev
-                            is_green = c_close > c_open
-                            body_bigger = c_body > p_body * 0.8
-                            if is_green and body_bigger:
-                                triggered = True
-                        else:
-                            # SHORT: giá đã quét đỉnh + nến đỏ + body > prev
-                            is_red = c_close < c_open
-                            body_bigger = c_body > p_body * 0.8
-                            if is_red and body_bigger:
-                                triggered = True
-
-                            if triggered:
-                                # VÀO LỆNH NGAY
-                                signal = p_info["signal"]
-                                side = "BUY" if signal == "LONG" else "SELL"
-                                close_side = "SELL" if signal == "LONG" else "BUY"
-                                sl = p_info["sl"]
-                                tp = p_info["tp"]
-
+                            # SL
+                            sl_ok = False
+                            for _try in range(3):
                                 try:
-                                    exchange.set_leverage(p_sym, config.LEVERAGE)
+                                    exchange.place_stop_loss_order(a_sym, a_info["close_side"], qty, a_info["sl"])
+                                    sl_ok = True
+                                    break
                                 except Exception:
-                                    pass
-                                bal = exchange.get_account_balance()
-                                qty = calc_qty(bal, cur_p, sl, symbol=p_sym, exchange=exchange)
-                                if qty * cur_p < 5.0:
-                                    qty = round(5.0 / cur_p + 0.001, 3)
-
-                                exchange.place_market_order(p_sym, side, qty)
-                                time.sleep(1)
-                                try:
-                                    exchange.place_stop_loss_order(p_sym, close_side, qty, sl)
-                                except Exception:
-                                    pass
-                                try:
-                                    exchange.place_take_profit_order(p_sym, close_side, qty, tp)
-                                except Exception:
-                                    pass
-
+                                    time.sleep(0.3)
+                            if not sl_ok:
+                                exchange.place_market_order(a_sym, a_info["close_side"], qty)
+                                logger.error(f"[Armed] SL FAILED {a_sym} — emergency close")
                                 with lock:
-                                    state.get("pending_liq_entries", {}).pop(p_sym, None)
-                                    state["trade_log"].append({
-                                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        "symbol": p_sym, "side": signal,
-                                        "entry": cur_p, "sl": sl, "tp": tp,
-                                        "qty": qty, "status": "OPEN",
-                                        "note": "pending_liq_trigger"
-                                    })
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                continue
 
-                                icon = "🟢" if signal == "LONG" else "🔴"
-                                rr = abs(tp - cur_p) / abs(cur_p - sl) if abs(cur_p - sl) > 0 else 0
-                                notifier.telegram.send(
-                                    f"{icon} <b>⚡ LIQ TRIGGER | {signal} {p_sym}</b>\n"
-                                    f"Entry: {cur_p:.6f} | SL: {sl:.6f} | TP: {tp:.6f}\n"
-                                    f"RR: 1:{rr:.1f} | Score: {p_info['score']}\n"
-                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                )
-                                logger.info(f"[PendingLiq] ✅ TRIGGERED {p_sym} {signal} @ {cur_p:.6f}")
-                                break  # 1 lệnh/lần
+                            # TP
+                            try:
+                                exchange.place_take_profit_order(a_sym, a_info["close_side"], qty, a_info["tp"])
+                            except Exception:
+                                pass
+
+                            with lock:
+                                state.get("armed_entries", {}).pop(a_sym, None)
+                                state["trade_log"].append({
+                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "symbol": a_sym, "side": a_info["signal"],
+                                    "entry": cur_p, "sl": a_info["sl"], "tp": a_info["tp"],
+                                    "qty": qty, "status": "OPEN", "note": "armed_liq_entry"
+                                })
+
+                            notifier.telegram.send(
+                                f"{'🟢' if a_info['signal']=='LONG' else '🔴'} <b>ARMED TRIGGERED</b>: {a_sym} {a_info['signal']}\n"
+                                f"💰 Entry: {cur_p:.6f} | SL: {a_info['sl']:.6f} | TP: {a_info['tp']:.6f}\n"
+                                f"📐 RR: 1:{a_info['rr']:.1f}\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            logger.info(f"[Armed] ✅ TRIGGERED {a_sym} {a_info['signal']} @ {cur_p:.6f}")
+                            break  # 1 lệnh/loop
+
                     except Exception as _e:
-                        logger.debug(f"[PendingLiq] {p_sym}: {_e}")
+                        logger.debug(f"[Armed] {a_sym}: {_e}")
 
             # ── Fast path: đã được thay bằng ScanPriceMonitor ở cuối vòng lặp ──
             # (wake up sớm qua ws_signal ở dưới)
@@ -2489,48 +2466,37 @@ def scan_engine(exchange, notifier):
                     if rr < 1.5:
                         skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
 
-                # ═══ BƯỚC 8-9: Đặt LIMIT tại vùng liq — Binance tự khớp ═══
+                # ═══ BƯỚC 8-9: Lưu vào armed_entries — WS monitor sẽ MARKET khi giá tới ═══
                 if not skip_reason:
-                    # Đặt LIMIT order tại entry_price (vùng liq)
-                    # Khi giá tới → Binance tự khớp → limit_order_monitor đặt SL/TP
-                    order_type_used = "LIMIT"
-                    try:
-                        qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
-                        if qty * entry_price < 5.0:
-                            qty = round(5.0 / entry_price + 0.001, 3)
-
-                        exchange.place_limit_order(best.symbol, side, qty, entry_price)
-                        logger.info(
-                            f"[LiqLimit] ✅ LIMIT {side} {best.symbol} @ {entry_price:.6f} "
-                            f"qty={qty} | SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f}"
-                        )
-
-                        # Lưu vào pending_smart_orders → limit_order_monitor sẽ đặt SL/TP khi fill
-                        try:
-                            open_orders = exchange._get("/fapi/v1/openOrders",
-                                                       {"symbol": best.symbol}, signed=True)
-                            entry_orders = [o for o in open_orders
-                                           if not o.get("reduceOnly", False)
-                                           and o.get("type") == "LIMIT"
-                                           and o.get("symbol") == best.symbol]
-                            with lock:
-                                psm = state.setdefault("pending_smart_orders", {})
-                                for o in entry_orders:
-                                    oid = str(o["orderId"])
-                                    psm[oid] = {
-                                        "symbol": best.symbol,
-                                        "side": best.signal,
-                                        "qty": float(o.get("origQty", qty)),
-                                        "sl": sl,
-                                        "tp": tp,
-                                        "ts": time.time(),
-                                    }
-                        except Exception as _e:
-                            logger.error(f"[LiqLimit] Register pending failed: {_e}")
-
-                    except Exception as e:
-                        logger.error(f"[LiqLimit] LIMIT order failed: {e}")
-                        skip_reason = f"LIMIT order failed: {e}"
+                    with lock:
+                        armed = state.setdefault("armed_entries", {})
+                        # Max 2 armed cùng lúc
+                        if len(armed) >= 2:
+                            skip_reason = f"Đã có {len(armed)} armed entries (max 2)"
+                        else:
+                            armed[best.symbol] = {
+                                "signal": best.signal,
+                                "entry_price": entry_price,
+                                "sl": sl, "tp": tp, "rr": rr,
+                                "score": best.score,
+                                "side": side,
+                                "close_side": close_side,
+                                "ts": time.time(),
+                                "reason": best.reason[:60],
+                            }
+                            order_type_used = "ARMED"
+                            logger.info(
+                                f"[Armed] ✅ {best.symbol} {best.signal} | "
+                                f"entry={entry_price:.6f} SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | "
+                                f"chờ giá tới → MARKET"
+                            )
+                            notifier.telegram.send(
+                                f"🎯 <b>ARMED</b>: {best.symbol} {best.signal}\n"
+                                f"📍 Entry: {entry_price:.6f} | SL: {sl:.6f} | TP: {tp:.6f}\n"
+                                f"📐 RR: 1:{rr:.1f} | Score: {best.score:.0f}\n"
+                                f"⏳ Chờ giá tới vùng (15 phút)\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
