@@ -236,26 +236,6 @@ class PumpDetector:
             if recent_avg <= prev_avg:
                 return None  # Giá đang đi xuống → không phải pump alert
 
-        # Step 2c: Nến HIỆN TẠI phải là nến xanh (hoặc doji nhỏ)
-        # Không alert khi đang hình thành cây đỏ — dù pump_pct đạt ngưỡng
-        last_candle = df_1m.iloc[-1]
-        last_open   = last_candle["open"]
-        last_close  = last_candle["close"]
-        last_high   = last_candle["high"]
-        last_low    = last_candle["low"]
-        candle_range = last_high - last_low if last_high > last_low else 0.0001
-        body_size    = last_open - last_close  # dương = nến đỏ
-
-        # Cây đỏ có thân >= 30% range → chưa full nến, không gửi alert
-        if body_size >= candle_range * 0.30:
-            return None  # Đang hình thành cây đỏ — chờ đóng nến xanh
-
-        # Step 2d: 2 trong 3 nến gần nhất phải là xanh (không phải toàn đỏ)
-        recent_candles = df_1m.iloc[-3:]
-        green_count = (recent_candles["close"] > recent_candles["open"]).sum()
-        if green_count < 2:
-            return None  # Đa số nến đang đỏ → không phải pump đang lên
-
         # Step 3: Tính score pump top để biết còn xa ngưỡng SHORT bao nhiêu
         score, signals = self._score_pump_top(df_1m, df_15m, pump_high)
 
@@ -419,11 +399,6 @@ class PumpDetector:
             and pump_pct >= self.cfg["PUMP_PRICE_RISE_PCT"]   # dùng config, không hardcode 20%
             and (use_limit_top or use_market)
         )
-
-        # Pump CỰC MẠNH (>= 50%) → bypass score + RSI, SHORT luôn
-        if not is_top and pump_pct >= 50.0 and (use_limit_top or use_market):
-            is_top = True
-            logger.info(f"[PumpDetector] {symbol}: FORCE TOP — pump +{pump_pct:.0f}% bypass score/RSI")
 
         if is_top:
             self._cooldown[symbol] = now
