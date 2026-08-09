@@ -2503,8 +2503,10 @@ def scan_engine(exchange, notifier):
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                # ═══ BƯỚC 10: LIMIT đã đặt ở trên — log + notify ═══
-                # (SL/TP sẽ được đặt bởi limit_order_monitor khi lệnh fill)
+                # ═══ BƯỚC 10: ARMED — log + notify ═══
+                qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                if qty * entry_price < 5.0:
+                    qty = round(5.0 / entry_price + 0.001, 3)
 
                 with lock:
                     state["position"]  = best.signal
