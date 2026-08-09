@@ -1362,6 +1362,13 @@ async function toggleSoftShort(enabled) {
         if (cb) cb.checked = false;
     }
 }
+async function setPumpMinScore() {
+    const val = parseInt(document.getElementById('pump-score-min-input')?.value || 50);
+    if (val < 30 || val > 90) { toast('Score phải 30-90', false); return; }
+    const r = await apiPost('/api/pump/set_min_score', {score: val});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    fetchPumpData();
+}
 
 function scoreColor(s) {
     if (s >= 80) return '#f85149';
@@ -1465,6 +1472,10 @@ function renderPumpRadar(d) {
                    onchange="toggleSoftShort(this.checked)" style="accent-color:#d29922">
             <span id="pump-soft-label" style="color:${softShort?'#d29922':'#2a5a3a'}">${softShort?'🟡 Nhẹ (bật)':'🟡 Nhẹ (tắt)'}</span>
           </label>
+          <span style="font-size:10px;color:#484f58;margin-left:8px">score≥</span>
+          <input id="pump-score-min-input" type="number" min="30" max="90" value="${d.min_score || 50}"
+                 style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a3a2a;border-radius:4px;padding:2px 4px;color:#3fb950;text-align:center">
+          <button class="btn btn-sm" onclick="setPumpMinScore()" style="font-size:10px;padding:2px 6px;background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">Set</button>
         </div>
       </div>
 
@@ -2735,6 +2746,21 @@ def api_pump_toggle_auto():
           else "⏸ AUTO SHORT tắt — chỉ gửi Telegram alert"
     logger.info(f"[PumpRadar] PUMP_AUTO_SHORT = {enabled}")
     return jsonify({"ok": True, "msg": msg, "enabled": enabled})
+
+
+@app.route("/api/pump/set_min_score", methods=["POST"])
+@require_auth
+def api_pump_set_min_score():
+    """Set min score cho pump mạnh radar từ web UI."""
+    data  = request.get_json() or {}
+    score = int(data.get("score", 50))
+    score = max(30, min(90, score))
+    try:
+        import config as _cfg
+        _cfg.PUMP_TOP_MIN_SCORE = score
+    except Exception:
+        pass
+    return jsonify({"ok": True, "msg": f"Pump min score = {score}", "score": score})
 
 
 @app.route("/api/pump/coins/manual_long", methods=["POST"])
