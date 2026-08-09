@@ -2359,8 +2359,14 @@ def scan_engine(exchange, notifier):
                 try:
                     pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     pending_syms = {o["symbol"] for o in pending_orders if not o.get("reduceOnly", False)}
+                    pending_entry_count = len([o for o in pending_orders if not o.get("reduceOnly", False)])
                     if best.symbol in pending_syms:
                         logger.info(f"Skip {best.symbol}: already has pending order")
+                        _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
+                        continue
+                    # Max 2 pending LIMIT entry orders cùng lúc
+                    if pending_entry_count >= 2:
+                        logger.info(f"Skip: đã có {pending_entry_count} pending orders (max 2)")
                         _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                         continue
                 except Exception:
