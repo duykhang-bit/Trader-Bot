@@ -2566,30 +2566,68 @@ def scan_engine(exchange, notifier):
                     if rr < 1.5:
                         skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
 
-                # ═══ BƯỚC 8-9: Lưu vào armed_entries — WS monitor sẽ MARKET khi giá tới ═══
+                # ═══ BƯỚC 8-9: Đặt LIMIT (max 2) hoặc lưu armed backup ═══
                 if not skip_reason:
                     with lock:
                         armed = state.setdefault("armed_entries", {})
-                        # Max 2 armed cùng lúc
-                        if len(armed) >= 2:
-                            skip_reason = f"Đã có {len(armed)} armed entries (max 2)"
-                        else:
+
+                    # Check số LIMIT entry đang có trên Binance
+                    try:
+                        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                        limit_entry_count = len([o for o in all_orders
+                                                 if not o.get("reduceOnly", False)
+                                                 and o.get("type") == "LIMIT"])
+                    except Exception:
+                        limit_entry_count = 0
+
+                    if limit_entry_count < 2:
+                        # Đặt LIMIT trực tiếp trên Binance (khớp instant khi giá tới)
+                        order_type_used = "LIMIT"
+                        try:
+                            qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                            if qty * entry_price < 5.0:
+                                qty = round(5.0 / entry_price + 0.001, 3)
+                            exchange.place_limit_order(best.symbol, side, qty, entry_price)
+
+                            # Lưu pending_smart_orders để monitor đặt SL/TP khi fill
+                            try:
+                                open_orders = exchange._get("/fapi/v1/openOrders",
+                                                           {"symbol": best.symbol}, signed=True)
+                                entry_orders = [o for o in open_orders
+                                               if not o.get("reduceOnly", False)
+                                               and o.get("type") == "LIMIT"
+                                               and o.get("symbol") == best.symbol]
+                                with lock:
+                                    psm = state.setdefault("pending_smart_orders", {})
+                                    for o in entry_orders:
+                                        oid = str(o["orderId"])
+                                        psm[oid] = {
+                                            "symbol": best.symbol, "side": best.signal,
+                                            "qty": float(o.get("origQty", qty)),
+                                            "sl": sl, "tp": tp, "ts": time.time(),
+                                        }
+                            except Exception:
+                                pass
+
+                            logger.info(f"[LiqLimit] LIMIT {side} {best.symbol} @ {entry_price:.6f} qty={qty}")
+                        except Exception as e:
+                            # LIMIT fail → lưu armed backup
                             armed[best.symbol] = {
-                                "signal": best.signal,
-                                "entry_price": entry_price,
-                                "sl": sl, "tp": tp, "rr": rr,
-                                "score": best.score,
-                                "side": side,
-                                "close_side": close_side,
-                                "ts": time.time(),
-                                "reason": best.reason[:60],
+                                "signal": best.signal, "entry_price": entry_price,
+                                "sl": sl, "tp": tp, "rr": rr, "score": best.score,
+                                "side": side, "close_side": close_side, "ts": time.time(),
                             }
                             order_type_used = "ARMED"
-                            logger.info(
-                                f"[Armed] ✅ {best.symbol} {best.signal} | "
-                                f"entry={entry_price:.6f} SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | "
-                                f"chờ giá tới → MARKET"
-                            )
+                            logger.info(f"[Armed] LIMIT failed, armed backup: {best.symbol} {e}")
+                    else:
+                        # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
+                        armed[best.symbol] = {
+                            "signal": best.signal, "entry_price": entry_price,
+                            "sl": sl, "tp": tp, "rr": rr, "score": best.score,
+                            "side": side, "close_side": close_side, "ts": time.time(),
+                        }
+                        order_type_used = "ARMED"
+                        logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} (2 LIMIT đầy, WS backup)")
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
