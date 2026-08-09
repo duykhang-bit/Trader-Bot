@@ -3734,6 +3734,7 @@ def limit_order_monitor(exchange, notifier):
             # ── B. Auto SL/TP cho positions mới (mỗi 30s) ──
             # Chỉ đặt nếu position THỰC SỰ không có SL/TP trên Binance
             # VÀ không có pending entry order chưa khớp (tránh đặt trùng)
+            # VÀ chưa đặt trong 5 phút gần nhất (tránh duplicate)
             if _time.time() - last_auto_check > 30:
                 last_auto_check = _time.time()
                 try:
@@ -3751,15 +3752,24 @@ def limit_order_monitor(exchange, notifier):
                     except Exception:
                         pending_entry_syms = set()
 
+                    # Cooldown: không đặt SL/TP lại cho coin đã đặt trong 5 phút
+                    _sltp_cooldown = state.setdefault("_sltp_cooldown", {})
+                    now_ts = _time.time()
+
                     for pos in unprotected:
                         sym = pos["symbol"]
                         # Bỏ qua nếu còn pending entry order chưa khớp
                         if sym in pending_entry_syms:
                             logger.debug(f"[AutoSLTP] Skip {sym}: còn pending entry order")
                             continue
+                        # Bỏ qua nếu đã đặt trong 5 phút gần đây
+                        if sym in _sltp_cooldown and now_ts - _sltp_cooldown[sym] < 300:
+                            continue
+
                         logger.info(f"[AutoSLTP] Detected unprotected: {sym} {pos['side']}")
                         result = auto_set_sltp(exchange, sym, pos["side"],
                                                pos["entry"], pos["qty"], liq_tracker)
+                        _sltp_cooldown[sym] = now_ts  # Đánh dấu đã đặt
                         # Notify Telegram
                         try:
                             notifier_inst = state.get("_notifier")
