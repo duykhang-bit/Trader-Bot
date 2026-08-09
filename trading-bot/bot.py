@@ -2253,6 +2253,21 @@ def scan_engine(exchange, notifier):
                             hit = True
                         elif a_info["signal"] == "SHORT" and cur_p >= entry_p:
                             hit = True
+                        # Hoặc: giá ĐÃ TỪNG chạm entry trong vài nến gần (đã qua đỉnh/đáy)
+                        if not hit:
+                            try:
+                                kl = exchange.get_klines(a_sym, "1m", limit=5)
+                                df_k = _klines_to_df(kl)
+                                if a_info["signal"] == "SHORT":
+                                    # HIGH gần nhất >= entry = đã chạm đỉnh
+                                    if df_k["high"].iloc[-3:].max() >= entry_p * 0.998:
+                                        hit = True
+                                else:
+                                    # LOW gần nhất <= entry = đã chạm đáy
+                                    if df_k["low"].iloc[-3:].min() <= entry_p * 1.002:
+                                        hit = True
+                            except Exception:
+                                pass
 
                         if hit:
                             # MARKET ORDER ngay
