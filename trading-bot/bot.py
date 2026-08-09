@@ -2490,13 +2490,6 @@ def scan_engine(exchange, notifier):
                                 f"entry={entry_price:.6f} SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | "
                                 f"chờ giá tới → MARKET"
                             )
-                            notifier.telegram.send(
-                                f"🎯 <b>ARMED</b>: {best.symbol} {best.signal}\n"
-                                f"📍 Entry: {entry_price:.6f} | SL: {sl:.6f} | TP: {tp:.6f}\n"
-                                f"📐 RR: 1:{rr:.1f} | Score: {best.score:.0f}\n"
-                                f"⏳ Chờ giá tới vùng (15 phút)\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
