@@ -771,6 +771,33 @@ function renderDashboard(d) {
         html += `<p style="color:#8b949e;font-size:11px;margin-top:4px">Điều kiện vào lệnh: RSI + EMA + MACD + Volume + MTF trend phải đồng thuận</p>`;
     }
 
+    // Armed Entries — lệnh đang chờ giá tới zone
+    const armed = d.armed_entries || {};
+    const armedKeys = Object.keys(armed);
+    if (armedKeys.length > 0) {
+        html += `<div style="margin-top:12px;padding:10px;background:rgba(88,166,255,.05);border:1px solid #1a3a5a;border-radius:8px">`;
+        html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới zone (MARKET ngay khi chạm):</b>`;
+        html += `<table style="margin-top:6px"><tr><th>Coin</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>TTL</th></tr>`;
+        armedKeys.forEach(sym => {
+            const a = armed[sym];
+            const ttl = Math.max(0, 900 - Math.round(Date.now()/1000 - a.ts));
+            const ttlStr = ttl > 60 ? Math.floor(ttl/60)+'m' : ttl+'s';
+            const ep = a.entry_price >= 1 ? '$'+a.entry_price.toFixed(4) : '$'+a.entry_price.toFixed(6);
+            const slp = a.sl >= 1 ? '$'+a.sl.toFixed(4) : '$'+a.sl.toFixed(6);
+            const tpp = a.tp >= 1 ? '$'+a.tp.toFixed(4) : '$'+a.tp.toFixed(6);
+            html += `<tr>
+                <td><b>${sym.replace('USDT','')}</b></td>
+                <td>${a.signal === 'LONG' ? '<span class="green">LONG</span>' : '<span class="red">SHORT</span>'}</td>
+                <td><b>${ep}</b></td>
+                <td style="color:#f85149">${slp}</td>
+                <td style="color:#3fb950">${tpp}</td>
+                <td>1:${a.rr.toFixed(1)}</td>
+                <td style="color:#d29922">${ttlStr}</td>
+            </tr>`;
+        });
+        html += `</table></div>`;
+    }
+
     // Trigger prices - hiện rõ giá cụ thể bot sẽ vào lệnh
     html += `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">`;
     html += `<b style="font-size:12px;color:#58a6ff">&#x1F3AF; TRIGGER PRICES — Vùng liq bot sẽ vào lệnh:</b>`;
@@ -1983,7 +2010,12 @@ def api_state():
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
                         for c in candidates[:10]] if candidates else [],
-        "pending_watch": _get_pending_watch_safe(),        "split_positions_web": [{
+        "pending_watch": _get_pending_watch_safe(),
+        "armed_entries": {sym: {"signal": v["signal"], "entry_price": v["entry_price"],
+                                "sl": v["sl"], "tp": v["tp"], "rr": v["rr"],
+                                "score": v["score"], "ts": v["ts"],
+                                "reason": v.get("reason","")}
+                          for sym, v in _state.get("armed_entries", {}).items()} if _state else {},        "split_positions_web": [{
             "symbol": sym, "direction": sp.direction,
             "entry1": sp.entry1, "entry2": sp.entry2,
             "sl": sp.sl, "tp": sp.tp,
