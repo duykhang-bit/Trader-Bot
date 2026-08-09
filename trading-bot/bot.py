@@ -2496,42 +2496,13 @@ def scan_engine(exchange, notifier):
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                # ═══ BƯỚC 10: ARMED — log + notify ═══
+                # ═══ BƯỚC 10: ARMED — chỉ log, không notify (chờ trigger mới notify) ═══
                 qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
                 if qty * entry_price < 5.0:
                     qty = round(5.0 / entry_price + 0.001, 3)
 
-                with lock:
-                    state["position"]  = best.signal
-                    state["symbol"]    = best.symbol
-                    state["entry"]     = entry_price
-                    state["sl"]        = sl
-                    state["tp"]        = tp
-                    state["qty"]       = qty
-                    state["trail_ext"] = entry_price
-                    state["trade_log"].append({
-                        "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "symbol": best.symbol, "side": best.signal,
-                        "entry":  entry_price, "sl": sl, "tp": tp,
-                        "qty":    qty, "status": "OPEN",
-                        "note":   f"scan_{order_type_used.lower()}"
-                    })
-
-                icon      = "🟢" if best.signal == "LONG" else "🔴"
-                margin    = qty * entry_price / config.LEVERAGE
-                order_tag = "⚡ MARKET"
-                rr_actual = abs(tp - entry_price) / abs(entry_price - sl) if abs(entry_price - sl) > 0 else 0
-                notifier.telegram.send(
-                    f"{icon} <b>🤖 AUTO | {best.signal} {best.symbol}</b> [{order_tag}]\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"  📌 Entry: {entry_price:.6f}\n"
-                    f"🛑 SL     : <b>${sl:.6f}</b>  ({abs(entry_price-sl)/entry_price*100:.2f}%)\n"
-                    f"🎯 TP     : <b>${tp:.6f}</b>  ({abs(tp-entry_price)/entry_price*100:.2f}%)\n"
-                    f"📐 RR     : <b>1:{rr_actual:.1f}</b>\n"
-                    f"💵 Size   : ${qty*entry_price:,.2f} | Margin: ${margin:,.2f}\n"
-                    f"⭐ Score  : {best.score}đ | {best.reason}\n"
-                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                )
+                logger.info(f"[Scan] ARMED {best.symbol} {best.signal} entry={entry_price:.6f} "
+                            f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} score={best.score}")
         except KeyboardInterrupt:
             break
         except Exception as e:
