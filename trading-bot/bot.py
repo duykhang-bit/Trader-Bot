@@ -2422,14 +2422,21 @@ def scan_engine(exchange, notifier):
                     cur_price = exchange.get_ticker_price(best.symbol)
 
                     if liq_data:
+                        # Lấy swing low/high từ 15m để kết hợp với liq zone
+                        klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
+                        df_15m_entry = _klines_to_df(klines_15m_entry)
+                        swing_low_15m = df_15m_entry["low"].iloc[-20:].min()
+                        swing_high_15m = df_15m_entry["high"].iloc[-20:].max()
+
                         if best.signal == "LONG":
                             # Tìm vùng liq LỚN NHẤT phía DƯỚI giá
                             below = [(p, u) for p, u in liq_data.items()
                                      if p < cur_price and u >= 10_000]
                             if below:
-                                # Chọn vùng có USD lớn nhất
                                 liq_zone_price, liq_zone_usd = max(below, key=lambda x: x[1])
-                                entry_price = round(liq_zone_price, 8)
+                                # Entry = max(liq_zone, swing_low_15m) → cái gần giá hơn
+                                entry_price = round(max(liq_zone_price, swing_low_15m), 8)
+                                logger.info(f"[Entry] {best.symbol} LONG: liq=${liq_zone_price:.6f} swing_low=${swing_low_15m:.6f} → entry=${entry_price:.6f}")
                             else:
                                 skip_reason = "Không có vùng liq dưới đủ lớn"
                         else:  # SHORT
@@ -2438,7 +2445,9 @@ def scan_engine(exchange, notifier):
                                      if p > cur_price and u >= 10_000]
                             if above:
                                 liq_zone_price, liq_zone_usd = max(above, key=lambda x: x[1])
-                                entry_price = round(liq_zone_price, 8)
+                                # Entry = min(liq_zone, swing_high_15m) → cái gần giá hơn
+                                entry_price = round(min(liq_zone_price, swing_high_15m), 8)
+                                logger.info(f"[Entry] {best.symbol} SHORT: liq=${liq_zone_price:.6f} swing_high=${swing_high_15m:.6f} → entry=${entry_price:.6f}")
                             else:
                                 skip_reason = "Không có vùng liq trên đủ lớn"
                     else:
