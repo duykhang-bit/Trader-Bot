@@ -2242,31 +2242,46 @@ def scan_engine(exchange, notifier):
                             continue
 
                         cur_p = exchange.get_ticker_price(p_sym)
-                        dist = abs(cur_p - p_info["entry_price"]) / cur_p * 100
+                        entry_zone = p_info["entry_price"]
 
-                        if dist <= 3.0:
-                            # Giá ĐÃ VÀO vùng liq → check 1m trigger
-                            klines_1m = exchange.get_klines(p_sym, "1m", limit=5)
-                            df_1m = _klines_to_df(klines_1m)
+                        # Check giá ĐÃ QUÉT vùng liq chưa (không chỉ gần)
+                        klines_1m = exchange.get_klines(p_sym, "1m", limit=5)
+                        df_1m = _klines_to_df(klines_1m)
 
-                            c_close = df_1m["close"].iloc[-1]
-                            c_open  = df_1m["open"].iloc[-1]
-                            c_body  = abs(c_close - c_open)
-                            p_close = df_1m["close"].iloc[-2]
-                            p_open  = df_1m["open"].iloc[-2]
-                            p_body  = abs(p_close - p_open)
+                        swept = False
+                        if p_info["signal"] == "LONG":
+                            # LONG: low của nến gần nhất phải CHẠM hoặc xuyên qua liq zone
+                            recent_low = df_1m["low"].iloc[-3:].min()
+                            swept = recent_low <= entry_zone * 1.005  # chạm zone (buffer 0.5%)
+                        else:
+                            # SHORT: high của nến gần nhất phải CHẠM hoặc xuyên qua liq zone
+                            recent_high = df_1m["high"].iloc[-3:].max()
+                            swept = recent_high >= entry_zone * 0.995
 
-                            triggered = False
-                            if p_info["signal"] == "LONG":
-                                low_recent = df_1m["low"].iloc[-2]
-                                low_3ago = df_1m["low"].iloc[-4] if len(df_1m) >= 5 else df_1m["low"].iloc[0]
-                                if c_close > c_open and c_body > p_body * 0.8 and (low_recent < low_3ago or dist <= 1.0):
-                                    triggered = True
-                            else:
-                                high_recent = df_1m["high"].iloc[-2]
-                                high_3ago = df_1m["high"].iloc[-4] if len(df_1m) >= 5 else df_1m["high"].iloc[0]
-                                if c_close < c_open and c_body > p_body * 0.8 and (high_recent > high_3ago or dist <= 1.0):
-                                    triggered = True
+                        if not swept:
+                            continue  # Chưa quét liq → chờ tiếp
+
+                        # ĐÃ QUÉT LIQ → check 1m trigger
+                        c_close = df_1m["close"].iloc[-1]
+                        c_open  = df_1m["open"].iloc[-1]
+                        c_body  = abs(c_close - c_open)
+                        p_close = df_1m["close"].iloc[-2]
+                        p_open  = df_1m["open"].iloc[-2]
+                        p_body  = abs(p_close - p_open)
+
+                        triggered = False
+                        if p_info["signal"] == "LONG":
+                            # LONG: giá đã quét đáy + nến xanh + body > prev
+                            is_green = c_close > c_open
+                            body_bigger = c_body > p_body * 0.8
+                            if is_green and body_bigger:
+                                triggered = True
+                        else:
+                            # SHORT: giá đã quét đỉnh + nến đỏ + body > prev
+                            is_red = c_close < c_open
+                            body_bigger = c_body > p_body * 0.8
+                            if is_red and body_bigger:
+                                triggered = True
 
                             if triggered:
                                 # VÀO LỆNH NGAY
@@ -2459,13 +2474,23 @@ def scan_engine(exchange, notifier):
                     if rr < 1.5:
                         skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
 
-                # ═══ BƯỚC 8-9: Chờ giá vào liq zone + 1M entry trigger ═══
+                # ═══ BƯỚC 8-9: Giá phải ĐÃ QUÉT vùng liq + 1M trigger ═══
                 if not skip_reason:
-                    # Check giá hiện tại có TRONG hoặc GẦN vùng liq không
-                    dist_to_liq = abs(cur_price - entry_price) / cur_price * 100
+                    # Lấy klines 1m để check giá đã chạm zone chưa
+                    klines_1m = exchange.get_klines(best.symbol, "1m", limit=5)
+                    df_1m = _klines_to_df(klines_1m)
 
-                    if dist_to_liq > 3.0:
-                        # Giá còn xa vùng liq → lưu pending, chờ giá tới
+                    # Check giá ĐÃ QUÉT vùng liq (low/high chạm entry_price)
+                    swept = False
+                    if best.signal == "LONG":
+                        recent_low = df_1m["low"].iloc[-3:].min()
+                        swept = recent_low <= entry_price * 1.005
+                    else:
+                        recent_high = df_1m["high"].iloc[-3:].max()
+                        swept = recent_high >= entry_price * 0.995
+
+                    if not swept:
+                        # Chưa quét liq → lưu pending, chờ giá tới
                         with lock:
                             pending_liq = state.setdefault("pending_liq_entries", {})
                             pending_liq[best.symbol] = {
@@ -2475,66 +2500,43 @@ def scan_engine(exchange, notifier):
                                 "score": best.score,
                                 "ts": time.time(),
                             }
+                        dist_to_liq = abs(cur_price - entry_price) / cur_price * 100
                         logger.info(
                             f"[LiqEntry] PENDING {best.symbol} {best.signal} | "
                             f"liq_zone={entry_price:.6f} dist={dist_to_liq:.1f}% | "
-                            f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | chờ giá tới"
+                            f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | chờ quét liq"
                         )
-                        skip_reason = f"Giá còn xa liq zone {dist_to_liq:.1f}% → pending"
+                        skip_reason = f"Chưa quét vùng liq → pending"
                     else:
-                        # Giá ĐÃ TRONG vùng liq → check 1m trigger
-                        klines_1m = exchange.get_klines(best.symbol, "1m", limit=5)
-                        df_1m = _klines_to_df(klines_1m)
-
+                        # ĐÃ QUÉT LIQ → check 1m trigger
                         c_close = df_1m["close"].iloc[-1]
                         c_open  = df_1m["open"].iloc[-1]
                         c_body  = abs(c_close - c_open)
-
                         p_close = df_1m["close"].iloc[-2]
                         p_open  = df_1m["open"].iloc[-2]
                         p_body  = abs(p_close - p_open)
 
                         triggered = False
-
                         if best.signal == "LONG":
-                            # LONG trigger: nến xanh + body > body trước
-                            # + low gần đây tạo đáy mới (low[-2] < low[-4])
-                            low_recent = df_1m["low"].iloc[-2]
-                            low_3ago   = df_1m["low"].iloc[-4] if len(df_1m) >= 5 else df_1m["low"].iloc[0]
-                            is_green   = c_close > c_open
-                            body_bigger = c_body > p_body * 0.8  # nới lỏng: 80% body trước
-                            made_low   = low_recent < low_3ago
-
-                            if is_green and body_bigger and made_low:
-                                triggered = True
-                            elif is_green and body_bigger and dist_to_liq <= 1.0:
-                                triggered = True  # Rất gần liq, bỏ qua made_low
-                        else:  # SHORT
-                            # SHORT trigger: nến đỏ + body > body trước
-                            # + high gần đây tạo đỉnh mới (high[-2] > high[-4])
-                            high_recent = df_1m["high"].iloc[-2]
-                            high_3ago   = df_1m["high"].iloc[-4] if len(df_1m) >= 5 else df_1m["high"].iloc[0]
-                            is_red     = c_close < c_open
+                            is_green = c_close > c_open
                             body_bigger = c_body > p_body * 0.8
-                            made_high  = high_recent > high_3ago
-
-                            if is_red and body_bigger and made_high:
+                            if is_green and body_bigger:
                                 triggered = True
-                            elif is_red and body_bigger and dist_to_liq <= 1.0:
+                        else:
+                            is_red = c_close < c_open
+                            body_bigger = c_body > p_body * 0.8
+                            if is_red and body_bigger:
                                 triggered = True
 
                         if triggered:
                             order_type_used = "MARKET"
-                            entry_price = cur_price  # MARKET vào ngay giá hiện tại
+                            entry_price = cur_price
                             logger.info(
                                 f"[1mTrigger] ✅ {best.symbol} {best.signal} | "
-                                f"body={c_body:.6f} > prev={p_body:.6f} | "
-                                f"liq_zone={liq_zone_price:.6f} dist={dist_to_liq:.1f}%"
+                                f"liq SWEPT + 1m confirm | entry={cur_price:.6f}"
                             )
                         else:
-                            skip_reason = (f"1m chưa trigger: "
-                                          f"{'xanh' if best.signal=='LONG' else 'đỏ'}={c_close>c_open if best.signal=='LONG' else c_close<c_open} "
-                                          f"body={c_body:.6f} vs prev={p_body:.6f}")
+                            skip_reason = f"Liq swept nhưng 1m chưa confirm (chờ nến đúng chiều)"
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
