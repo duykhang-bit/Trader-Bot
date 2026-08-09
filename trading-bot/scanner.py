@@ -511,12 +511,12 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     "win_rate": win_rate, "ts": time.time(), "retry": 0, "css": css,
                 }
                 logger.info(f"  📊 LOW WR {symbol}: {bias} WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}%")
-                # Notify Telegram nếu WR 55-59% (gần đạt)
-                if notifier and 55 <= win_rate < 60:
+                # Notify Telegram nếu WR 65-70% (tiềm năng tốt)
+                if notifier and 65 <= win_rate <= 70:
                     try:
                         notifier.telegram.send(
                             f"👁 <b>WATCH</b>: {symbol} {bias}\n"
-                            f"📊 WR={win_rate:.0f}% (cần ≥60%) | Score={final_score:.0f}\n"
+                            f"📊 WR={win_rate:.0f}% | Score={final_score:.0f}\n"
                             f"4h={trend_4h} 1h={trend_1h} | {' '.join(css_reasons[:2])}\n"
                             f"⏰ {time.strftime('%H:%M:%S')}"
                         )
