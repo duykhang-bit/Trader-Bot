@@ -2474,69 +2474,48 @@ def scan_engine(exchange, notifier):
                     if rr < 1.5:
                         skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
 
-                # ═══ BƯỚC 8-9: Giá phải ĐÃ QUÉT vùng liq + 1M trigger ═══
+                # ═══ BƯỚC 8-9: Đặt LIMIT tại vùng liq — Binance tự khớp ═══
                 if not skip_reason:
-                    # Lấy klines 1m để check giá đã chạm zone chưa
-                    klines_1m = exchange.get_klines(best.symbol, "1m", limit=5)
-                    df_1m = _klines_to_df(klines_1m)
+                    # Đặt LIMIT order tại entry_price (vùng liq)
+                    # Khi giá tới → Binance tự khớp → limit_order_monitor đặt SL/TP
+                    order_type_used = "LIMIT"
+                    try:
+                        qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
+                        if qty * entry_price < 5.0:
+                            qty = round(5.0 / entry_price + 0.001, 3)
 
-                    # Check giá ĐÃ QUÉT vùng liq (low/high chạm entry_price)
-                    swept = False
-                    if best.signal == "LONG":
-                        recent_low = df_1m["low"].iloc[-3:].min()
-                        swept = recent_low <= entry_price * 1.005
-                    else:
-                        recent_high = df_1m["high"].iloc[-3:].max()
-                        swept = recent_high >= entry_price * 0.995
-
-                    if not swept:
-                        # Chưa quét liq → lưu pending, chờ giá tới
-                        with lock:
-                            pending_liq = state.setdefault("pending_liq_entries", {})
-                            pending_liq[best.symbol] = {
-                                "signal": best.signal,
-                                "entry_price": entry_price,
-                                "sl": sl, "tp": tp, "rr": rr,
-                                "score": best.score,
-                                "ts": time.time(),
-                            }
-                        dist_to_liq = abs(cur_price - entry_price) / cur_price * 100
+                        exchange.place_limit_order(best.symbol, side, qty, entry_price)
                         logger.info(
-                            f"[LiqEntry] PENDING {best.symbol} {best.signal} | "
-                            f"liq_zone={entry_price:.6f} dist={dist_to_liq:.1f}% | "
-                            f"SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f} | chờ quét liq"
+                            f"[LiqLimit] ✅ LIMIT {side} {best.symbol} @ {entry_price:.6f} "
+                            f"qty={qty} | SL={sl:.6f} TP={tp:.6f} RR=1:{rr:.1f}"
                         )
-                        skip_reason = f"Chưa quét vùng liq → pending"
-                    else:
-                        # ĐÃ QUÉT LIQ → check 1m trigger
-                        c_close = df_1m["close"].iloc[-1]
-                        c_open  = df_1m["open"].iloc[-1]
-                        c_body  = abs(c_close - c_open)
-                        p_close = df_1m["close"].iloc[-2]
-                        p_open  = df_1m["open"].iloc[-2]
-                        p_body  = abs(p_close - p_open)
 
-                        triggered = False
-                        if best.signal == "LONG":
-                            is_green = c_close > c_open
-                            body_bigger = c_body > p_body * 0.8
-                            if is_green and body_bigger:
-                                triggered = True
-                        else:
-                            is_red = c_close < c_open
-                            body_bigger = c_body > p_body * 0.8
-                            if is_red and body_bigger:
-                                triggered = True
+                        # Lưu vào pending_smart_orders → limit_order_monitor sẽ đặt SL/TP khi fill
+                        try:
+                            open_orders = exchange._get("/fapi/v1/openOrders",
+                                                       {"symbol": best.symbol}, signed=True)
+                            entry_orders = [o for o in open_orders
+                                           if not o.get("reduceOnly", False)
+                                           and o.get("type") == "LIMIT"
+                                           and o.get("symbol") == best.symbol]
+                            with lock:
+                                psm = state.setdefault("pending_smart_orders", {})
+                                for o in entry_orders:
+                                    oid = str(o["orderId"])
+                                    psm[oid] = {
+                                        "symbol": best.symbol,
+                                        "side": best.signal,
+                                        "qty": float(o.get("origQty", qty)),
+                                        "sl": sl,
+                                        "tp": tp,
+                                        "ts": time.time(),
+                                    }
+                        except Exception as _e:
+                            logger.error(f"[LiqLimit] Register pending failed: {_e}")
 
-                        if triggered:
-                            order_type_used = "MARKET"
-                            entry_price = cur_price
-                            logger.info(
-                                f"[1mTrigger] ✅ {best.symbol} {best.signal} | "
-                                f"liq SWEPT + 1m confirm | entry={cur_price:.6f}"
-                            )
-                        else:
-                            skip_reason = f"Liq swept nhưng 1m chưa confirm (chờ nến đúng chiều)"
+                    except Exception as e:
+                        logger.error(f"[LiqLimit] LIMIT order failed: {e}")
+                        skip_reason = f"LIMIT order failed: {e}"
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
@@ -2554,31 +2533,8 @@ def scan_engine(exchange, notifier):
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 
-                # ═══ BƯỚC 10: ĐẶT LỆNH MARKET + SL/TP ═══
-                qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
-                if qty * entry_price < 5.0:
-                    qty = round(5.0 / entry_price + 0.001, 3)
-
-                try:
-                    exchange.place_market_order(best.symbol, side, qty)
-                    logger.info(f"[ENTRY] ✅ MARKET {side} {best.symbol} qty={qty} @ ~{entry_price:.6f}")
-                except Exception as e:
-                    logger.error(f"[ENTRY] MARKET order failed: {e}")
-                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
-                    continue
-
-                # Đặt SL + TP ngay sau entry
-                time.sleep(1)
-                try:
-                    exchange.place_stop_loss_order(best.symbol, close_side, qty, sl)
-                    logger.info(f"[SL] {best.symbol} {close_side} qty={qty} @ {sl:.6f}")
-                except Exception as e:
-                    logger.error(f"SL failed: {e}")
-                try:
-                    exchange.place_take_profit_order(best.symbol, close_side, qty, tp)
-                    logger.info(f"[TP] {best.symbol} {close_side} qty={qty} @ {tp:.6f}")
-                except Exception as e:
-                    logger.error(f"TP failed: {e}")
+                # ═══ BƯỚC 10: LIMIT đã đặt ở trên — log + notify ═══
+                # (SL/TP sẽ được đặt bởi limit_order_monitor khi lệnh fill)
 
                 with lock:
                     state["position"]  = best.signal
