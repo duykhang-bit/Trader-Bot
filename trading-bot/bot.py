@@ -823,6 +823,86 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
         logger.error(f"[CTD] Handle confirmed top {sig.symbol} failed: {e}")
 
 
+def _armed_execute(sym, info, trigger_price):
+    """Thực thi armed entry — chạy trong thread riêng, không block WS."""
+    try:
+        exc  = _ws_exchange_ref[0]
+        noti = _ws_notifier_ref[0]
+        if not exc or not noti:
+            return
+
+        # Remove khỏi armed ngay để không trigger lại
+        with lock:
+            armed = state.get("armed_entries", {})
+            if sym not in armed:
+                return  # Đã bị remove bởi thread khác
+            armed.pop(sym, None)
+
+            # Check max positions
+            n_open = len(state.get("open_positions", []))
+            if n_open >= config.MAX_OPEN_POSITIONS:
+                return
+            open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                         if abs(float(p.get("positionAmt", 0))) > 0}
+            if sym in open_syms:
+                return
+
+        try:
+            exc.set_leverage(sym, config.LEVERAGE)
+        except Exception:
+            pass
+
+        bal = exc.get_account_balance()
+        qty = calc_qty(bal, trigger_price, info["sl"], symbol=sym, exchange=exc)
+        if qty * trigger_price < 5.0:
+            qty = round(5.0 / trigger_price + 0.001, 3)
+
+        exc.place_market_order(sym, info["side"], qty)
+        time.sleep(0.5)
+
+        # SL retry 3x
+        sl_ok = False
+        for _try in range(3):
+            try:
+                exc.place_stop_loss_order(sym, info["close_side"], qty, info["sl"])
+                sl_ok = True
+                break
+            except Exception:
+                time.sleep(0.3)
+        if not sl_ok:
+            exc.place_market_order(sym, info["close_side"], qty)
+            logger.error(f"[Armed] SL FAILED {sym} — emergency close")
+            return
+
+        # TP
+        try:
+            exc.place_take_profit_order(sym, info["close_side"], qty, info["tp"])
+        except Exception:
+            pass
+
+        with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": info["signal"],
+                "entry": trigger_price, "sl": info["sl"], "tp": info["tp"],
+                "qty": qty, "status": "OPEN", "note": "armed_ws_trigger"
+            })
+
+        icon = "🟢" if info["signal"] == "LONG" else "🔴"
+        rr = abs(info["tp"] - trigger_price) / abs(trigger_price - info["sl"]) if abs(trigger_price - info["sl"]) > 0 else 0
+        noti.telegram.send(
+            f"{icon} <b>⚡ ARMED TRIGGERED</b>: {sym} {info['signal']}\n"
+            f"💰 Entry: {trigger_price:.6f}\n"
+            f"🛑 SL: {info['sl']:.6f} | 🎯 TP: {info['tp']:.6f}\n"
+            f"📐 RR: 1:{rr:.1f} | Score: {info['score']}\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(f"[Armed] ✅ WS TRIGGERED {sym} {info['signal']} @ {trigger_price:.6f}")
+
+    except Exception as e:
+        logger.error(f"[Armed] Execute {sym}: {e}")
+
+
 def price_ws_streamer():
     """WebSocket stream giá realtime từ Binance — nhanh hơn REST 30 lần"""
     import websocket as ws_lib
@@ -857,6 +937,26 @@ def price_ws_streamer():
             if sym and mark > 0:
                 with lock:
                     state["prices"][sym] = mark
+
+                # ── ARMED ENTRY CHECK — khớp ngay khi giá tới zone ──
+                with lock:
+                    armed = state.get("armed_entries", {})
+                    armed_info = armed.get(sym)
+                if armed_info:
+                    entry_p = armed_info["entry_price"]
+                    triggered = False
+                    if armed_info["signal"] == "LONG" and mark <= entry_p:
+                        triggered = True
+                    elif armed_info["signal"] == "SHORT" and mark >= entry_p:
+                        triggered = True
+                    if triggered:
+                        # Spawn thread để không block WS
+                        import threading as _th_armed
+                        _th_armed.Thread(
+                            target=_armed_execute,
+                            args=(sym, armed_info, mark),
+                            daemon=True
+                        ).start()
 
                 # ── SCAN PRICE MONITOR — phát hiện dump/bounce cho scan engine ──
                 # Chỉ forward tick cho monitor, không chạy indicators ở đây
