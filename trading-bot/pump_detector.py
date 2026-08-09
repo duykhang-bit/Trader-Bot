@@ -375,14 +375,14 @@ class PumpDetector:
         # - Fallback: nếu ATR=0 hoặc pump_high=0 → dùng 2% cứng
         if pump_high > 0 and atr > 0:
             atr_pct       = (atr / pump_high * 100)
-            sl_buffer_pct = max(1.5, min(atr_pct * 1.5, 3.0))
+            sl_buffer_pct = max(2.5, min(atr_pct * 2.0, 5.0))
         else:
-            sl_buffer_pct = 2.0   # fallback 2%
+            sl_buffer_pct = 3.0   # fallback 3%
         sl_price = pump_high * (1 + sl_buffer_pct / 100) if pump_high > 0 else current_price * 1.02
 
         # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
         # Đúng hơn: entry là đỉnh, tp xuống theo fib từ đỉnh xuống đáy
-        tp1_price = final_entry - (final_entry - pump_low) * 0.382   # 38.2% fib
+        tp1_price = final_entry - (final_entry - pump_low) * 0.618   # 61.8% fib (xa hơn, pump hay rớt mạnh)
         tp2_price = final_entry - (final_entry - pump_low) * 0.618   # 61.8% fib
 
         # Validate RR tối thiểu 1.5 — nếu không đủ thì không vào

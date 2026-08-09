@@ -488,9 +488,9 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
 
                     if qty * cur_price >= 5.0:
                         # SL chặt: 2% trên đỉnh WS (không phải trigger_price)
-                        sl_price = round(ws_high * 1.02, 8)
-                        # TP: -10% từ entry (pump thường xả nhanh 10-20%)
-                        tp_price = round(cur_price * 0.90, 8)
+                        sl_price = round(ws_high * 1.035, 8)
+                        # TP: -15% từ entry (pump thường xả nhanh 10-20%)
+                        tp_price = round(cur_price * 0.85, 8)
 
                         exchange_ref.place_market_order(sym, "SELL", qty)
                         _t.sleep(0.3)
