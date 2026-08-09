@@ -2528,17 +2528,6 @@ def scan_engine(exchange, notifier):
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
-                    # Notify Telegram nếu WR 65-70% (coin tốt nhưng bị skip)
-                    if best.score >= 65:
-                        try:
-                            notifier.telegram.send(
-                                f"👁 <b>WATCH</b>: {best.symbol} {best.signal}\n"
-                                f"📊 Score={best.score:.0f} | {best.reason[:60]}\n"
-                                f"⚠️ Skip: {skip_reason[:50]}\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
-                        except Exception:
-                            pass
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
 

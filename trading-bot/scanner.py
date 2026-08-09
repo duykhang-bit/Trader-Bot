@@ -511,9 +511,6 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     "win_rate": win_rate, "ts": time.time(), "retry": 0, "css": css,
                 }
                 logger.info(f"  📊 LOW WR {symbol}: {bias} WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}%")
-                # Notify Telegram nếu WR 65-70% (tiềm năng tốt)
-                if notifier and 65 <= win_rate <= 70:
-                    pass  # Sẽ notify ở scan_engine nếu bị skip
                 continue
 
             # ═══ PASS — tạo candidate ═══
