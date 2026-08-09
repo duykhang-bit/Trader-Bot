@@ -3541,7 +3541,23 @@ def limit_order_monitor(exchange, notifier):
                 pending = dict(state.get("pending_smart_orders", {}))
                 pump_limits = dict(state.get("pump_limit_orders", {}))
 
-            # ── A0. Check pump LIMIT SHORT orders ──────────────────
+            # ── Signal Expiry: cancel LIMIT nếu chờ > 30 phút ──
+            for order_id, info in list(pending.items()):
+                if time.time() - info.get("ts", 0) > 1800:  # 30 phút
+                    try:
+                        exchange._delete("/fapi/v1/order", {
+                            "symbol": info["symbol"], "orderId": int(order_id)
+                        })
+                        logger.info(f"[SignalExpiry] Cancelled {info['symbol']} LIMIT (>30min)")
+                        notifier.telegram.send(
+                            f"⏰ <b>LIMIT EXPIRED</b>: {info['symbol']} {info['side']}\n"
+                            f"Chờ >30 phút không khớp → hủy"
+                        )
+                    except Exception:
+                        pass
+                    with lock:
+                        state.get("pending_smart_orders", {}).pop(str(order_id), None)
+                    continue            # ── A0. Check pump LIMIT SHORT orders ──────────────────
             if pump_limits:
                 for sym, info in list(pump_limits.items()):
                     try:
