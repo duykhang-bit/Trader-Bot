@@ -2325,8 +2325,8 @@ def scan_engine(exchange, notifier):
             if armed:
                 for a_sym, a_info in list(armed.items()):
                     try:
-                        # Expiry 15 phút
-                        if time.time() - a_info["ts"] > 900:
+                        # Expiry 1 giờ
+                        if time.time() - a_info["ts"] > 3600:
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
                             logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>15min)")
@@ -3580,7 +3580,7 @@ def limit_order_monitor(exchange, notifier):
 
             # ── Signal Expiry: cancel LIMIT nếu chờ > 30 phút ──
             for order_id, info in list(pending.items()):
-                if time.time() - info.get("ts", 0) > 1800:  # 30 phút
+                if time.time() - info.get("ts", 0) > 7200:  # 2 giờ
                     try:
                         exchange._delete("/fapi/v1/order", {
                             "symbol": info["symbol"], "orderId": int(order_id)
@@ -4007,7 +4007,7 @@ def orphan_order_cleanup(exchange, notifier):
                     if (sym and sym not in open_syms
                             and not o.get("reduceOnly", False)
                             and state.get("auto_cancel_orphan", False)
-                            and order_age_sec > 300):   # phải chờ ít nhất 5 phút
+                            and order_age_sec > 7200):   # phải chờ ít nhất 2 giờ
                         try:
                             exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
                             cancelled.append(f"{sym} ({o.get('type','')} entry-orphan {order_age_sec/60:.0f}m)")
