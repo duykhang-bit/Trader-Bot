@@ -2526,7 +2526,13 @@ def scan_engine(exchange, notifier):
                                 else:
                                     logger.info(f"[Entry] {best.symbol} LONG: liq=${liq_zone_price:.6f} swing_low=${swing_low_15m:.6f} → entry=${entry_price:.6f} dist={dist_pct:.1f}%")
                             else:
-                                skip_reason = "Không có vùng liq dưới đủ lớn"
+                                # Không có vùng liq đủ lớn → fallback swing low 15m
+                                entry_price = round(swing_low_15m, 8)
+                                dist_pct = (cur_price - entry_price) / cur_price * 100
+                                if dist_pct < 2.0:
+                                    skip_reason = "Swing low quá gần giá"
+                                else:
+                                    logger.info(f"[Entry] {best.symbol} LONG: no liq, swing_low=${swing_low_15m:.6f} dist={dist_pct:.1f}%")
                         else:  # SHORT
                             # Tìm vùng liq LỚN NHẤT phía TRÊN giá
                             above = [(p, u) for p, u in liq_data.items()
@@ -2542,9 +2548,27 @@ def scan_engine(exchange, notifier):
                                 else:
                                     logger.info(f"[Entry] {best.symbol} SHORT: liq=${liq_zone_price:.6f} swing_high=${swing_high_15m:.6f} → entry=${entry_price:.6f} dist={dist_pct:.1f}%")
                             else:
-                                skip_reason = "Không có vùng liq trên đủ lớn"
+                                # Không có vùng liq đủ lớn → fallback swing high 15m
+                                entry_price = round(swing_high_15m, 8)
+                                dist_pct = (entry_price - cur_price) / cur_price * 100
+                                if dist_pct < 2.0:
+                                    skip_reason = "Swing high quá gần giá"
+                                else:
+                                    logger.info(f"[Entry] {best.symbol} SHORT: no liq, swing_high=${swing_high_15m:.6f} dist={dist_pct:.1f}%")
                     else:
-                        skip_reason = "Không có liq data"
+                        # Không có liq data → dùng swing 15m thuần
+                        klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
+                        df_15m_entry = _klines_to_df(klines_15m_entry)
+                        if best.signal == "LONG":
+                            entry_price = round(df_15m_entry["low"].iloc[-20:].min(), 8)
+                            dist_pct = (cur_price - entry_price) / cur_price * 100
+                        else:
+                            entry_price = round(df_15m_entry["high"].iloc[-20:].max(), 8)
+                            dist_pct = (entry_price - cur_price) / cur_price * 100
+                        if dist_pct < 2.0:
+                            skip_reason = "Swing entry quá gần giá"
+                        else:
+                            logger.info(f"[Entry] {best.symbol} {best.signal}: swing 15m entry=${entry_price:.6f} dist={dist_pct:.1f}%")
 
                 # ═══ BƯỚC 7: Tính SL / TP + RR ═══
                 if not skip_reason:
