@@ -4000,6 +4000,18 @@ def orphan_order_cleanup(exchange, notifier):
                         except Exception:
                             pass
 
+                    # Entry LIMIT > 2 giờ không có position → huỷ
+                    order_time_ms = int(o.get("time", 0))
+                    order_age_sec = (time.time() * 1000 - order_time_ms) / 1000 if order_time_ms else 999
+                    if (sym and sym not in open_syms
+                            and not o.get("reduceOnly", False)
+                            and order_age_sec > 7200):
+                        try:
+                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
+                            cancelled.append(f"{sym} ({o.get('type','')} entry {order_age_sec/60:.0f}m)")
+                        except Exception:
+                            pass
+
                     # (Entry order cancel đã được xử lý bởi signal expiry trong limit_order_monitor)
             except Exception:
                 pass
