@@ -3615,12 +3615,8 @@ def limit_order_monitor(exchange, notifier):
                         try:
                             exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": int(order_id)})
                         except Exception:
-                            pass  # Lệnh có thể đã bị huỷ/fill trước đó
+                            pass
                         logger.info(f"[SignalRecheck] Cancelled {sym} {side} — trend đổi")
-                        notifier.telegram.send(
-                            f"🔄 <b>LIMIT CANCELLED</b>: {sym} {side}\n"
-                            f"Trend 4h đã đổi chiều → huỷ entry"
-                        )
                         with lock:
                             state.get("pending_smart_orders", {}).pop(str(order_id), None)
                     # Max 4 giờ absolute — dù trend OK
