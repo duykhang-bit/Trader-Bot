@@ -3989,7 +3989,7 @@ def position_advisor(exchange, notifier):
 def orphan_order_cleanup(exchange, notifier):
     """Nếu coin có SL/TP order nhưng KHÔNG có position → hủy
     NGOẠI TRỪ: BTC, ETH, BNB, XRP — giữ lệnh chờ cho user tự quản lý."""
-    time.sleep(600)
+    time.sleep(30)  # Chờ 30s sau bot start rồi quét ngay
 
     # Coin không bị auto cancel — user muốn tự hủy tay
     EXCLUDE_AUTO_CANCEL = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT"}
@@ -4106,7 +4106,7 @@ def orphan_order_cleanup(exchange, notifier):
         except Exception as e:
             logger.error(f"[OrphanCleanup] Error: {e}")
 
-        time.sleep(1800)  # 30 phút
+        time.sleep(300)  # 5 phút
 
 
 def memory_cleanup():
