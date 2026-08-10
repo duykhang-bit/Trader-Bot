@@ -2514,23 +2514,33 @@ def scan_engine(exchange, notifier):
                         if best.signal == "LONG":
                             # Tìm vùng liq LỚN NHẤT phía DƯỚI giá
                             below = [(p, u) for p, u in liq_data.items()
-                                     if p < cur_price and u >= 10_000]
+                                     if p < cur_price and u >= 50_000]
                             if below:
                                 liq_zone_price, liq_zone_usd = max(below, key=lambda x: x[1])
                                 # Entry = max(liq_zone, swing_low_15m) → cái gần giá hơn
                                 entry_price = round(max(liq_zone_price, swing_low_15m), 8)
-                                logger.info(f"[Entry] {best.symbol} LONG: liq=${liq_zone_price:.6f} swing_low=${swing_low_15m:.6f} → entry=${entry_price:.6f}")
+                                # Entry phải cách giá ít nhất 2% — không vào lưng chừng
+                                dist_pct = (cur_price - entry_price) / cur_price * 100
+                                if dist_pct < 2.0:
+                                    skip_reason = f"Entry quá gần giá ({dist_pct:.1f}% < 2%)"
+                                else:
+                                    logger.info(f"[Entry] {best.symbol} LONG: liq=${liq_zone_price:.6f} swing_low=${swing_low_15m:.6f} → entry=${entry_price:.6f} dist={dist_pct:.1f}%")
                             else:
                                 skip_reason = "Không có vùng liq dưới đủ lớn"
                         else:  # SHORT
                             # Tìm vùng liq LỚN NHẤT phía TRÊN giá
                             above = [(p, u) for p, u in liq_data.items()
-                                     if p > cur_price and u >= 10_000]
+                                     if p > cur_price and u >= 50_000]
                             if above:
                                 liq_zone_price, liq_zone_usd = max(above, key=lambda x: x[1])
                                 # Entry = min(liq_zone, swing_high_15m) → cái gần giá hơn
                                 entry_price = round(min(liq_zone_price, swing_high_15m), 8)
-                                logger.info(f"[Entry] {best.symbol} SHORT: liq=${liq_zone_price:.6f} swing_high=${swing_high_15m:.6f} → entry=${entry_price:.6f}")
+                                # Entry phải cách giá ít nhất 2%
+                                dist_pct = (entry_price - cur_price) / cur_price * 100
+                                if dist_pct < 2.0:
+                                    skip_reason = f"Entry quá gần giá ({dist_pct:.1f}% < 2%)"
+                                else:
+                                    logger.info(f"[Entry] {best.symbol} SHORT: liq=${liq_zone_price:.6f} swing_high=${swing_high_15m:.6f} → entry=${entry_price:.6f} dist={dist_pct:.1f}%")
                             else:
                                 skip_reason = "Không có vùng liq trên đủ lớn"
                     else:
@@ -2543,7 +2553,7 @@ def scan_engine(exchange, notifier):
                         sl = round(entry_price * 0.98, 8)
                         # TP: vùng liq lớn nhất phía TRÊN
                         above_for_tp = [(p, u) for p, u in liq_data.items()
-                                        if p > cur_price and u >= 10_000]
+                                        if p > cur_price and u >= 50_000]
                         if above_for_tp:
                             tp = round(max(above_for_tp, key=lambda x: x[1])[0], 8)
                         else:
@@ -2553,7 +2563,7 @@ def scan_engine(exchange, notifier):
                         sl = round(entry_price * 1.02, 8)
                         # TP: vùng liq lớn nhất phía DƯỚI
                         below_for_tp = [(p, u) for p, u in liq_data.items()
-                                        if p < cur_price and u >= 10_000]
+                                        if p < cur_price and u >= 50_000]
                         if below_for_tp:
                             tp = round(max(below_for_tp, key=lambda x: x[1])[0], 8)
                         else:
