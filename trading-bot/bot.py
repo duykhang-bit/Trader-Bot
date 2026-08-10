@@ -1100,6 +1100,12 @@ def price_updater(exchange):
                 closed_externally = prev_positions - curr_positions
 
                 for sym in closed_externally:
+                    # Huỷ SL/TP mồ côi NGAY khi detect position đóng
+                    try:
+                        exchange.cancel_all_orders(sym)
+                        logger.info(f"[Sync] Cancelled orphan orders for {sym}")
+                    except Exception:
+                        pass
                     # Tìm lệnh OPEN tương ứng trong trade_log
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
