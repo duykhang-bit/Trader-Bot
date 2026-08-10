@@ -3621,58 +3621,7 @@ def limit_order_monitor(exchange, notifier):
                 pending = dict(state.get("pending_smart_orders", {}))
                 pump_limits = dict(state.get("pump_limit_orders", {}))
 
-            # ── Signal Recheck: huỷ LIMIT nếu trend đổi (mỗi 20 phút) ──
-            for order_id, info in list(pending.items()):
-                age = time.time() - info.get("ts", 0)
-                # Chỉ check trend sau ít nhất 20 phút
-                last_recheck = info.get("_last_recheck", 0)
-                if time.time() - last_recheck < 1200:  # 20 phút
-                    continue
-
-                # Update last recheck
-                with lock:
-                    psm = state.get("pending_smart_orders", {})
-                    if str(order_id) in psm:
-                        psm[str(order_id)]["_last_recheck"] = time.time()
-
-                sym = info["symbol"]
-                side = info["side"]
-                try:
-                    # Check trend 4h còn đúng không
-                    kl_4h = exchange.get_klines(sym, "4h", limit=20)
-                    df_4h = _klines_to_df(kl_4h)
-                    from indicators import calculate_ema
-                    ema9 = calculate_ema(df_4h["close"], 9).iloc[-1]
-                    ema21 = calculate_ema(df_4h["close"], 21).iloc[-1]
-                    price_4h = df_4h["close"].iloc[-1]
-                    ema50 = calculate_ema(df_4h["close"], 50).iloc[-1]
-
-                    trend_ok = True
-                    if side == "LONG" and (ema9 < ema21 or price_4h < ema50):
-                        trend_ok = False
-                    elif side == "SHORT" and (ema9 > ema21 or price_4h > ema50):
-                        trend_ok = False
-
-                    if not trend_ok:
-                        # Trend đổi → huỷ
-                        try:
-                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": int(order_id)})
-                        except Exception:
-                            pass
-                        logger.info(f"[SignalRecheck] Cancelled {sym} {side} — trend đổi")
-                        with lock:
-                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
-                    # Max 4 giờ absolute — dù trend OK
-                    elif age > 14400:
-                        try:
-                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": int(order_id)})
-                        except Exception:
-                            pass
-                        logger.info(f"[SignalRecheck] Cancelled {sym} — max 4h")
-                        with lock:
-                            state.get("pending_smart_orders", {}).pop(str(order_id), None)
-                except Exception as _e:
-                    logger.debug(f"[SignalRecheck] {sym}: {_e}")            # ── A0. Check pump LIMIT SHORT orders ──────────────────
+            # ── A0. Check pump LIMIT SHORT orders ──────────────────
             if pump_limits:
                 for sym, info in list(pump_limits.items()):
                     try:
@@ -4078,21 +4027,66 @@ def orphan_order_cleanup(exchange, notifier):
                         except Exception:
                             pass
 
-                    # Entry LIMIT > 2 giờ không có position → huỷ
-                    order_time_ms = int(o.get("time", 0))
-                    order_age_sec = (time.time() * 1000 - order_time_ms) / 1000 if order_time_ms else 999
-                    if (sym and sym not in open_syms
-                            and not o.get("reduceOnly", False)
-                            and order_age_sec > 7200):
-                        try:
-                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
-                            cancelled.append(f"{sym} ({o.get('type','')} entry {order_age_sec/60:.0f}m)")
-                        except Exception:
-                            pass
-
-                    # (Entry order cancel đã được xử lý bởi signal expiry trong limit_order_monitor)
+                    # (Entry cancel xử lý bởi signal recheck trong limit_order_monitor)
             except Exception:
                 pass
+
+            # ── Huỷ entry LIMIT: trend đổi hoặc > 4h (chỉ khi nút bật) ──
+            if state.get("auto_cancel_orphan", False):
+                try:
+                    all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                    for o in all_orders:
+                        sym = o.get("symbol", "")
+                        if sym in EXCLUDE_AUTO_CANCEL:
+                            continue
+                        if not (sym and sym not in open_syms and not o.get("reduceOnly", False)):
+                            continue
+                        # Check thời gian
+                        order_time_ms = int(o.get("time", 0))
+                        order_age_sec = (time.time() * 1000 - order_time_ms) / 1000 if order_time_ms else 0
+
+                        should_cancel = False
+                        reason = ""
+
+                        # Max 4h → huỷ
+                        if order_age_sec > 14400:
+                            should_cancel = True
+                            reason = f">{order_age_sec/3600:.1f}h"
+                        # > 20 phút → check trend
+                        elif order_age_sec > 1200:
+                            try:
+                                from indicators import calculate_ema
+                                kl_4h = exchange.get_klines(sym, "4h", limit=20)
+                                df_4h = _klines_to_df(kl_4h)
+                                ema9 = calculate_ema(df_4h["close"], 9).iloc[-1]
+                                ema21 = calculate_ema(df_4h["close"], 21).iloc[-1]
+                                price_4h = df_4h["close"].iloc[-1]
+                                ema50 = calculate_ema(df_4h["close"], 50).iloc[-1]
+                                order_side = o.get("side", "")
+                                if order_side == "BUY" and (ema9 < ema21 or price_4h < ema50):
+                                    should_cancel = True
+                                    reason = "trend đổi bearish"
+                                elif order_side == "SELL" and (ema9 > ema21 or price_4h > ema50):
+                                    should_cancel = True
+                                    reason = "trend đổi bullish"
+                            except Exception:
+                                pass
+
+                        if should_cancel:
+                            try:
+                                exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
+                                cancelled.append(f"{sym} (entry {reason})")
+                                # Xóa khỏi pending_smart_orders
+                                with lock:
+                                    psm = state.get("pending_smart_orders", {})
+                                    for k, v in list(psm.items()):
+                                        if v.get("symbol") == sym:
+                                            psm.pop(k, None)
+                                            break
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
             if cancelled:
                 notifier.telegram.send(
