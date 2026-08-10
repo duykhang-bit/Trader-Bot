@@ -2510,26 +2510,17 @@ def scan_engine(exchange, notifier):
 
                 # ═══ BƯỚC 7: Tính SL / TP + RR ═══
                 if not skip_reason:
+                    atr_15m = calculate_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1]
                     if best.signal == "LONG":
-                        # SL: dưới vùng liq 2%
+                        # SL: dưới entry 2%
                         sl = round(entry_price * 0.98, 8)
-                        # TP: vùng liq lớn nhất phía TRÊN
-                        above_for_tp = [(p, u) for p, u in liq_data.items()
-                                        if p > cur_price and u >= 50_000]
-                        if above_for_tp:
-                            tp = round(max(above_for_tp, key=lambda x: x[1])[0], 8)
-                        else:
-                            tp = round(entry_price + (entry_price - sl) * 3.0, 8)
+                        # TP: entry + ATR × 4 (RR ~1:2 tới 1:3)
+                        tp = round(entry_price + atr_15m * 4, 8)
                     else:  # SHORT
-                        # SL: trên vùng liq 2%
+                        # SL: trên entry 2%
                         sl = round(entry_price * 1.02, 8)
-                        # TP: vùng liq lớn nhất phía DƯỚI
-                        below_for_tp = [(p, u) for p, u in liq_data.items()
-                                        if p < cur_price and u >= 50_000]
-                        if below_for_tp:
-                            tp = round(max(below_for_tp, key=lambda x: x[1])[0], 8)
-                        else:
-                            tp = round(entry_price - (sl - entry_price) * 3.0, 8)
+                        # TP: entry - ATR × 4
+                        tp = round(entry_price - atr_15m * 4, 8)
 
                     # RR check (sau phí + slippage ~0.1%)
                     risk   = abs(entry_price - sl)
