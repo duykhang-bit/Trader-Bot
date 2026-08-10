@@ -2319,6 +2319,49 @@ def scan_engine(exchange, notifier):
                 state["scan_no"] += 1
                 state["last_scan"] = datetime.now().strftime("%H:%M")
 
+            # ── PROMOTE: đẩy armed lên LIMIT khi slot trống ──
+            with lock:
+                armed = state.get("armed_entries", {})
+            if armed:
+                try:
+                    all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+                    limit_count = len([o for o in all_orders if not o.get("reduceOnly", False) and o.get("type") == "LIMIT"])
+                    if limit_count < 2:
+                        # Có slot trống → đẩy armed lên LIMIT
+                        for a_sym, a_info in list(armed.items()):
+                            if limit_count >= 2:
+                                break
+                            try:
+                                exchange.set_leverage(a_sym, config.LEVERAGE)
+                                bal = exchange.get_account_balance()
+                                qty = calc_qty(bal, a_info["entry_price"], a_info["sl"], symbol=a_sym, exchange=exchange)
+                                if qty * a_info["entry_price"] < 5.0:
+                                    qty = round(5.0 / a_info["entry_price"] + 0.001, 3)
+                                exchange.place_limit_order(a_sym, a_info["side"], qty, a_info["entry_price"])
+                                # Lưu pending_smart_orders
+                                try:
+                                    ords = exchange._get("/fapi/v1/openOrders", {"symbol": a_sym}, signed=True)
+                                    for o in ords:
+                                        if not o.get("reduceOnly") and o.get("type") == "LIMIT" and o.get("symbol") == a_sym:
+                                            with lock:
+                                                psm = state.setdefault("pending_smart_orders", {})
+                                                psm[str(o["orderId"])] = {
+                                                    "symbol": a_sym, "side": a_info["signal"],
+                                                    "qty": float(o.get("origQty", qty)),
+                                                    "sl": a_info["sl"], "tp": a_info["tp"],
+                                                    "ts": time.time(),
+                                                }
+                                except Exception:
+                                    pass
+                                with lock:
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                limit_count += 1
+                                logger.info(f"[Promote] Armed→LIMIT: {a_sym} {a_info['signal']} @ {a_info['entry_price']:.6f}")
+                            except Exception as _e:
+                                logger.debug(f"[Promote] {a_sym} failed: {_e}")
+                except Exception:
+                    pass
+
             # ── FAST CHECK: armed entries — giá tới zone chưa? ──
             with lock:
                 armed = dict(state.get("armed_entries", {}))
