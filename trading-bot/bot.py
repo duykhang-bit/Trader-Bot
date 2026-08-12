@@ -1192,22 +1192,7 @@ def price_updater(exchange):
                     continue
 
                 if pnl < -max_loss:
-                    # ── Chỉ tự đóng nếu KHÔNG có SL order trên Binance ──
-                    # Nếu có SL → để Binance tự đóng, không can thiệp
-                    try:
-                        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
-                        has_sl = any(
-                            o.get("symbol") == sym
-                            and o.get("type") in ("STOP_MARKET", "STOP")
-                            and o.get("reduceOnly", False)
-                            for o in all_orders
-                        )
-                        if has_sl:
-                            logger.debug(f"[MAX LOSS] {sym} pnl=${pnl:.2f} — SL tồn tại trên Binance, để Binance đóng")
-                            continue
-                    except Exception:
-                        pass  # Không lấy được orders → vẫn chạy safety net
-
+                    # Max loss → đóng NGAY dù có SL hay không (override SL)
                     amt = float(p.get("positionAmt", 0))
                     close_side = "SELL" if amt > 0 else "BUY"
                     if qty == int(qty):
