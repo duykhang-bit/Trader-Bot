@@ -1430,8 +1430,8 @@ def position_reversal_monitor(exchange, notifier):
                     continue
 
                 try:
-                    # Lấy klines 1m để tính indicators
-                    klines = exchange.get_klines(symbol, "1m", limit=30)
+                    # Lấy klines 15m để tính indicators (ít noise hơn 1m)
+                    klines = exchange.get_klines(symbol, "15m", limit=30)
                     df = _klines_to_df(klines)
                     if df is None or len(df) < 10:
                         continue
@@ -1465,8 +1465,8 @@ def position_reversal_monitor(exchange, notifier):
 
                     # 1. RSI đảo chiều
                     if side == "SHORT":
-                        # SHORT đang lời: RSI đã xuống thấp rồi bật lên (oversold bounce)
-                        if rsi_prev < 38 and rsi_now > rsi_prev + 4:
+                        # SHORT đang lời: RSI đã xuống rồi bật lên
+                        if rsi_prev < 45 and rsi_now > rsi_prev + 3:
                             signals.append(f"RSI bounce {rsi_prev:.0f}→{rsi_now:.0f}")
                     else:
                         # LONG đang lời: RSI đã lên cao rồi quay xuống (overbought drop)
