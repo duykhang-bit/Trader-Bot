@@ -3762,8 +3762,8 @@ def limit_order_monitor(exchange, notifier):
                             )
                             with lock:
                                 state.get("pending_smart_orders", {}).pop(str(order_id), None)
-
-                        elif status in ("CANCELED", "EXPIRED", "REJECTED"):
+                                # Set cooldown để auto_sltp không đặt trùng
+                                state.setdefault("_sltp_cooldown", {})[sym] = time.time()
                             logger.info(f"[LimitMonitor] {info['symbol']} order {status}, removing")
                             with lock:
                                 state.get("pending_smart_orders", {}).pop(str(order_id), None)
