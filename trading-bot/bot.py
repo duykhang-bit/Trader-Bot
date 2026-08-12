@@ -1430,8 +1430,8 @@ def position_reversal_monitor(exchange, notifier):
                     continue
 
                 try:
-                    # Lấy klines 15m để tính indicators (ít noise hơn 1m)
-                    klines = exchange.get_klines(symbol, "15m", limit=30)
+                    # Lấy klines 1m để bắt đảo chiều nhanh
+                    klines = exchange.get_klines(symbol, "1m", limit=30)
                     df = _klines_to_df(klines)
                     if df is None or len(df) < 10:
                         continue
@@ -1486,7 +1486,9 @@ def position_reversal_monitor(exchange, notifier):
                     _prev_rsi[symbol] = rsi_now
 
                     # Cần >= 2 tín hiệu mới đóng (tránh false positive)
-                    if len(signals) < 2:
+                    # Ngoại lệ: pullback mạnh >= 50% từ đỉnh → đóng ngay với 1 tín hiệu
+                    min_signals = 1 if (profit_travel >= 2.0 and pullback >= 50) else 2
+                    if len(signals) < min_signals:
                         continue
 
                     # Kiểm tra config có bật không
