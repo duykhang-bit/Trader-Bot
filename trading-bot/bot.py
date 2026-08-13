@@ -1418,6 +1418,34 @@ def position_reversal_monitor(exchange, notifier):
                 if pnl_pct >= 10.0:
                     continue
 
+                # ── Logic đơn giản: đóng khi lời từng > 2% mà giờ còn < 0.5% (sắp về entry) ──
+                max_pnl_key = f"_max_pnl_{symbol}"
+                with lock:
+                    prev_max_pnl = state.get(max_pnl_key, 0)
+                    if pnl_pct > prev_max_pnl:
+                        state[max_pnl_key] = pnl_pct
+                        prev_max_pnl = pnl_pct
+
+                if prev_max_pnl >= 2.0 and pnl_pct < 0.5:
+                    # Từng lời >= 2% nhưng giờ còn < 0.5% → sắp về entry → đóng
+                    logger.info(f"[ReversalMon] {symbol} {side}: max_pnl={prev_max_pnl:.1f}% → now={pnl_pct:.1f}% → đóng bảo toàn")
+                    # Reset max_pnl
+                    with lock:
+                        state.pop(max_pnl_key, None)
+                    qty = abs(amt)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    try:
+                        exchange.place_market_order(symbol, close_side, qty)
+                        exchange.cancel_all_orders(symbol)
+                        notifier.telegram.send(
+                            f"🔄 <b>BẢO TOÀN LỢI NHUẬN</b>: {symbol} {side}\n"
+                            f"Từng lời {prev_max_pnl:.1f}% → sắp về entry ({pnl_pct:.1f}%) → đóng\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[ReversalMon] Close {symbol}: {e}")
+                    continue
+
                 try:
                     # Lấy klines 1m để bắt đảo chiều nhanh
                     klines = exchange.get_klines(symbol, "1m", limit=30)
