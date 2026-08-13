@@ -4005,7 +4005,6 @@ def orphan_order_cleanup(exchange, notifier):
 
             # Regular reduceOnly orders
             try:
-            try:
                 all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                 for o in all_orders:
                     sym = o.get("symbol", "")
