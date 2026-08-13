@@ -1414,6 +1414,10 @@ def position_reversal_monitor(exchange, notifier):
                 if pnl_pct < 0.3:
                     continue
 
+                # Lời >= 10% → để Trailing Lock lo, Reversal Monitor không đóng
+                if pnl_pct >= 10.0:
+                    continue
+
                 try:
                     # Lấy klines 1m để bắt đảo chiều nhanh
                     klines = exchange.get_klines(symbol, "1m", limit=30)
