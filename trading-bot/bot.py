@@ -3212,6 +3212,9 @@ def pump_scan_engine(exchange, notifier):
                                         break
                                 # Xóa khỏi pump_trade_symbols sau khi đã đóng
                                 state.get("pump_trade_symbols", set()).discard(symbol)
+                                # Reset cooldown để có thể SHORT lại ngay nếu pump tiếp
+                                if hasattr(detector, '_cooldown'):
+                                    detector._cooldown.pop(symbol, None)
 
                             icon = "✅" if pnl >= 0 else "⚠️"
                             profit_tag = "Chốt lời" if pnl >= 0 else "Cắt lỗ sớm"
