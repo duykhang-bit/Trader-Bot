@@ -212,7 +212,7 @@ DECEL_CANDLES = 3
 PUMP_TOP_MIN_SCORE = 50
 
 # Cooldown: không spam signal cho cùng 1 coin (giây)
-PUMP_SIGNAL_COOLDOWN_S = 300   # 5 phút
+PUMP_SIGNAL_COOLDOWN_S = 120   # 2 phút cooldown sau khi SHORT
 
 # Danh sách coin đặc biệt cần theo dõi pump (ngoài watchlist thường)
 # Thêm coin kiểu BANK, LAB, v.v. mà dev hay bơm vào đây

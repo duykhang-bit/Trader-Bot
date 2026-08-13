@@ -3171,13 +3171,13 @@ def pump_scan_engine(exchange, notifier):
                         in_profit = pos_entry > 0 and cur_price < pos_entry
 
                         if in_profit:
-                            # Đang có lời → cần bounce mạnh mới đóng (tránh đóng khi chỉ bounce nhẹ)
-                            should_exit = pump_pct >= 20.0 or score >= 60
+                            # Đang có lời → nhạy hơn, bắt đảo chiều sớm
+                            should_exit = pump_pct >= 3.0 or score >= 25
                         else:
                             # Chưa có lời → cần tín hiệu mạnh hơn mới đóng
-                            should_exit = pump_pct >= 25.0 and score >= 50
+                            should_exit = pump_pct >= 7.0 and score >= 40
                     except Exception:
-                        should_exit = pump_pct >= 25.0 and score >= 40
+                        should_exit = pump_pct >= 5.0 and score >= 30
 
                     if should_exit:
                         try:
