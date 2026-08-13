@@ -1410,8 +1410,8 @@ def position_reversal_monitor(exchange, notifier):
                 if entry <= 0 or mark_price <= 0:
                     continue
 
-                # Chỉ check khi đang có lời >= 0.5%
-                if pnl_pct < 0.5:
+                # Chỉ check khi đang có lời >= 0.3%
+                if pnl_pct < 0.3:
                     continue
 
                 try:
@@ -1471,8 +1471,8 @@ def position_reversal_monitor(exchange, notifier):
                     _prev_rsi[symbol] = rsi_now
 
                     # Cần >= 2 tín hiệu mới đóng (tránh false positive)
-                    # Ngoại lệ: pullback mạnh >= 50% từ đỉnh → đóng ngay với 1 tín hiệu
-                    min_signals = 1 if (profit_travel >= 2.0 and pullback >= 50) else 2
+                    # Ngoại lệ: pullback mạnh >= 40% từ đỉnh → đóng ngay với 1 tín hiệu
+                    min_signals = 1 if (profit_travel >= 1.0 and pullback >= 40) else 2
                     if len(signals) < min_signals:
                         continue
 
