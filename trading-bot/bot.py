@@ -4005,24 +4005,21 @@ def orphan_order_cleanup(exchange, notifier):
 
             # Regular reduceOnly orders
             try:
+            try:
                 all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                 for o in all_orders:
                     sym = o.get("symbol", "")
-
-                    # Skip coin được bảo vệ
                     if sym in EXCLUDE_AUTO_CANCEL:
                         continue
-
                     if sym and sym not in open_syms and o.get("reduceOnly", False):
                         try:
                             exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
                             cancelled.append(f"{sym} ({o.get('type', '')})")
-                        except Exception:
-                            pass
-
-                    # (Entry cancel xử lý bởi signal recheck trong limit_order_monitor)
-            except Exception:
-                pass
+                            logger.info(f"[OrphanCleanup] Cancelled SL/TP: {sym}")
+                        except Exception as _e:
+                            logger.debug(f"[OrphanCleanup] Cancel {sym} failed: {_e}")
+            except Exception as _e:
+                logger.debug(f"[OrphanCleanup] openOrders error: {_e}")
 
             # ── Huỷ entry LIMIT: trend đổi hoặc > 4h (chỉ khi nút bật) ──
             if state.get("auto_cancel_orphan", False):
