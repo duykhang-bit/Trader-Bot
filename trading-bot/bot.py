@@ -1200,7 +1200,7 @@ def price_updater(exchange):
 
                 if pnl < -max_loss:
                     # Max loss → đóng NGAY dù có SL hay không (override SL)
-                    amt = float(p.get("positionAmt", 0))
+                    qty = abs(amt)
                     close_side = "SELL" if amt > 0 else "BUY"
                     if qty == int(qty):
                         qty = int(qty)
@@ -1433,8 +1433,8 @@ def position_reversal_monitor(exchange, notifier):
                         state[max_pnl_key] = pnl_pct
                         prev_max_pnl = pnl_pct
 
-                if prev_max_pnl >= 1.0 and pnl_pct < 0.5:
-                    # Từng lời >= 2% nhưng giờ còn < 0.5% → sắp về entry → đóng
+                if pnl_pct < 0.5:
+                    # Lời bất kỳ mà đang về gần entry (< 0.5%) → đóng bảo toàn
                     logger.info(f"[ReversalMon] {symbol} {side}: max_pnl={prev_max_pnl:.1f}% → now={pnl_pct:.1f}% → đóng bảo toàn")
                     # Reset max_pnl
                     with lock:
