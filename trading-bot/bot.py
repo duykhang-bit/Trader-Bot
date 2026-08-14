@@ -1433,7 +1433,7 @@ def position_reversal_monitor(exchange, notifier):
                         state[max_pnl_key] = pnl_pct
                         prev_max_pnl = pnl_pct
 
-                if prev_max_pnl >= 2.0 and pnl_pct < 0.5:
+                if prev_max_pnl >= 1.0 and pnl_pct < 0.5:
                     # Từng lời >= 2% nhưng giờ còn < 0.5% → sắp về entry → đóng
                     logger.info(f"[ReversalMon] {symbol} {side}: max_pnl={prev_max_pnl:.1f}% → now={pnl_pct:.1f}% → đóng bảo toàn")
                     # Reset max_pnl
