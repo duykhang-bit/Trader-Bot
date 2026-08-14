@@ -227,7 +227,7 @@ PUMP_NHE_COINS = []
 # Tự động vào SHORT khi PUMP NHẸ RADAR phát hiện đỉnh
 # Dùng cùng pump_detector.py nhưng ngưỡng thấp hơn (score >= PUMP_NHE_MIN_SCORE)
 # Bật/tắt độc lập với PUMP_AUTO_SHORT — có thể bật cả 2 cùng lúc
-PUMP_NHE_AUTO_SHORT = False
+PUMP_NHE_AUTO_SHORT = True
 
 # Ngưỡng score tối thiểu cho PUMP NHẸ RADAR (thấp hơn pump mạnh)
 # 50 = nhẹ hơn pump radar cũ (75), bắt được nhiều setup hơn
@@ -243,7 +243,7 @@ PUMP_SCAN_INTERVAL_SECONDS = 30
 # Tự động vào SHORT khi phát hiện đỉnh pump
 # True  → bot TỰ vào lệnh SHORT (nguy hiểm, dùng khi đã test kỹ)
 # False → chỉ gửi Telegram alert, mày quyết định vào tay
-PUMP_AUTO_SHORT = False
+PUMP_AUTO_SHORT = True
 
 # AUTO SHORT nhẹ — dùng ngưỡng thấp hơn (score>=60, pump>=15%, RSI>=65)
 # Bật khi muốn bot bắt pump ở coin thường (ít pump hơn coin dev)
