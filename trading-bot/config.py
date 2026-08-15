@@ -78,6 +78,10 @@ TRAILING_STOP_PCT  = 0.015
 
 # Trailing Profit Lock — dời SL lên lock lãi khi gần TP
 TRAILING_LOCK_ENABLED = True
+
+# MFE Retracement — tự chốt lời scan/quick khi giá hồi >= 40% từ đỉnh lời
+MFE_SCAN_ENABLED = True
+MFE_RETRACE_PCT  = 0.40   # 40% retracement → đóng
 MAX_LOSS_PER_POSITION = 20.0
 MAX_LOSS_PCT_PER_POSITION = 0.20
 MAX_LOSS_ENABLED = True  # Bật/tắt safety net — tự đóng lệnh khi lỗ vượt MAX_LOSS

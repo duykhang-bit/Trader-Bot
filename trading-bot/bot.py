@@ -1796,6 +1796,109 @@ _spike_price_baseline: dict = {}   # {symbol: (price, timestamp)}
 # Khi giá đi 50% tới TP → lock 40% lợi nhuận
 # Khi giá đi 70% tới TP → lock 60% lợi nhuận
 # ============================================================
+def mfe_scan_monitor(exchange, notifier):
+    """
+    MFE Retracement cho lệnh scan/quick (không phải pump).
+    Khi lời >= 3% và hồi >= 40% từ MFE → đóng lệnh.
+    Bật/tắt qua config.MFE_SCAN_ENABLED.
+    """
+    time.sleep(15)
+    _mfe_prices = {}  # {symbol: mfe_price}
+
+    while state["running"]:
+        try:
+            if not getattr(config, "MFE_SCAN_ENABLED", True):
+                time.sleep(10)
+                continue
+
+            all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+            open_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0]
+
+            with lock:
+                pump_syms = set(state.get("pump_trade_symbols", set()))
+
+            for pos in open_pos:
+                sym  = pos["symbol"]
+                amt  = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+
+                # Chỉ áp dụng cho lệnh KHÔNG phải pump
+                if sym in pump_syms:
+                    continue
+
+                entry = float(pos.get("entryPrice", 0))
+                mark  = float(pos.get("markPrice", 0)) or state.get("prices", {}).get(sym, 0)
+                if entry <= 0 or mark <= 0:
+                    continue
+
+                is_long = amt > 0
+                if is_long:
+                    pnl_pct = (mark - entry) / entry * 100
+                else:
+                    pnl_pct = (entry - mark) / entry * 100
+
+                # Track MFE
+                if is_long:
+                    mfe = _mfe_prices.get(sym, mark)
+                    if mark > mfe:
+                        _mfe_prices[sym] = mark
+                        mfe = mark
+                else:
+                    mfe = _mfe_prices.get(sym, mark)
+                    if mark < mfe:
+                        _mfe_prices[sym] = mark
+                        mfe = mark
+
+                # Tính MFE %
+                if is_long:
+                    mfe_pct = (mfe - entry) / entry * 100
+                else:
+                    mfe_pct = (entry - mfe) / entry * 100
+
+                # Chỉ kích hoạt khi lời >= 3%
+                if mfe_pct < 3.0:
+                    continue
+
+                # Tính retracement
+                retrace_pct = getattr(config, "MFE_RETRACE_PCT", 0.40)
+                if is_long:
+                    if mfe - entry <= 0:
+                        continue
+                    retracement = (mfe - mark) / (mfe - entry)
+                else:
+                    if entry - mfe <= 0:
+                        continue
+                    retracement = (mark - mfe) / (entry - mfe)
+
+                if retracement >= retrace_pct:
+                    qty = abs(amt)
+                    close_side = "SELL" if is_long else "BUY"
+                    try:
+                        exchange.place_market_order(sym, close_side, qty)
+                        exchange.cancel_all_orders(sym)
+                        _mfe_prices.pop(sym, None)
+                        notifier.telegram.send(
+                            f"🔄 <b>MFE EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
+                            f"MFE={mfe_pct:.1f}% → hồi {retracement*100:.0f}% → lời {pnl_pct:.1f}%\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                        logger.info(f"[MFEScan] EXIT {sym}: mfe={mfe_pct:.1f}% retrace={retracement*100:.0f}%")
+                    except Exception as e:
+                        logger.error(f"[MFEScan] Close {sym}: {e}")
+
+            # Dọn symbol không còn position
+            open_syms = {p["symbol"] for p in open_pos if abs(float(p.get("positionAmt", 0))) > 0}
+            for sym in list(_mfe_prices.keys()):
+                if sym not in open_syms:
+                    _mfe_prices.pop(sym, None)
+
+        except Exception as e:
+            logger.debug(f"[MFEScan] Error: {e}")
+
+        time.sleep(5)
+
+
 def trailing_profit_lock(exchange, notifier):
     """Dời SL lên theo lợi nhuận để không bị quay lại lỗ."""
     time.sleep(30)  # chờ bot khởi động
@@ -4470,6 +4573,8 @@ if __name__ == "__main__":
         _t2a3.start()
         _t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
         _t_trailing.start()
+        _t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
+        _t_mfe_scan.start()
         _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
         _t2b.start()
         _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
@@ -4549,6 +4654,8 @@ if __name__ == "__main__":
     t11.start()
     t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
     t_trailing.start()
+    t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
+    t_mfe_scan.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():

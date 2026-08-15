@@ -373,6 +373,11 @@ async function toggleTrailingLock(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleMfeScan(enabled) {
+    const r = await apiPost('/api/mfe_scan', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function toggleMaxLoss(enabled) {
     const r = await apiPost('/api/max_loss', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -561,6 +566,21 @@ function renderDashboard(d) {
                 <button class="btn btn-sm" onclick="setMaxLoss()" style="margin-left:4px;font-size:11px">Set $</button>
                 <span style="font-size:11px;color:${en?'#f85149':'#8b949e'}">
                     ${en?'Tự đóng khi lỗ > $'+val:'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F4CA; MFE Scan Exit:</span>
+            ${(() => {
+                const en = d.mfe_scan_enabled !== false;
+                const pct = Math.round((d.mfe_retrace_pct || 0.40) * 100);
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleMfeScan(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleMfeScan(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${en?'#3fb950':'#8b949e'}">
+                    ${en?'Chốt lời scan/quick/app khi hồi '+pct+'% từ đỉnh':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -2004,6 +2024,8 @@ def api_state():
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
         "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
+        "mfe_scan_enabled":         getattr(_config, "MFE_SCAN_ENABLED", True),
+        "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
@@ -2906,6 +2928,20 @@ def api_profit_lock():
         "msg": f"Profit Lock: {status}",
         "enabled": bool(enabled),
     })
+
+@app.route("/api/mfe_scan", methods=["POST"])
+@require_auth
+def api_mfe_scan():
+    """Bật/tắt MFE Scan Exit cho lệnh scan/quick/app."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    try:
+        import config as _cfg
+        _cfg.MFE_SCAN_ENABLED = bool(enabled)
+    except Exception:
+        pass
+    status = "bật" if enabled else "tắt"
+    return jsonify({"ok": True, "msg": f"MFE Scan: {status}", "enabled": bool(enabled)})
 
 @app.route("/api/trailing_lock", methods=["POST"])
 @require_auth
