@@ -556,7 +556,7 @@ function renderDashboard(d) {
                         style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
                 <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleMaxLoss(false)"
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
-                <input id="max-loss-input" type="number" value="${val}" min="5" max="100" step="5"
+                <input id="max-loss-input" type="number" value="${val}" min="1" max="100" step="1"
                        style="width:60px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px;color:#e6edf3;font-size:12px;margin-left:6px">
                 <button class="btn btn-sm" onclick="setMaxLoss()" style="margin-left:4px;font-size:11px">Set $</button>
                 <span style="font-size:11px;color:${en?'#f85149':'#8b949e'}">
