@@ -2620,12 +2620,10 @@ def scan_engine(exchange, notifier):
                         # SL: dưới entry 2%
                         sl = round(entry_price * 0.98, 8)
                         # TP: entry + ATR × 4 (RR ~1:2 tới 1:3)
-                        tp = round(entry_price + atr_15m * 4, 8)
+                        tp = round(entry_price + atr_15m * 8, 8)
                     else:  # SHORT
-                        # SL: trên entry 2%
                         sl = round(entry_price * 1.02, 8)
-                        # TP: entry - ATR × 4
-                        tp = round(entry_price - atr_15m * 4, 8)
+                        tp = round(entry_price - atr_15m * 8, 8)
 
                     # RR check (sau phí + slippage ~0.1%)
                     risk   = abs(entry_price - sl)
