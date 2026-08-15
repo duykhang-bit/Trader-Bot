@@ -1425,32 +1425,60 @@ def position_reversal_monitor(exchange, notifier):
                 if pnl_pct >= 10.0:
                     continue
 
-                # ── Logic đơn giản: đóng khi lời từng > 2% mà giờ còn < 0.5% (sắp về entry) ──
-                max_pnl_key = f"_max_pnl_{symbol}"
+                # ── MFE Retracement logic ──
+                # Track lowest price (SHORT) hoặc highest price (LONG)
+                mfe_key = f"_mfe_{symbol}"
                 with lock:
-                    prev_max_pnl = state.get(max_pnl_key, 0)
-                    if pnl_pct > prev_max_pnl:
-                        state[max_pnl_key] = pnl_pct
-                        prev_max_pnl = pnl_pct
+                    if side == "SHORT":
+                        mfe_price = state.get(mfe_key, mark_price)
+                        if mark_price < mfe_price:
+                            state[mfe_key] = mark_price
+                            mfe_price = mark_price
+                    else:
+                        mfe_price = state.get(mfe_key, mark_price)
+                        if mark_price > mfe_price:
+                            state[mfe_key] = mark_price
+                            mfe_price = mark_price
 
-                if pnl_pct < 0.5:
-                    # Lời bất kỳ mà đang về gần entry (< 0.5%) → đóng bảo toàn
-                    logger.info(f"[ReversalMon] {symbol} {side}: max_pnl={prev_max_pnl:.1f}% → now={pnl_pct:.1f}% → đóng bảo toàn")
-                    # Reset max_pnl
+                # Tính MFE %
+                if side == "SHORT":
+                    mfe_pct = (entry - mfe_price) / entry * 100  # lợi nhuận tối đa
+                else:
+                    mfe_pct = (mfe_price - entry) / entry * 100
+
+                # Chỉ kích hoạt MFE exit khi đã lời >= 3%
+                if mfe_pct < 3.0:
+                    continue
+
+                # Tính retracement từ MFE
+                if side == "SHORT":
+                    if entry - mfe_price <= 0:
+                        continue
+                    retracement = (mark_price - mfe_price) / (entry - mfe_price)
+                else:
+                    if mfe_price - entry <= 0:
+                        continue
+                    retracement = (mfe_price - mark_price) / (mfe_price - entry)
+
+                # Nếu hồi >= 40% từ MFE → đóng
+                if retracement >= 0.40:
                     with lock:
-                        state.pop(max_pnl_key, None)
+                        state.pop(mfe_key, None)
                     qty = abs(amt)
                     close_side = "SELL" if side == "LONG" else "BUY"
                     try:
                         exchange.place_market_order(symbol, close_side, qty)
                         exchange.cancel_all_orders(symbol)
+                        profit_at_mfe = round(mfe_pct, 1)
+                        current_profit = round(pnl_pct, 1)
                         notifier.telegram.send(
-                            f"🔄 <b>BẢO TOÀN LỢI NHUẬN</b>: {symbol} {side}\n"
-                            f"Từng lời {prev_max_pnl:.1f}% → sắp về entry ({pnl_pct:.1f}%) → đóng\n"
+                            f"🔄 <b>MFE EXIT</b>: {symbol} {side}\n"
+                            f"MFE={profit_at_mfe}% → hồi {retracement*100:.0f}% → đóng lời {current_profit}%\n"
                             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                         )
+                        logger.info(f"[ReversalMon] MFE EXIT {symbol}: mfe={profit_at_mfe}% retrace={retracement*100:.0f}% current={current_profit}%")
                     except Exception as e:
-                        logger.error(f"[ReversalMon] Close {symbol}: {e}")
+                        logger.error(f"[ReversalMon] MFE close {symbol}: {e}")
                     continue
 
                 try:
@@ -1811,42 +1839,30 @@ def trailing_profit_lock(exchange, notifier):
                              and o.get("reduceOnly", False)]
                 tp_price = float(tp_orders[0].get("stopPrice", 0)) if tp_orders else 0
 
-                if tp_price <= 0:
-                    # Không có TP → dùng đơn giản: lock khi lãi >= min_pct
+                # ── 3 State Trailing SL theo pnl_pct ──
+                # State 1: lời >= 3% → dời SL về entry + buffer 0.3%
+                # State 2: lời >= 6% → dời SL về entry + 2%
+                # State 3: lời >= 10% → trailing SL cách giá 3%
+                if pnl_pct >= 10.0:
+                    # Trailing cách giá 3%
                     if is_long:
-                        new_sl = round(entry * 1.005, 8)  # breakeven + 0.5%
+                        new_sl = round(mark * (1 - 0.03), 8)
                     else:
-                        new_sl = round(entry * 0.995, 8)
+                        new_sl = round(mark * (1 + 0.03), 8)
+                elif pnl_pct >= 6.0:
+                    # SL về entry + 2%
+                    if is_long:
+                        new_sl = round(entry * 1.02, 8)
+                    else:
+                        new_sl = round(entry * 0.98, 8)
+                elif pnl_pct >= 3.0:
+                    # SL về entry + buffer 0.3%
+                    if is_long:
+                        new_sl = round(entry * 1.003, 8)
+                    else:
+                        new_sl = round(entry * 0.997, 8)
                 else:
-                    # Tính progress tới TP
-                    if is_long:
-                        total_move = tp_price - entry
-                        current_move = mark - entry
-                    else:
-                        total_move = entry - tp_price
-                        current_move = entry - mark
-
-                    if total_move <= 0:
-                        continue
-                    progress = current_move / total_move  # 0.0 → 1.0
-
-                    # Dời SL theo progress
-                    if progress >= 0.70:
-                        # Lock 60% lợi nhuận
-                        lock_pct = 0.60
-                    elif progress >= 0.50:
-                        # Lock 40% lợi nhuận
-                        lock_pct = 0.40
-                    elif progress >= 0.30:
-                        # Breakeven + nhỏ
-                        lock_pct = 0.15
-                    else:
-                        continue  # Chưa đủ progress
-
-                    if is_long:
-                        new_sl = round(entry + total_move * lock_pct, 8)
-                    else:
-                        new_sl = round(entry - total_move * lock_pct, 8)
+                    continue
 
                 # Check: new_sl có tốt hơn current_sl không?
                 if is_long and new_sl <= current_sl:
