@@ -380,7 +380,7 @@ async function toggleMaxLoss(enabled) {
 }
 async function setMaxLoss() {
     const val = parseFloat(document.getElementById('max-loss-input').value);
-    if (!val || val < 5) { toast('Min $5', false); return; }
+    if (!val || val < 1) { toast('Min $1', false); return; }
     const r = await apiPost('/api/max_loss', {enabled: true, value: val});
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
