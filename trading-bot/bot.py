@@ -1450,10 +1450,38 @@ def position_reversal_monitor(exchange, notifier):
                 else:
                     mfe_pct = (mfe_price - entry) / entry * 100
 
-                # ── Lời >= 3%: check 2 điều kiện ──
-                if pnl_pct >= 3.0:
-                    # Điều kiện 1: sắp về entry (pnl < 0.5%) → đóng ngay tránh lỗ
-                    if pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                # ── Breakeven Exit: từng lời >= 3% mà giờ < 0.5% → đóng ──
+                if mfe_pct >= 3.0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                    with lock:
+                        state.pop(mfe_key, None)
+                    qty = abs(amt)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    try:
+                        exchange.place_market_order(symbol, close_side, qty)
+                        exchange.cancel_all_orders(symbol)
+                        notifier.telegram.send(
+                            f"🔄 <b>BREAKEVEN EXIT</b>: {symbol} {side}\n"
+                            f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[ReversalMon] BE close {symbol}: {e}")
+                    continue
+
+                # ── MFE retracement >= 40% → đóng giữ lời ──
+                if mfe_pct >= 3.0:
+                    if side == "SHORT":
+                        if entry - mfe_price > 0:
+                            retracement = (mark_price - mfe_price) / (entry - mfe_price)
+                        else:
+                            retracement = 0
+                    else:
+                        if mfe_price - entry > 0:
+                            retracement = (mfe_price - mark_price) / (mfe_price - entry)
+                        else:
+                            retracement = 0
+
+                    if retracement >= 0.40:
                         with lock:
                             state.pop(mfe_key, None)
                         qty = abs(amt)
@@ -1462,44 +1490,14 @@ def position_reversal_monitor(exchange, notifier):
                             exchange.place_market_order(symbol, close_side, qty)
                             exchange.cancel_all_orders(symbol)
                             notifier.telegram.send(
-                                f"🔄 <b>BREAKEVEN EXIT</b>: {symbol} {side}\n"
-                                f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
+                                f"🔄 <b>MFE EXIT</b>: {symbol} {side}\n"
+                                f"MFE={mfe_pct:.1f}% → hồi {retracement*100:.0f}% → lời {pnl_pct:.1f}%\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
+                            logger.info(f"[ReversalMon] MFE EXIT {symbol}: mfe={mfe_pct:.1f}% retrace={retracement*100:.0f}%")
                         except Exception as e:
-                            logger.error(f"[ReversalMon] BE close {symbol}: {e}")
+                            logger.error(f"[ReversalMon] MFE close {symbol}: {e}")
                         continue
-
-                    # Điều kiện 2: MFE retracement >= 40% → đóng giữ lời
-                    if mfe_pct >= 3.0:
-                        if side == "SHORT":
-                            if entry - mfe_price > 0:
-                                retracement = (mark_price - mfe_price) / (entry - mfe_price)
-                            else:
-                                retracement = 0
-                        else:
-                            if mfe_price - entry > 0:
-                                retracement = (mfe_price - mark_price) / (mfe_price - entry)
-                            else:
-                                retracement = 0
-
-                        if retracement >= 0.40:
-                            with lock:
-                                state.pop(mfe_key, None)
-                            qty = abs(amt)
-                            close_side = "SELL" if side == "LONG" else "BUY"
-                            try:
-                                exchange.place_market_order(symbol, close_side, qty)
-                                exchange.cancel_all_orders(symbol)
-                                notifier.telegram.send(
-                                    f"🔄 <b>MFE EXIT</b>: {symbol} {side}\n"
-                                    f"MFE={mfe_pct:.1f}% → hồi {retracement*100:.0f}% → lời {pnl_pct:.1f}%\n"
-                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                )
-                                logger.info(f"[ReversalMon] MFE EXIT {symbol}: mfe={mfe_pct:.1f}% retrace={retracement*100:.0f}%")
-                            except Exception as e:
-                                logger.error(f"[ReversalMon] MFE close {symbol}: {e}")
-                            continue
 
                 try:
                     # Lấy klines 1m để bắt đảo chiều nhanh
