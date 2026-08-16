@@ -1658,6 +1658,14 @@ async function setPumpMinScore() {
     fetchPumpData();
 }
 
+async function setPumpCooldown() {
+    const val = parseInt(document.getElementById('pump-cooldown-input')?.value || 5);
+    if (val < 1 || val > 300) { toast('Cooldown phải 1-300 giây', false); return; }
+    const r = await apiPost('/api/pump/set_cooldown', {cooldown: val});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    fetchPumpData();
+}
+
 function scoreColor(s) {
     if (s >= 80) return '#f85149';
     if (s >= 60) return '#ff9500';
@@ -1764,6 +1772,12 @@ function renderPumpRadar(d) {
           <input id="pump-score-min-input" type="number" min="30" max="90" value="${d.min_score || 50}"
                  style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a3a2a;border-radius:4px;padding:2px 4px;color:#3fb950;text-align:center">
           <button class="btn btn-sm" onclick="setPumpMinScore()" style="font-size:10px;padding:2px 6px;background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">Set</button>
+          <span style="font-size:10px;color:#484f58;margin-left:8px">⏱cd</span>
+          <input id="pump-cooldown-input" type="number" min="1" max="300" value="${d.pump_signal_cooldown || 5}"
+                 style="width:42px;font-size:11px;background:#060d14;border:1px solid #1a3a2a;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center"
+                 title="Cooldown giây sau mỗi lần auto-short cùng coin">
+          <span style="font-size:10px;color:#484f58">s</span>
+          <button class="btn btn-sm" onclick="setPumpCooldown()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#d29922;border:1px solid #3a2a00">Set</button>
         </div>
       </div>
 
@@ -2924,6 +2938,7 @@ def _api_pump_state_inner():
         "auto_short": getattr(_config, "PUMP_AUTO_SHORT", False),
         "soft_short": getattr(_config, "PUMP_AUTO_SHORT_SOFT", False),
         "min_score":  getattr(_config, "PUMP_TOP_MIN_SCORE", 60),
+        "pump_signal_cooldown": getattr(_config, "PUMP_SIGNAL_COOLDOWN_S", 5),
         "pump_alerts": pump_alerts,
     })
 
@@ -3060,6 +3075,30 @@ def api_pump_set_min_score():
     except Exception:
         pass
     return jsonify({"ok": True, "msg": f"Pump min score = {score}", "score": score})
+
+
+@app.route("/api/pump/set_cooldown", methods=["POST"])
+@require_auth
+def api_pump_set_cooldown():
+    """Set PUMP_SIGNAL_COOLDOWN_S — thời gian chờ trước khi auto-short lại cùng coin."""
+    data     = request.get_json() or {}
+    cooldown = int(data.get("cooldown", 5))
+    cooldown = max(1, min(300, cooldown))
+    try:
+        import config as _cfg
+        _cfg.PUMP_SIGNAL_COOLDOWN_S = cooldown
+        # Ghi vào file để persist
+        config_path = os.path.join(os.path.dirname(__file__), "config.py")
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = re.sub(r'PUMP_SIGNAL_COOLDOWN_S\s*=\s*\d+',
+                         f'PUMP_SIGNAL_COOLDOWN_S = {cooldown}', content)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[PumpRadar] PUMP_SIGNAL_COOLDOWN_S = {cooldown}s")
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"❌ Lỗi: {e}"})
+    return jsonify({"ok": True, "msg": f"⏱ Cooldown auto-short = {cooldown}s", "cooldown": cooldown})
 
 
 @app.route("/api/pump/coins/manual_long", methods=["POST"])

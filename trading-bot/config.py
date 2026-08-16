@@ -219,6 +219,7 @@ DECEL_CANDLES = 3
 PUMP_TOP_MIN_SCORE = 50
 
 # Cooldown: không spam signal cho cùng 1 coin (giây)
+# Sau khi SHORT 1 coin → chờ X giây rồi mới cho phép SHORT lại coin đó
 PUMP_SIGNAL_COOLDOWN_S = 5     # 5 giây — đủ cho Binance confirm, không bỏ lỡ pump tiếp
 
 # Danh sách coin đặc biệt cần theo dõi pump (ngoài watchlist thường)
