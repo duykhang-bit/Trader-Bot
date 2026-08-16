@@ -823,6 +823,12 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
         logger.error(f"[CTD] Handle confirmed top {sig.symbol} failed: {e}")
 
 
+def _set_sltp_cooldown(symbol: str):
+    """Set cooldown để auto_sltp không đặt trùng."""
+    with lock:
+        state.setdefault("_sltp_cooldown", {})[symbol] = time.time()
+
+
 def _armed_execute(sym, info, trigger_price):
     """Thực thi armed entry — chạy trong thread riêng, không block WS."""
     try:
@@ -3201,6 +3207,8 @@ def pump_scan_engine(exchange, notifier):
                                                     )
                                                 except Exception:
                                                     pass
+                                                # Set cooldown — auto_sltp không đặt trùng
+                                                _set_sltp_cooldown(symbol)
 
                                                 rr_nhe = (
                                                     abs(cur_p_nhe - sig.tp1_price)
@@ -3494,6 +3502,8 @@ def pump_scan_engine(exchange, notifier):
                             exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
                         except Exception as e:
                             logger.warning(f"[PumpEngine] TP {symbol}: {e}")
+                        # Set cooldown để auto_sltp không đặt trùng
+                        _set_sltp_cooldown(symbol)
 
                         rr = abs(current_price - sig.tp1_price) / abs(current_price - sig.sl_price) if abs(current_price - sig.sl_price) > 0 else 0
                         with lock:
