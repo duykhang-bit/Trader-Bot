@@ -1453,7 +1453,7 @@ def position_reversal_monitor(exchange, notifier):
                 # ── Lời >= 3%: check 2 điều kiện ──
                 if pnl_pct >= 3.0:
                     # Điều kiện 1: sắp về entry (pnl < 0.5%) → đóng ngay tránh lỗ
-                    if pnl_pct < 0.5:
+                    if pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                         with lock:
                             state.pop(mfe_key, None)
                         qty = abs(amt)
@@ -1864,6 +1864,23 @@ def mfe_scan_monitor(exchange, notifier):
 
                 # Chỉ kích hoạt khi lời >= 3%
                 if mfe_pct < 3.0:
+                    continue
+
+                # Breakeven exit: từng lời >= 3% mà giờ < 0.5% → đóng
+                if pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                    qty = abs(amt)
+                    close_side = "SELL" if is_long else "BUY"
+                    try:
+                        exchange.place_market_order(sym, close_side, qty)
+                        exchange.cancel_all_orders(sym)
+                        _mfe_prices.pop(sym, None)
+                        notifier.telegram.send(
+                            f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
+                            f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[MFEScan] BE close {sym}: {e}")
                     continue
 
                 # Tính retracement

@@ -277,6 +277,23 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .pump-coin-alert { border-color:rgba(248,81,73,.5)!important; background:rgba(248,81,73,.04)!important; animation:alertPulse 2s ease-in-out infinite; }
 @keyframes alertPulse { 0%,100%{box-shadow:0 0 0 rgba(248,81,73,0)} 50%{box-shadow:0 0 12px rgba(248,81,73,.25)} }
 @media (max-width:768px) { .pump-coin-grid{grid-template-columns:repeat(2,1fr)} .pump-header-row{flex-direction:column} .pump-controls{text-align:left} }
+/* ── TradingAgents AI Analysis ── */
+.ta-wrap { background: linear-gradient(135deg,#0d1117 0%,#0a1120 100%); border: 1px solid #1a3a5a; border-radius: 12px; padding: 16px; }
+.ta-header { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+.ta-dot { width:9px; height:9px; border-radius:50%; background:#58a6ff; box-shadow:0 0 8px #58a6ff; animation:pulseDot 1.4s ease-in-out infinite; }
+.ta-form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.ta-result { background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:14px; margin-top:10px; font-size:13px; line-height:1.7; }
+.ta-rating-buy  { color:#3fb950; font-size:20px; font-weight:800; }
+.ta-rating-sell { color:#f85149; font-size:20px; font-weight:800; }
+.ta-rating-hold { color:#d29922; font-size:20px; font-weight:800; }
+.ta-field { margin-bottom:8px; }
+.ta-field .lbl { color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:1px; }
+.ta-field .val { color:#e6edf3; font-size:13px; margin-top:2px; }
+.ta-spinner { display:inline-block; width:14px; height:14px; border:2px solid #30363d; border-top:2px solid #58a6ff; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-right:5px; }
+@keyframes spin { to{transform:rotate(360deg)} }
+.ta-progress { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px 12px; font-size:12px; color:#8b949e; margin-top:8px; }
+.ta-analyst-chip { padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600; border:1px solid #30363d; background:#0d1117; color:#8b949e; cursor:pointer; transition:all .2s; user-select:none; display:inline-block; margin:3px 2px; }
+.ta-analyst-chip.active { background:#1f3a5a; border-color:#58a6ff; color:#58a6ff; }
 </style>
 </head>
 <body>
@@ -378,6 +395,11 @@ async function toggleMfeScan(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleBreakevenExit(enabled) {
+    const r = await apiPost('/api/breakeven_exit', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function toggleMaxLoss(enabled) {
     const r = await apiPost('/api/max_loss', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -449,6 +471,165 @@ async function autoSetSlTpAll() {
     const r = await apiPost('/api/auto_sltp', {symbol: 'ALL'});
     if (r && r.msg) toast(r.msg, r.ok);
     refresh();
+}
+
+// ── TradingAgents AI Analysis ─────────────────────────────────────────────
+const _taAnalysts = ['market', 'news', 'social', 'fundamentals'];
+let _taActiveAnalysts = new Set(['market', 'news', 'social']);
+let _taPolling = null;
+
+function taToggleAnalyst(key) {
+    if (_taActiveAnalysts.has(key)) {
+        if (_taActiveAnalysts.size > 1) _taActiveAnalysts.delete(key);
+        else { toast('Phải chọn ít nhất 1 analyst', false); return; }
+    } else {
+        _taActiveAnalysts.add(key);
+    }
+    document.querySelectorAll('.ta-analyst-chip').forEach(el => {
+        el.classList.toggle('active', _taActiveAnalysts.has(el.dataset.key));
+    });
+}
+
+function _taRatingClass(rating) {
+    if (!rating) return '';
+    const r = rating.toLowerCase();
+    if (r.includes('buy') || r.includes('overweight')) return 'ta-rating-buy';
+    if (r.includes('sell') || r.includes('underweight')) return 'ta-rating-sell';
+    return 'ta-rating-hold';
+}
+
+function _taRatingIcon(rating) {
+    if (!rating) return '⬜';
+    const r = rating.toLowerCase();
+    if (r.includes('buy')) return '🟢';
+    if (r.includes('overweight')) return '🔼';
+    if (r.includes('sell')) return '🔴';
+    if (r.includes('underweight')) return '🔽';
+    return '🟡';
+}
+
+async function taAnalyze() {
+    const ticker = document.getElementById('ta-ticker').value.trim().toUpperCase() || 'BTC-USD';
+    const dateEl = document.getElementById('ta-date');
+    const date   = dateEl && dateEl.value ? dateEl.value : new Date().toISOString().slice(0,10);
+    const provider  = document.getElementById('ta-provider').value;
+    const deepModel = document.getElementById('ta-deep-model').value.trim();
+    const quickModel= document.getElementById('ta-quick-model').value.trim();
+    const analysts  = [..._taActiveAnalysts];
+
+    const resultEl = document.getElementById('ta-result');
+    resultEl.innerHTML = `<div class="ta-progress"><span class="ta-spinner"></span>Đang phân tích <b>${ticker}</b> ngày <b>${date}</b>... (3-10 phút)</div>`;
+
+    const r = await apiPost('/api/ta/analyze', { ticker, date, provider, deep_model: deepModel, quick_model: quickModel, analysts });
+    if (!r || !r.ok) {
+        resultEl.innerHTML = `<div style="color:#f85149">❌ ${r?.msg || 'Lỗi không xác định'}</div>`;
+        return;
+    }
+
+    // bắt đầu poll status
+    if (_taPolling) clearInterval(_taPolling);
+    _taPolling = setInterval(async () => {
+        try {
+            const s = await fetch('/api/ta/status');
+            const sd = await s.json();
+            if (!sd.running) {
+                clearInterval(_taPolling);
+                _taPolling = null;
+                _taShowResult(sd.last_result);
+            } else {
+                const p = resultEl.querySelector('.ta-progress');
+                if (p) {
+                    const elapsed = sd.elapsed_sec ? ` (${sd.elapsed_sec}s)` : '';
+                    p.innerHTML = `<span class="ta-spinner"></span>${sd.step || 'Đang chạy...'}${elapsed}`;
+                }
+            }
+        } catch(e) {}
+    }, 3000);
+}
+
+function _taShowResult(res) {
+    const el = document.getElementById('ta-result');
+    if (!el) return;
+    if (!res) { el.innerHTML = `<div style="color:#8b949e">Chưa có kết quả</div>`; return; }
+
+    if (res.error) {
+        el.innerHTML = `<div style="color:#f85149">❌ ${res.error}</div>`; return;
+    }
+
+    const ratingClass = _taRatingClass(res.rating);
+    const ratingIcon  = _taRatingIcon(res.rating);
+
+    let html = `<div class="ta-field">
+        <div class="lbl">Phán quyết</div>
+        <div class="${ratingClass}">${ratingIcon} ${res.rating || '—'}</div>
+    </div>`;
+
+    if (res.entry_price) html += `<div class="ta-field">
+        <div class="lbl">Entry Price</div>
+        <div class="val" style="color:#58a6ff;font-size:15px;font-weight:700">$${Number(res.entry_price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}</div>
+    </div>`;
+
+    if (res.stop_loss) html += `<div class="ta-field">
+        <div class="lbl">Stop Loss</div>
+        <div class="val" style="color:#f85149">$${Number(res.stop_loss).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}</div>
+    </div>`;
+
+    if (res.price_target) html += `<div class="ta-field">
+        <div class="lbl">Price Target</div>
+        <div class="val" style="color:#3fb950">$${Number(res.price_target).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}</div>
+    </div>`;
+
+    if (res.position_sizing) html += `<div class="ta-field">
+        <div class="lbl">Position Sizing</div>
+        <div class="val">${res.position_sizing}</div>
+    </div>`;
+
+    if (res.executive_summary) html += `<div class="ta-field">
+        <div class="lbl">Tóm tắt</div>
+        <div class="val" style="color:#c9d1d9">${res.executive_summary}</div>
+    </div>`;
+
+    if (res.investment_thesis) html += `<div class="ta-field" style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+        <div class="lbl">Luận điểm</div>
+        <div class="val" style="color:#8b949e;font-size:12px">${res.investment_thesis}</div>
+    </div>`;
+
+    if (res.time_horizon) html += `<div class="ta-field">
+        <div class="lbl">Time Horizon</div>
+        <div class="val">${res.time_horizon}</div>
+    </div>`;
+
+    if (res.ticker && res.date) html += `<div style="margin-top:10px;font-size:10px;color:#484f58">
+        Phân tích: ${res.ticker} · ${res.date} · Analysts: ${(res.analysts||[]).join(', ')}
+    </div>`;
+
+    el.innerHTML = `<div class="ta-result">${html}</div>`;
+}
+
+async function taCheckLastResult() {
+    try {
+        const s = await fetch('/api/ta/status');
+        const sd = await s.json();
+        if (sd.running) {
+            document.getElementById('ta-result').innerHTML =
+                `<div class="ta-progress"><span class="ta-spinner"></span>${sd.step || 'Đang phân tích...'}</div>`;
+            if (!_taPolling) {
+                _taPolling = setInterval(async () => {
+                    try {
+                        const s2 = await fetch('/api/ta/status');
+                        const sd2 = await s2.json();
+                        if (!sd2.running) { clearInterval(_taPolling); _taPolling = null; _taShowResult(sd2.last_result); }
+                        else {
+                            const p = document.getElementById('ta-result');
+                            if (p) p.innerHTML = `<div class="ta-progress"><span class="ta-spinner"></span>${sd2.step || '...'}</div>`;
+                        }
+                    } catch(e) {}
+                }, 3000);
+            }
+        } else if (sd.last_result) {
+            _taShowResult(sd.last_result);
+        }
+    } catch(e) {}
 }
 
 function renderDashboard(d) {
@@ -570,17 +751,31 @@ function renderDashboard(d) {
             })()}
         </div>
         <div class="control-row">
-            <span>&#x1F4CA; MFE Scan Exit:</span>
+            <span>&#x1F504; Breakeven Exit:</span>
             ${(() => {
-                const en = d.mfe_scan_enabled !== false;
-                const pct = Math.round((d.mfe_retrace_pct || 0.40) * 100);
+                const en = d.breakeven_exit_enabled !== false;
                 return `
-                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleMfeScan(true)"
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleBreakevenExit(true)"
                         style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
-                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleMfeScan(false)"
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleBreakevenExit(false)"
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#8b949e'}">
-                    ${en?'Chốt lời scan/quick/app khi hồi '+pct+'% từ đỉnh':'Đã tắt'}
+                    ${en?'Đóng sớm khi sắp về entry (pump/quick/scan)':'Đã tắt'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F4CA; MFE Scan Exit:</span>
+            ${(() => {
+                const en2 = d.mfe_scan_enabled !== false;
+                const pct = Math.round((d.mfe_retrace_pct || 0.40) * 100);
+                return `
+                <button class="btn btn-sm ${en2 ? 'btn-green' : ''}" onclick="toggleMfeScan(true)"
+                        style="${en2 ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en2 ? 'btn-red' : ''}" onclick="toggleMfeScan(false)"
+                        style="${!en2 ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:${en2?'#3fb950':'#8b949e'}">
+                    ${en2?'Chốt lời scan/quick/app khi hồi '+pct+'% từ đỉnh':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -602,6 +797,52 @@ function renderDashboard(d) {
         <div style="text-align:center;padding:24px;color:#484f58">
           <div style="font-size:24px;margin-bottom:6px">🔵</div>
           <div>Đang tải Pump Nhẹ Radar...</div>
+        </div>
+      </div>
+    </div>`;
+
+    // ── TRADINGAGENTS AI ANALYSIS SECTION ──────────────────────
+    html += `<div class="section" style="padding:0;border-color:#1a3a5a">
+      <div class="ta-wrap" id="ta-root">
+        <div class="ta-header">
+          <div class="ta-dot"></div>
+          <span style="color:#58a6ff;font-size:14px;font-weight:700;letter-spacing:2px">&#x1F9E0; TRADINGAGENTS AI ANALYSIS</span>
+          <span style="color:#1a3a5a;font-size:11px">Multi-agent · LLM-powered</span>
+        </div>
+        <div class="ta-form">
+          <input id="ta-ticker" placeholder="BTC-USD / ETH-USD / NVDA" value="BTC-USD"
+                 style="width:160px;background:#0d1117;border:1px solid #1a3a5a;color:#58a6ff;font-weight:700;letter-spacing:1px">
+          <input id="ta-date" type="date" value="${new Date().toISOString().slice(0,10)}"
+                 style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
+          <select id="ta-provider" style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
+            <option value="openai">OpenAI</option>
+            <option value="google">Google Gemini</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="ollama">Ollama (local)</option>
+          </select>
+          <button onclick="taAnalyze()"
+                  style="background:linear-gradient(135deg,#1f6feb,#388bfd);color:#fff;border:none;border-radius:6px;
+                         padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px">
+            &#x1F50D; Phân tích
+          </button>
+        </div>
+        <div style="margin-bottom:10px">
+          <span style="font-size:11px;color:#484f58;margin-right:6px">Models:</span>
+          <input id="ta-deep-model" placeholder="Deep LLM (e.g. gpt-4o)" value="gpt-4o"
+                 style="width:160px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px">
+          <input id="ta-quick-model" placeholder="Quick LLM (e.g. gpt-4o-mini)" value="gpt-4o-mini"
+                 style="width:175px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px;margin-left:6px">
+        </div>
+        <div style="margin-bottom:10px">
+          <span style="font-size:11px;color:#484f58;margin-right:4px">Analysts:</span>
+          <span class="ta-analyst-chip active" data-key="market" onclick="taToggleAnalyst('market')">&#x1F4C8; Market</span>
+          <span class="ta-analyst-chip active" data-key="news"   onclick="taToggleAnalyst('news')">&#x1F4F0; News</span>
+          <span class="ta-analyst-chip active" data-key="social" onclick="taToggleAnalyst('social')">&#x1F4AC; Social</span>
+          <span class="ta-analyst-chip" data-key="fundamentals" onclick="taToggleAnalyst('fundamentals')">&#x1F4CA; Fundamentals</span>
+        </div>
+        <div id="ta-result" style="color:#484f58;font-size:12px;padding:10px 0">
+          Nhập ticker và nhấn Phân tích. Mỗi lần chạy mất 3–10 phút.
         </div>
       </div>
     </div>`;
@@ -1735,6 +1976,9 @@ fetchPump();
 setInterval(fetchPnlStats, 30000);
 fetchPnlStats();
 
+// TradingAgents — check kết quả cũ khi load trang
+taCheckLastResult();
+
 function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString()}
 
 // Lưu state input để không bị reset khi refresh
@@ -2026,6 +2270,7 @@ def api_state():
         "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
         "mfe_scan_enabled":         getattr(_config, "MFE_SCAN_ENABLED", True),
         "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
+        "breakeven_exit_enabled":   getattr(_config, "BREAKEVEN_EXIT_ENABLED", True),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
@@ -2929,6 +3174,19 @@ def api_profit_lock():
         "enabled": bool(enabled),
     })
 
+@app.route("/api/breakeven_exit", methods=["POST"])
+@require_auth
+def api_breakeven_exit():
+    """Bật/tắt Breakeven Exit — đóng sớm khi sắp về entry."""
+    data    = request.get_json() or {}
+    enabled = data.get("enabled", True)
+    try:
+        import config as _cfg
+        _cfg.BREAKEVEN_EXIT_ENABLED = bool(enabled)
+    except Exception:
+        pass
+    return jsonify({"ok": True, "msg": f"Breakeven Exit: {'bật' if enabled else 'tắt'}", "enabled": bool(enabled)})
+
 @app.route("/api/mfe_scan", methods=["POST"])
 @require_auth
 def api_mfe_scan():
@@ -3464,3 +3722,163 @@ def api_clear_trade_history():
         return jsonify({"ok": True, "msg": "Đã xoá lịch sử lệnh"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
+
+
+# ── TradingAgents AI Analysis endpoints ──────────────────────────────────────
+import threading as _threading
+import time as _time
+
+_ta_state = {
+    "running": False,
+    "step": "",
+    "elapsed_sec": 0,
+    "last_result": None,
+    "start_ts": 0,
+}
+_ta_lock = _threading.Lock()
+
+
+def _ta_run_analysis(ticker: str, date: str, provider: str,
+                     deep_model: str, quick_model: str, analysts: list):
+    """Run TradingAgents analysis in background thread."""
+    import sys, os
+
+    # Point Python to TradingAgents-main sibling directory
+    ta_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "TradingAgents-main")
+    )
+    if ta_path not in sys.path:
+        sys.path.insert(0, ta_path)
+
+    def _set_step(msg):
+        with _ta_lock:
+            _ta_state["step"] = msg
+            _ta_state["elapsed_sec"] = int(_time.time() - _ta_state["start_ts"])
+
+    try:
+        _set_step(f"Khởi tạo LLM ({provider})...")
+
+        from tradingagents.graph import TradingAgentsGraph
+
+        config = {
+            "llm_provider": provider,
+            "deep_think_llm": deep_model,
+            "quick_think_llm": quick_model,
+            "max_debate_rounds": 1,
+            "max_risk_discuss_rounds": 1,
+        }
+
+        ta = TradingAgentsGraph(
+            selected_analysts=analysts,
+            debug=False,
+            config=config,
+        )
+
+        _set_step(f"Đang phân tích {ticker} ({', '.join(analysts)})...")
+        _, decision = ta.propagate(ticker, date)
+
+        # ── Parse kết quả từ decision string ─────────────────────────────────
+        result = {
+            "ticker": ticker,
+            "date": date,
+            "analysts": analysts,
+            "raw": decision,
+            "rating": None,
+            "entry_price": None,
+            "stop_loss": None,
+            "price_target": None,
+            "position_sizing": None,
+            "executive_summary": None,
+            "investment_thesis": None,
+            "time_horizon": None,
+        }
+
+        import re
+
+        def _extract(pattern, text, cast=None):
+            m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if not m:
+                return None
+            val = m.group(1).strip()
+            if cast:
+                try:
+                    return cast(val.replace(",", "").replace("$", ""))
+                except Exception:
+                    return None
+            return val
+
+        result["rating"]            = _extract(r"\*\*Rating\*\*[:\s]+([^\n]+)", decision)
+        result["entry_price"]       = _extract(r"\*\*Entry Price\*\*[:\s]+\$?([\d,\.]+)", decision, float)
+        result["stop_loss"]         = _extract(r"\*\*Stop Loss\*\*[:\s]+\$?([\d,\.]+)", decision, float)
+        result["price_target"]      = _extract(r"\*\*Price Target\*\*[:\s]+\$?([\d,\.]+)", decision, float)
+        result["position_sizing"]   = _extract(r"\*\*Position Sizing\*\*[:\s]+([^\n]+)", decision)
+        result["time_horizon"]      = _extract(r"\*\*Time Horizon\*\*[:\s]+([^\n]+)", decision)
+        result["executive_summary"] = _extract(r"\*\*Executive Summary\*\*[:\s]+(.+?)(?=\n\*\*|\Z)", decision)
+        result["investment_thesis"] = _extract(r"\*\*Investment Thesis\*\*[:\s]+(.+?)(?=\n\*\*|\Z)", decision)
+
+        # Fallback: tìm FINAL TRANSACTION PROPOSAL nếu không có Rating
+        if not result["rating"]:
+            m2 = re.search(r"FINAL TRANSACTION PROPOSAL.*?\*\*(BUY|SELL|HOLD)\*\*", decision, re.IGNORECASE)
+            if m2:
+                result["rating"] = m2.group(1).capitalize()
+
+        with _ta_lock:
+            _ta_state["last_result"] = result
+            _ta_state["running"] = False
+            _ta_state["step"] = "Hoàn thành"
+            _ta_state["elapsed_sec"] = int(_time.time() - _ta_state["start_ts"])
+
+        logger.info("[TradingAgents] Analysis done: %s %s → %s", ticker, date, result.get("rating"))
+
+    except Exception as e:
+        logger.error("[TradingAgents] Error: %s", e, exc_info=True)
+        with _ta_lock:
+            _ta_state["last_result"] = {"error": str(e)[:400], "ticker": ticker, "date": date}
+            _ta_state["running"] = False
+            _ta_state["step"] = f"Lỗi: {str(e)[:80]}"
+
+
+@app.route("/api/ta/analyze", methods=["POST"])
+@require_auth
+def api_ta_analyze():
+    """Kick off TradingAgents analysis for a ticker."""
+    data = request.get_json() or {}
+    ticker   = data.get("ticker", "BTC-USD").strip().upper()
+    date     = data.get("date", "") or __import__("datetime").date.today().isoformat()
+    provider = data.get("provider", "openai").strip()
+    deep_model  = data.get("deep_model",  "gpt-4o").strip() or "gpt-4o"
+    quick_model = data.get("quick_model", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    analysts = data.get("analysts", ["market", "news", "social"])
+    if not isinstance(analysts, list) or not analysts:
+        analysts = ["market", "news", "social"]
+    valid_analysts = {"market", "news", "social", "fundamentals"}
+    analysts = [a for a in analysts if a in valid_analysts] or ["market", "news"]
+
+    with _ta_lock:
+        if _ta_state["running"]:
+            return jsonify({"ok": False, "msg": "Đang chạy phân tích, vui lòng đợi..."})
+        _ta_state["running"] = True
+        _ta_state["step"] = "Đang khởi động..."
+        _ta_state["elapsed_sec"] = 0
+        _ta_state["start_ts"] = _time.time()
+
+    t = _threading.Thread(
+        target=_ta_run_analysis,
+        args=(ticker, date, provider, deep_model, quick_model, analysts),
+        daemon=True,
+    )
+    t.start()
+    return jsonify({"ok": True, "msg": f"Bắt đầu phân tích {ticker} ({date})..."})
+
+
+@app.route("/api/ta/status", methods=["GET"])
+@require_auth
+def api_ta_status():
+    """Return current TradingAgents run status + last result."""
+    with _ta_lock:
+        return jsonify({
+            "running":     _ta_state["running"],
+            "step":        _ta_state["step"],
+            "elapsed_sec": _ta_state["elapsed_sec"],
+            "last_result": _ta_state["last_result"],
+        })
