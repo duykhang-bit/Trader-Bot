@@ -1450,8 +1450,9 @@ def position_reversal_monitor(exchange, notifier):
                 else:
                     mfe_pct = (mfe_price - entry) / entry * 100
 
-                # ── Breakeven Exit: từng lời >= 3% mà giờ < 0.5% → đóng ──
-                if mfe_pct >= 3.0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                # ── Breakeven Exit: khi nào gần về entry thì đóng ──
+                # Chỉ đóng nếu từng có lời (mfe_pct > 0) để không đóng ngay lúc mới vào
+                if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     with lock:
                         state.pop(mfe_key, None)
                     qty = abs(amt)
@@ -1864,8 +1865,8 @@ def mfe_scan_monitor(exchange, notifier):
                 if mfe_pct < 3.0:
                     continue
 
-                # Breakeven exit: từng lời >= 3% mà giờ < 0.5% → đóng
-                if pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                # Breakeven exit: khi nào gần về entry thì đóng (phải từng có lời trước)
+                if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     qty = abs(amt)
                     close_side = "SELL" if is_long else "BUY"
                     try:
