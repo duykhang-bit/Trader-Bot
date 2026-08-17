@@ -1646,15 +1646,18 @@ def scan_position_protector(exchange, notifier):
       1. RSI đảo chiều rõ trên 15m (không dùng 1m vì nhiều noise)
       2. EMA9 cross EMA21 ngược chiều lệnh trên 15m
       3. Giá đã đi được >= 1% lời rồi quay đầu >= 40% khoảng đó
+    Fast-path 1m: khi pump ngắn hạn mà 15m chưa kịp phản ánh,
+    check thêm 1m — cần >= 2/3 tín hiệu 1m để đóng sớm.
     """
     import time as _time
     _time.sleep(30)  # Đợi bot ổn định
     logger.info("[ScanProtector] Started — protecting scan positions")
 
-    _prev_rsi    = {}
-    _max_price   = {}  # LONG
-    _min_price   = {}  # SHORT
-    _last_klines = {}  # cache klines để giảm API calls
+    _prev_rsi      = {}     # RSI prev trên 15m
+    _prev_rsi_1m   = {}     # RSI prev trên 1m
+    _max_price     = {}     # LONG: giá cao nhất
+    _min_price     = {}     # SHORT: giá thấp nhất
+    _last_klines   = {}     # cache klines để giảm API calls
 
     while state["running"]:
         try:
@@ -1684,33 +1687,115 @@ def scan_position_protector(exchange, notifier):
                 if pnl_pct < 0.8:
                     continue
 
+                # Không đóng nếu config tắt
+                if not getattr(config, "SCAN_PROTECT_ENABLED", True):
+                    continue
+
+                # Không đóng nếu đang lỗ
+                if pnl_pct <= 0:
+                    continue
+
+                # Track giá cực trị (dùng chung cho cả 15m và 1m)
+                if side == "LONG":
+                    if symbol not in _max_price or mark_price > _max_price[symbol]:
+                        _max_price[symbol] = mark_price
+                    max_reached   = _max_price[symbol]
+                    profit_travel = (max_reached - entry) / entry * 100
+                    pullback      = (max_reached - mark_price) / max(max_reached, 0.0001) * 100
+                else:
+                    if symbol not in _min_price or mark_price < _min_price[symbol]:
+                        _min_price[symbol] = mark_price
+                    min_reached   = _min_price[symbol]
+                    profit_travel = (entry - min_reached) / entry * 100
+                    pullback      = (mark_price - min_reached) / max(min_reached, 0.0001) * 100
+
                 try:
-                    # Dùng 15m thay vì 1m — ít noise hơn cho lệnh scan
+                    from indicators import calculate_rsi, calculate_ema
+
+                    # ── FAST PATH: check 1m trước — bắt pump ngắn hạn ──────
+                    # Dùng khi 15m chưa kịp phản ánh (pump diễn ra trong 1-3 candle)
+                    klines_1m = exchange.get_klines(symbol, "1m", limit=30)
+                    df_1m = _klines_to_df(klines_1m)
+                    closed_1m = False
+                    if df_1m is not None and len(df_1m) >= 10:
+                        rsi_1m     = calculate_rsi(df_1m["close"], 14)
+                        rsi_1m_now = rsi_1m.iloc[-1]
+                        rsi_1m_prev = _prev_rsi_1m.get(symbol, rsi_1m_now)
+                        ema9_1m    = calculate_ema(df_1m["close"], 9).iloc[-1]
+                        ema21_1m   = calculate_ema(df_1m["close"], 21).iloc[-1]
+
+                        sigs_1m = []
+
+                        # 1. RSI drop trên 1m
+                        if side == "LONG":
+                            if rsi_1m_prev > 65 and rsi_1m_now < rsi_1m_prev - 5:
+                                sigs_1m.append(f"RSI1m drop {rsi_1m_prev:.0f}→{rsi_1m_now:.0f}")
+                        else:
+                            if rsi_1m_prev < 35 and rsi_1m_now > rsi_1m_prev + 5:
+                                sigs_1m.append(f"RSI1m bounce {rsi_1m_prev:.0f}→{rsi_1m_now:.0f}")
+
+                        # 2. EMA cross trên 1m
+                        if side == "LONG" and ema9_1m < ema21_1m:
+                            sigs_1m.append(f"EMA9<EMA21 1m (bearish)")
+                        elif side == "SHORT" and ema9_1m > ema21_1m:
+                            sigs_1m.append(f"EMA9>EMA21 1m (bullish)")
+
+                        # 3. Pullback >= 40% trên 1m (cùng ngưỡng 15m, không hạ)
+                        if profit_travel >= 1.0 and pullback >= 40:
+                            sigs_1m.append(f"Pullback {pullback:.0f}% 1m (travel={profit_travel:.1f}%)")
+
+                        _prev_rsi_1m[symbol] = rsi_1m_now
+
+                        if len(sigs_1m) >= 2:
+                            qty        = abs(amt)
+                            close_side = "SELL" if side == "LONG" else "BUY"
+                            cur_price  = exchange.get_ticker_price(symbol)
+                            actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
+                            icon       = "✅" if actual_pnl >= 0 else "⚠️"
+
+                            exchange.place_market_order(symbol, close_side, qty)
+                            exchange.cancel_all_orders(symbol)
+
+                            with lock:
+                                for t in reversed(state.get("trade_log", [])):
+                                    if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                        t.update({
+                                            "status":   "CLOSED",
+                                            "close":    cur_price,
+                                            "pnl_usdt": round(actual_pnl, 2),
+                                            "pnl_pct":  round(pnl_pct, 2),
+                                        })
+                                        break
+                                _max_price.pop(symbol, None)
+                                _min_price.pop(symbol, None)
+
+                            notifier.telegram.send(
+                                f"🛡 <b>SCAN PROTECT (1m fast)</b> — Chốt lời sớm\n"
+                                f"━━━━━━━━━━━━━━━━━━\n"
+                                f"🪙 {symbol} {side} | Lời {pnl_pct:.1f}%\n"
+                                f"📍 Entry: ${entry:.6g} → Close: ${cur_price:.6g}\n"
+                                f"⚠️ Tín hiệu 1m:\n"
+                                + "\n".join([f"  • {s}" for s in sigs_1m]) + "\n"
+                                f"{icon} PnL: <b>${actual_pnl:+.2f}</b>\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                            logger.info(f"[ScanProtector] 1m EXIT {symbol} {side} pnl={actual_pnl:+.2f} sigs={sigs_1m}")
+                            closed_1m = True
+
+                    if closed_1m:
+                        continue
+
+                    # ── NORMAL PATH: check 15m ─────────────────────────────
                     klines = exchange.get_klines(symbol, "15m", limit=30)
                     df = _klines_to_df(klines)
                     if df is None or len(df) < 15:
                         continue
 
-                    from indicators import calculate_rsi, calculate_ema
                     rsi_series = calculate_rsi(df["close"], 14)
                     rsi_now    = rsi_series.iloc[-1]
                     rsi_prev   = _prev_rsi.get(symbol, rsi_now)
                     ema9       = calculate_ema(df["close"], 9).iloc[-1]
                     ema21      = calculate_ema(df["close"], 21).iloc[-1]
-
-                    # Track giá cực trị
-                    if side == "LONG":
-                        if symbol not in _max_price or mark_price > _max_price[symbol]:
-                            _max_price[symbol] = mark_price
-                        max_reached    = _max_price[symbol]
-                        profit_travel  = (max_reached - entry) / entry * 100
-                        pullback       = (max_reached - mark_price) / max(max_reached, 0.0001) * 100
-                    else:
-                        if symbol not in _min_price or mark_price < _min_price[symbol]:
-                            _min_price[symbol] = mark_price
-                        min_reached    = _min_price[symbol]
-                        profit_travel  = (entry - min_reached) / entry * 100
-                        pullback       = (mark_price - min_reached) / max(min_reached, 0.0001) * 100
 
                     signals = []
 
@@ -1736,15 +1821,6 @@ def scan_position_protector(exchange, notifier):
 
                     # Cần >= 2 tín hiệu
                     if len(signals) < 2:
-                        continue
-
-                    # Không đóng nếu config tắt
-                    if not getattr(config, "SCAN_PROTECT_ENABLED", True):
-                        continue
-
-                    # Không đóng nếu đang lỗ (đã bị reversal qua entry)
-                    # Trường hợp đó để SL Binance tự xử lý
-                    if pnl_pct <= 0:
                         continue
 
                     # ── Đóng position ──────────────────────────
