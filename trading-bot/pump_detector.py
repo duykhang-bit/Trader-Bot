@@ -381,9 +381,11 @@ class PumpDetector:
         sl_price = pump_high * (1 + sl_buffer_pct / 100) if pump_high > 0 else current_price * 1.02
 
         # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
-        # Đúng hơn: entry là đỉnh, tp xuống theo fib từ đỉnh xuống đáy
-        tp1_price = final_entry - (final_entry - pump_low) * 0.618   # 61.8% fib (xa hơn, pump hay rớt mạnh)
-        tp2_price = final_entry - (final_entry - pump_low) * 0.618   # 61.8% fib
+        # Pump mạnh (>= 30%): dev bơm, dump thẳng → dùng 78.6% fib
+        # Pump nhẹ (< 30%)  : có người đỡ giá    → giữ 61.8% fib
+        fib_ratio = 0.786 if pump_pct >= 30.0 else 0.618
+        tp1_price = final_entry - (final_entry - pump_low) * fib_ratio
+        tp2_price = final_entry - (final_entry - pump_low) * fib_ratio
 
         # Validate RR tối thiểu 1.5 — nếu không đủ thì không vào
         risk   = abs(sl_price - final_entry)
