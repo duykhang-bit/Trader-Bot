@@ -4784,9 +4784,10 @@ if __name__ == "__main__":
                     state["ai_analyzing"] = False
             _t.sleep(AI_INTERVAL)
 
-    if getattr(config, "AI_AUTO_ANALYSIS", True):
-        t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
-        t6.start()
+    # AI Analyzer thread — đã tắt (dùng scanner thay thế)
+    # if getattr(config, "AI_AUTO_ANALYSIS", True):
+    #     t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
+    #     t6.start()
 
     try:
         from telegram_commands import TelegramCommandHandler

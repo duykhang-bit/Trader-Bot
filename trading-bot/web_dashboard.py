@@ -658,8 +658,8 @@ function renderDashboard(d) {
             <button id="toggle-bot-btn" class="btn ${running ? 'btn-red' : 'btn-green'}" onclick="toggleBot()">
                 ${running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot'}
             </button>
-            <button class="btn btn-blue" onclick="runAI()">&#x1F9E0; Run AI Analysis</button>
-            <span id="scan-info" style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run ? ' | AI: '+d.ai_last_run : ''}${d.ai_analyzing ? ' ⏳ AI analyzing...' : ''}</span>
+            <button class="btn btn-blue" style="display:none">&#x1F9E0; Run AI Analysis</button>
+            <span id="scan-info" style="color:#8b949e;font-size:12px">Scan #${d.scan_no} | Last: ${d.last_scan}</span>
         </div>
         <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
             <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -2088,7 +2088,7 @@ function _patchDashboard(d) {
     statIds.forEach((id,i) => _setText(id, statVals[i]));
 
     // Scan info
-    _setText('scan-info', `Scan #${d.scan_no} | Last: ${d.last_scan}${d.ai_last_run?' | AI: '+d.ai_last_run:''}${d.ai_analyzing?' ⏳ AI analyzing...':''}`);
+    _setText('scan-info', `Scan #${d.scan_no} | Last: ${d.last_scan}`);
 
     // Open positions — rebuild nhỏ hơn
     const posEl = document.getElementById('positions-body');

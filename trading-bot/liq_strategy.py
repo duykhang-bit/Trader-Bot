@@ -103,34 +103,18 @@ class LiqStrategy:
             logger.debug(f"{sym}: chưa đủ liq data")
             return None
 
-        # Đọc AI bias nếu có
-        ai_bias = self._get_ai_bias(sym)
-
-        # Thử SHORT setup trước
-        short_setup = None
-        long_setup  = None
-
-        if ai_bias in ("SHORT", "HOLD", None):
-            short_setup = self._check_short_setup(sym, current_price)
-
-        if ai_bias in ("LONG", "HOLD", None):
-            long_setup = self._check_long_setup(sym, current_price)
+        # AI bias đã tắt — cho phép cả LONG lẫn SHORT setup
+        short_setup = self._check_short_setup(sym, current_price)
+        long_setup  = self._check_long_setup(sym, current_price)
 
         # Chọn setup có confidence cao hơn
         setups = [s for s in [short_setup, long_setup] if s is not None]
         if not setups:
             return None
 
-        # Nếu AI có bias rõ ràng (LONG/SHORT) → ưu tiên setup cùng hướng
-        if ai_bias in ("LONG", "SHORT"):
-            matching = [s for s in setups if s.direction == ai_bias]
-            if matching:
-                setups = matching  # Chỉ giữ setup cùng hướng AI
-
         best = max(setups, key=lambda s: s.confidence)
         logger.info(
             f"[LiqStrategy] {sym} {best.direction} confidence={best.confidence:.0f} "
-            f"ai_bias={ai_bias} "
             f"entry1={best.entry1:.4f} entry2={best.entry2:.4f} "
             f"sl={best.sl:.4f} tp={best.tp:.4f}"
         )
