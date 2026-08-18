@@ -4784,10 +4784,33 @@ if __name__ == "__main__":
                     state["ai_analyzing"] = False
             _t.sleep(AI_INTERVAL)
 
-    # AI Analyzer thread — đã tắt (dùng scanner thay thế)
-    # if getattr(config, "AI_AUTO_ANALYSIS", True):
-    #     t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
-    #     t6.start()
+    # AI Analyzer thread — chạy LLM (Groq/Gemini/DeepSeek) mỗi 12h
+    def ai_analyzer_loop():
+        import time as _t
+        AI_INTERVAL = 12 * 3600  # 12 tiếng/lần
+        _t.sleep(30)  # chờ bot ổn định
+        while state["running"]:
+            try:
+                from ai_analyzer import analyze_all
+                import config as _cfg
+                coins = list(getattr(_cfg, "FIXED_COINS", []))[:8]  # top 8 coin
+                logger.info(f"[AI Analyzer] Starting LLM analysis for {coins}...")
+                with lock:
+                    state["ai_analyzing"] = True
+                results = analyze_all(coins)
+                with lock:
+                    state["ai_analyzing"] = False
+                    state["ai_last_run"] = datetime.now().strftime("%H:%M")
+                logger.info(f"[AI Analyzer] Done: { {s: r['bias'] for s,r in results.items()} }")
+            except Exception as e:
+                logger.error(f"[AI Analyzer] Error: {e}")
+                with lock:
+                    state["ai_analyzing"] = False
+            _t.sleep(AI_INTERVAL)
+
+    if getattr(config, "AI_AUTO_ANALYSIS", True):
+        t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
+        t6.start()
 
     try:
         from telegram_commands import TelegramCommandHandler

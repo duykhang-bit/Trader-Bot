@@ -1,6 +1,7 @@
 # ============================================================
-# AI ANALYZER — Chạy TradingAgents-main để xác định bias
-# (Long/Short/Hold) cho mỗi coin trước khi bot vào lệnh
+# AI ANALYZER — Dùng TradingAgents-main (LLM thật) để phân tích bias
+# Fallback: Groq → Gemini → DeepSeek
+# Chạy 1-2 lần/ngày, kết quả lưu ai_bias.json
 # ============================================================
 import json
 import logging
@@ -8,7 +9,6 @@ import os
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +18,13 @@ TRADING_AGENTS_DIR = os.path.join(
     "TradingAgents-main"
 )
 
-# File output — trading bot đọc file này để biết bias
+# File output
 BIAS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "ai_bias.json"
 )
 
-# Map coin symbol (Binance) → TradingAgents ticker format
-# Với coin không có trên yfinance, dùng symbol Binance trực tiếp
-# (analyze_coin dùng Binance Futures API nên không cần yfinance)
+# Map Binance symbol → TradingAgents ticker
 SYMBOL_MAP = {
     "BTCUSDT":  "BTC-USD",
     "ETHUSDT":  "ETH-USD",
@@ -52,7 +50,32 @@ SYMBOL_MAP = {
     "BOTUSDT":  "BOT-USD",
 }
 
-# Map TradingAgents decision → trading bias
+# Thứ tự fallback provider
+LLM_PROVIDERS = [
+    {
+        "name":       "groq",
+        "provider":   "groq",
+        "deep_model": "llama-3.3-70b-versatile",
+        "fast_model": "llama-3.1-8b-instant",
+        "env_key":    "GROQ_API_KEY",
+    },
+    {
+        "name":       "gemini",
+        "provider":   "google",
+        "deep_model": "gemini-2.0-flash",
+        "fast_model": "gemini-2.0-flash",
+        "env_key":    "GOOGLE_API_KEY",
+    },
+    {
+        "name":       "deepseek",
+        "provider":   "deepseek",
+        "deep_model": "deepseek-reasoner",
+        "fast_model": "deepseek-chat",
+        "env_key":    "DEEPSEEK_API_KEY",
+    },
+]
+
+# Map TradingAgents decision → bias
 DECISION_MAP = {
     "Buy":         "LONG",
     "Overweight":  "LONG",
@@ -62,158 +85,224 @@ DECISION_MAP = {
 }
 
 
-def analyze_coin(ticker: str, date_str: str = None) -> dict:
-    """
-    Phân tích bias cho 1 coin dùng indicators (RSI/EMA/MACD/BB/HTF).
-    Không dùng tradingagents — hoạt động standalone trên server.
-    """
-    if date_str is None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+def _load_env():
+    """Load .env từ TradingAgents-main."""
+    env_file = os.path.join(TRADING_AGENTS_DIR, ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    if v.strip():
+                        os.environ.setdefault(k.strip(), v.strip())
 
-    # Tìm symbol từ ticker
-    sym = ticker  # fallback
-    for s, t in SYMBOL_MAP.items():
-        if t == ticker:
-            sym = s
-            break
 
+def _get_active_provider() -> dict:
+    """Chọn provider đầu tiên có API key."""
+    _load_env()
+    for p in LLM_PROVIDERS:
+        key = os.environ.get(p["env_key"], "").strip()
+        if key:
+            logger.info(f"[AI] Using provider: {p['name']}")
+            return p
+    logger.warning("[AI] No LLM API key found, fallback to indicators")
+    return None
+
+
+def _setup_tradingagents(provider: dict):
+    """Khởi tạo TradingAgentsGraph với provider được chọn."""
+    if TRADING_AGENTS_DIR not in sys.path:
+        sys.path.insert(0, TRADING_AGENTS_DIR)
+
+    os.environ["TRADINGAGENTS_LLM_PROVIDER"]    = provider["provider"]
+    os.environ["TRADINGAGENTS_DEEP_THINK_LLM"]  = provider["deep_model"]
+    os.environ["TRADINGAGENTS_QUICK_THINK_LLM"] = provider["fast_model"]
+    os.environ["TRADINGAGENTS_MAX_DEBATE_ROUNDS"] = "1"
+    os.environ["TRADINGAGENTS_MAX_RISK_ROUNDS"]   = "1"
+    os.environ["TRADINGAGENTS_CHECKPOINT_ENABLED"] = "false"
+    os.environ["TRADINGAGENTS_OUTPUT_LANGUAGE"]   = "English"
+
+    from tradingagents.default_config import DEFAULT_CONFIG
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+    config = DEFAULT_CONFIG.copy()
+    return TradingAgentsGraph(debug=False, config=config)
+
+
+def _parse_decision(decision_text: str) -> str:
+    """Trích xuất Buy/Sell/Hold từ output TradingAgents."""
+    if not decision_text:
+        return "HOLD"
+    text = str(decision_text).lower()
+    if any(w in text for w in ["buy", "overweight", "bullish", "long"]):
+        return "LONG"
+    if any(w in text for w in ["sell", "underweight", "bearish", "short"]):
+        return "SHORT"
+    return "HOLD"
+
+
+def analyze_coin_llm(ticker: str, date_str: str, ta_graph) -> dict:
+    """Phân tích 1 coin dùng TradingAgents LLM."""
     try:
-        # Import exchange từ bot state (nếu chạy trong bot)
-        # Hoặc dùng requests thẳng tới Binance public API
+        start = time.time()
+        _, decision = ta_graph.propagate(ticker, date_str)
+        elapsed = round(time.time() - start, 1)
+        bias = _parse_decision(str(decision))
+        return {
+            "ticker":    ticker,
+            "bias":      bias,
+            "decision":  str(decision)[:300],
+            "reason":    f"LLM analysis ({elapsed}s)",
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"analyze_coin_llm failed {ticker}: {e}")
+        raise
+
+
+def analyze_coin_indicators(symbol: str) -> dict:
+    """Fallback: phân tích bằng indicators (Binance API)."""
+    ticker = SYMBOL_MAP.get(symbol, symbol)
+    try:
         import requests
         import pandas as pd
+        from indicators import compute_signal_score
 
-        def _fetch_klines(symbol, interval, limit=100):
-            url = "https://fapi.binance.com/fapi/v1/klines"
-            r = requests.get(url, params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=10)
+        def _fetch(sym, interval, limit=100):
+            r = requests.get(
+                "https://fapi.binance.com/fapi/v1/klines",
+                params={"symbol": sym, "interval": interval, "limit": limit},
+                timeout=10
+            )
             r.raise_for_status()
-            data = r.json()
-            df = pd.DataFrame(data, columns=[
+            df = pd.DataFrame(r.json(), columns=[
                 "open_time","open","high","low","close","volume",
                 "close_time","quote_volume","trades",
                 "taker_buy_base","taker_buy_quote","ignore"
             ])
-            for col in ["open","high","low","close","volume"]:
-                df[col] = df[col].astype(float)
+            for c in ["open","high","low","close","volume"]:
+                df[c] = df[c].astype(float)
             return df
 
-        df_15m = _fetch_klines(sym, "15m", 100)
-        df_1h  = _fetch_klines(sym, "1h",  50)
-        df_4h  = _fetch_klines(sym, "4h",  50)
-
-        from indicators import compute_signal_score
-        css = compute_signal_score(df_15m, df_1h, df_4h)
-
-        signal   = css["signal"]   # LONG / SHORT / WAIT
-        win_rate = css["win_rate"]
-        reasons  = (css["long_reasons"] if signal == "LONG"
-                    else css["short_reasons"] if signal == "SHORT"
-                    else css["long_reasons"] + css["short_reasons"])
-
-        bias = signal if signal != "WAIT" else "HOLD"
-
+        df_15m = _fetch(symbol, "15m")
+        df_1h  = _fetch(symbol, "1h",  50)
+        df_4h  = _fetch(symbol, "4h",  50)
+        css    = compute_signal_score(df_15m, df_1h, df_4h)
+        signal = css["signal"]
+        bias   = signal if signal != "WAIT" else "HOLD"
         return {
-            "ticker": ticker,
-            "bias":   bias,
-            "decision": f"WR={win_rate:.0f}%",
-            "reason": " | ".join(reasons[:5]),
+            "ticker":    ticker,
+            "bias":      bias,
+            "decision":  f"WR={css['win_rate']:.0f}%",
+            "reason":    "indicators fallback",
             "timestamp": datetime.now().isoformat(),
         }
-
     except Exception as e:
-        logger.error(f"analyze_coin failed for {sym}: {e}")
         return {
-            "ticker": ticker,
-            "bias": "HOLD",
-            "decision": "Error",
-            "reason": str(e)[:200],
+            "ticker":    ticker,
+            "bias":      "HOLD",
+            "decision":  "Error",
+            "reason":    str(e)[:200],
             "timestamp": datetime.now().isoformat(),
         }
 
 
 def analyze_all(symbols: list, date_str: str = None) -> dict:
     """
-    Phân tích tất cả coin trong danh sách.
+    Phân tích tất cả coin.
+    - Dùng LLM (Groq/Gemini/DeepSeek) nếu có API key
+    - Fallback indicators nếu không có key hoặc LLM lỗi
     Ghi kết quả ra ai_bias.json.
-    Trả về: {symbol: {bias, decision, reason, timestamp}}
     """
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
     results = {}
-    for sym in symbols:
-        ticker = SYMBOL_MAP.get(sym, sym)  # fallback dùng symbol gốc nếu không có trong map
+    provider = _get_active_provider()
+    ta_graph = None
 
+    # Thử khởi tạo LLM
+    if provider:
+        try:
+            ta_graph = _setup_tradingagents(provider)
+            logger.info(f"[AI] TradingAgents ready: {provider['name']}")
+        except Exception as e:
+            logger.error(f"[AI] Setup failed ({provider['name']}): {e}")
+            # Thử provider tiếp theo
+            for p in LLM_PROVIDERS:
+                if p["name"] == provider["name"]:
+                    continue
+                key = os.environ.get(p["env_key"], "").strip()
+                if not key:
+                    continue
+                try:
+                    provider = p
+                    ta_graph = _setup_tradingagents(p)
+                    logger.info(f"[AI] Fallback to: {p['name']}")
+                    break
+                except Exception as e2:
+                    logger.error(f"[AI] Fallback {p['name']} failed: {e2}")
+
+    for sym in symbols:
+        ticker = SYMBOL_MAP.get(sym, sym)
         print(f"\n{'='*50}")
         print(f"🧠 Analyzing {ticker} ({sym})...")
         print(f"{'='*50}")
 
-        start = time.time()
-        result = analyze_coin(ticker, date_str)
-        elapsed = time.time() - start
+        if ta_graph:
+            try:
+                result = analyze_coin_llm(ticker, date_str, ta_graph)
+            except Exception:
+                logger.warning(f"[AI] LLM failed for {sym}, using indicators")
+                result = analyze_coin_indicators(sym)
+        else:
+            result = analyze_coin_indicators(sym)
 
         icon = "🟢" if result["bias"] == "LONG" else ("🔴" if result["bias"] == "SHORT" else "⚪")
-        print(f"{icon} {sym}: {result['decision']} → {result['bias']} ({elapsed:.1f}s)")
-
+        print(f"{icon} {sym}: {result['bias']} ({result['reason']})")
         results[sym] = result
 
-    # Ghi ra file
+    # Lưu file
     output = {
         "analyzed_at": datetime.now().isoformat(),
-        "date": date_str,
-        "coins": results,
+        "date":        date_str,
+        "provider":    provider["name"] if provider else "indicators",
+        "coins":       results,
     }
     with open(BIAS_FILE, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
-    print(f"\n{'='*50}")
-    print(f"✅ Saved to: {BIAS_FILE}")
-    print(f"{'='*50}")
-
+    print(f"\n✅ Saved to: {BIAS_FILE}")
     return results
 
 
 def load_bias() -> dict:
-    """
-    Đọc bias từ ai_bias.json.
-    Trả về: {symbol: "LONG"/"SHORT"/"HOLD"} hoặc {} nếu file không tồn tại/quá cũ.
-    """
+    """Đọc bias từ ai_bias.json. Hết hạn sau 8 tiếng."""
     if not os.path.exists(BIAS_FILE):
         return {}
-
     try:
-        with open(BIAS_FILE, "r", encoding="utf-8") as f:
+        with open(BIAS_FILE) as f:
             data = json.load(f)
-
-        # Kiểm tra thời gian — nếu quá 4 giờ thì coi như hết hạn
         analyzed_at = datetime.fromisoformat(data["analyzed_at"])
         age_hours = (datetime.now() - analyzed_at).total_seconds() / 3600
-        if age_hours > 4:
-            logger.warning(f"AI bias expired ({age_hours:.1f}h old)")
+        if age_hours > 8:
+            logger.warning(f"AI bias expired ({age_hours:.1f}h)")
             return {}
-
         return {sym: info["bias"] for sym, info in data.get("coins", {}).items()}
-
     except Exception as e:
         logger.error(f"load_bias error: {e}")
         return {}
 
 
-# ============================================================
-# MAIN — chạy standalone: python3 ai_analyzer.py
-# ============================================================
+# ── Standalone ────────────────────────────────────────────────
 if __name__ == "__main__":
     import config as bot_config
-
-    coins = getattr(bot_config, "FIXED_COINS", ["BTCUSDT", "SOLUSDT", "ETHUSDT", "BNBUSDT"])
+    coins = getattr(bot_config, "FIXED_COINS", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    # Chỉ phân tích top 5 để tiết kiệm quota
+    coins = coins[:5]
     print(f"🧠 AI Analysis for: {coins}")
-    print(f"📅 Date: {datetime.now().strftime('%Y-%m-%d')}")
-
     results = analyze_all(coins)
-
-    print(f"\n{'='*50}")
-    print("📋 SUMMARY:")
-    print(f"{'='*50}")
+    print(f"\n📋 SUMMARY:")
     for sym, info in results.items():
         icon = "🟢" if info["bias"] == "LONG" else ("🔴" if info["bias"] == "SHORT" else "⚪")
-        print(f"  {icon} {sym:<12} → {info['bias']:<6} ({info['decision']})")
+        print(f"  {icon} {sym:<12} → {info['bias']:<6} ({info['decision'][:50]})")
