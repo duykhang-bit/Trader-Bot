@@ -25,18 +25,31 @@ BIAS_FILE = os.path.join(
 )
 
 # Map coin symbol (Binance) → TradingAgents ticker format
+# Với coin không có trên yfinance, dùng symbol Binance trực tiếp
+# (analyze_coin dùng Binance Futures API nên không cần yfinance)
 SYMBOL_MAP = {
-    "BTCUSDT": "BTC-USD",
-    "ETHUSDT": "ETH-USD",
-    "SOLUSDT": "SOL-USD",
-    "BNBUSDT": "BNB-USD",
-    "XRPUSDT": "XRP-USD",
+    "BTCUSDT":  "BTC-USD",
+    "ETHUSDT":  "ETH-USD",
+    "SOLUSDT":  "SOL-USD",
+    "BNBUSDT":  "BNB-USD",
+    "XRPUSDT":  "XRP-USD",
     "DOGEUSDT": "DOGE-USD",
-    "ADAUSDT": "ADA-USD",
+    "ADAUSDT":  "ADA-USD",
     "AVAXUSDT": "AVAX-USD",
     "LINKUSDT": "LINK-USD",
-    "DOTUSDT": "DOT-USD",
-    "NFPUSDT": "NFP-USD",     # có thể không hỗ trợ trên yfinance
+    "DOTUSDT":  "DOT-USD",
+    "NEARUSDT": "NEAR-USD",
+    "HYPEUSDT": "HYPE-USD",
+    "SPCXUSDT": "SPCX-USD",
+    "ZECUSDT":  "ZEC-USD",
+    "TLMUSDT":  "TLM-USD",
+    "VANRYUSDT":"VANRY-USD",
+    "AIAUSDT":  "AIA-USD",
+    "DEXEUSDT": "DEXE-USD",
+    "ONUSDT":   "ON-USD",
+    "BEATUSDT": "BEAT-USD",
+    "UBUSDT":   "UB-USD",
+    "BOTUSDT":  "BOT-USD",
 }
 
 # Map TradingAgents decision → trading bias
@@ -129,17 +142,7 @@ def analyze_all(symbols: list, date_str: str = None) -> dict:
 
     results = {}
     for sym in symbols:
-        ticker = SYMBOL_MAP.get(sym)
-        if not ticker:
-            logger.warning(f"No ticker mapping for {sym}, skip")
-            results[sym] = {
-                "ticker": sym,
-                "bias": "HOLD",
-                "decision": "UnmappedSymbol",
-                "reason": f"No yfinance mapping for {sym}",
-                "timestamp": datetime.now().isoformat(),
-            }
-            continue
+        ticker = SYMBOL_MAP.get(sym, sym)  # fallback dùng symbol gốc nếu không có trong map
 
         print(f"\n{'='*50}")
         print(f"🧠 Analyzing {ticker} ({sym})...")

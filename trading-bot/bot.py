@@ -4776,14 +4776,7 @@ if __name__ == "__main__":
                 with lock:
                     state["ai_analyzing"] = False
                     state["ai_last_run"] = datetime.now().strftime("%H:%M")
-                # Notify
-                summary = []
-                for sym, info in results.items():
-                    icon = "🟢" if info["bias"] == "LONG" else ("🔴" if info["bias"] == "SHORT" else "⚪")
-                    summary.append(f"{icon} {sym.replace('USDT','')}: {info['bias']}")
-                notifier.telegram.send(
-                    f"🧠 <b>AI Analysis Complete</b>\n" + "\n".join(summary)
-                )
+                # Notify — chỉ log, không gửi Telegram
                 logger.info(f"[AI Analyzer] Done: {results}")
             except Exception as e:
                 logger.error(f"[AI Analyzer] Error: {e}")
