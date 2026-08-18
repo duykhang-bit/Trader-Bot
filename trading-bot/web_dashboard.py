@@ -815,8 +815,9 @@ function renderDashboard(d) {
           <input id="ta-date" type="date" value="${new Date().toISOString().slice(0,10)}"
                  style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
           <select id="ta-provider" style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
+            <option value="groq">Groq (Free)</option>
+            <option value="google">Google Gemini (Free)</option>
             <option value="openai">OpenAI</option>
-            <option value="google">Google Gemini</option>
             <option value="anthropic">Anthropic</option>
             <option value="deepseek">DeepSeek</option>
             <option value="ollama">Ollama (local)</option>
@@ -829,9 +830,9 @@ function renderDashboard(d) {
         </div>
         <div style="margin-bottom:10px">
           <span style="font-size:11px;color:#484f58;margin-right:6px">Models:</span>
-          <input id="ta-deep-model" placeholder="Deep LLM (e.g. gpt-4o)" value="gpt-4o"
+          <input id="ta-deep-model" placeholder="Deep LLM" value="llama-3.3-70b-versatile"
                  style="width:160px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px">
-          <input id="ta-quick-model" placeholder="Quick LLM (e.g. gpt-4o-mini)" value="gpt-4o-mini"
+          <input id="ta-quick-model" placeholder="Quick LLM" value="llama-3.1-8b-instant"
                  style="width:175px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px;margin-left:6px">
         </div>
         <div style="margin-bottom:10px">
@@ -3884,9 +3885,9 @@ def api_ta_analyze():
     data = request.get_json() or {}
     ticker   = data.get("ticker", "BTC-USD").strip().upper()
     date     = data.get("date", "") or __import__("datetime").date.today().isoformat()
-    provider = data.get("provider", "openai").strip()
-    deep_model  = data.get("deep_model",  "gpt-4o").strip() or "gpt-4o"
-    quick_model = data.get("quick_model", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    provider = data.get("provider", "groq").strip()
+    deep_model  = data.get("deep_model",  "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+    quick_model = data.get("quick_model", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
     analysts = data.get("analysts", ["market", "news", "social"])
     if not isinstance(analysts, list) or not analysts:
         analysts = ["market", "news", "social"]
