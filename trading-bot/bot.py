@@ -2747,11 +2747,9 @@ def scan_engine(exchange, notifier):
                         logger.info(f"Skip {best.symbol}: already has pending order")
                         _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                         continue
-                    # Max 2 pending LIMIT entry orders cùng lúc
+                    # Max 2 pending LIMIT entry orders cùng lúc — vẫn chạy xuống để lưu armed
                     if pending_entry_count >= 2:
-                        logger.info(f"Skip: đã có {pending_entry_count} pending orders (max 2)")
-                        _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
-                        continue
+                        logger.info(f"Pending đầy ({pending_entry_count}/2) → lưu armed thay vì LIMIT")
                 except Exception:
                     pass
 
