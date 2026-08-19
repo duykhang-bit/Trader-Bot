@@ -1465,6 +1465,8 @@ def position_reversal_monitor(exchange, notifier):
                         held_secs = (datetime.now() - datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
                     except Exception:
                         pass
+                else:
+                    held_secs = 0  # không tìm được → coi như mới vào → chưa đủ thời gian
                 if mfe_pct > 0 and pnl_pct < 0.5 and held_secs >= min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     with lock:
                         state.pop(mfe_key, None)
