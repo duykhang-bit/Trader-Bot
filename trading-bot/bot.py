@@ -4356,10 +4356,20 @@ def orphan_order_cleanup(exchange, notifier):
                             try:
                                 exchange._delete("/fapi/v1/algoOrder", {"algoId": o.get("algoId", "")})
                                 cancelled.append(f"{sym} (algo)")
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+                                logger.info(f"[OrphanCleanup] Cancelled algo order: {sym} algoId={o.get('algoId')}")
+                            except Exception as _ae:
+                                logger.debug(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
+                                # Thử cancel qua openOrders thường nếu algo cancel fail
+                                try:
+                                    all_ords = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
+                                    for ord_ in all_ords:
+                                        if ord_.get("reduceOnly", False):
+                                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": ord_.get("orderId")})
+                                            cancelled.append(f"{sym} (reduceOnly fallback)")
+                                except Exception:
+                                    pass
+            except Exception as _algo_e:
+                logger.debug(f"[OrphanCleanup] openAlgoOrders error: {_algo_e}")
 
             # Regular reduceOnly orders
             try:
