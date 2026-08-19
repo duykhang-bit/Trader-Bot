@@ -381,8 +381,9 @@ class PumpDetector:
         sl_price = pump_high * (1 + sl_buffer_pct / 100) if pump_high > 0 else current_price * 1.02
 
         # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
-        # Dùng 61.8% fib — đủ RR cho hầu hết pump
-        fib_ratio = 0.618
+        # Pump mạnh (>= 30%): dev bơm, dump thẳng → dùng 78.6% fib
+        # Pump nhẹ (< 30%)  : có người đỡ giá    → giữ 61.8% fib
+        fib_ratio = 0.786 if pump_pct >= 30.0 else 0.618
         tp1_price = final_entry - (final_entry - pump_low) * fib_ratio
         tp2_price = final_entry - (final_entry - pump_low) * fib_ratio
 
@@ -390,8 +391,8 @@ class PumpDetector:
         risk   = abs(sl_price - final_entry)
         reward = abs(final_entry - tp1_price)
         rr     = reward / risk if risk > 0 else 0
-        if rr < 1.5:
-            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
+        if rr < 1.0:
+            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.0, skip")
             return None
 
         is_top = (
