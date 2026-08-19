@@ -1939,6 +1939,21 @@ def mfe_scan_monitor(exchange, notifier):
 
                 # Chỉ kích hoạt khi lời >= 3%
                 if mfe_pct < 3.0:
+                    # Vẫn check breakeven dù chưa đủ 3% — đóng khi quay về entry
+                    if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                        qty = abs(amt)
+                        close_side = "SELL" if is_long else "BUY"
+                        try:
+                            exchange.place_market_order(sym, close_side, qty)
+                            exchange.cancel_all_orders(sym)
+                            _mfe_prices.pop(sym, None)
+                            notifier.telegram.send(
+                                f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
+                                f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                        except Exception as e:
+                            logger.error(f"[MFEScan] BE close {sym}: {e}")
                     continue
 
                 # Breakeven exit: khi nào gần về entry thì đóng (phải từng có lời trước)
