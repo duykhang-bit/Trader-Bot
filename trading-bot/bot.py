@@ -4554,56 +4554,6 @@ def pending_order_reviewer(exchange, notifier):
                     f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
 
-            # ── Review ARMED entries cùng logic ──────────────────
-            with lock:
-                armed = dict(state.get("armed_entries", {}))
-            armed_cancelled = []
-            for a_sym, a_info in list(armed.items()):
-                try:
-                    current_price = exchange.get_ticker_price(a_sym)
-                    entry_p = a_info["entry_price"]
-                    signal  = a_info["signal"]
-
-                    # Check 1: giá xa > 3%
-                    dist_pct = abs(current_price - entry_p) / entry_p * 100
-                    if dist_pct > 3:
-                        with lock:
-                            state.get("armed_entries", {}).pop(a_sym, None)
-                        armed_cancelled.append(f"{a_sym} (giá xa {dist_pct:.1f}%)")
-                        logger.info(f"[ArmedReview] Removed {a_sym}: price moved {dist_pct:.1f}%")
-                        continue
-
-                    # Check 2: xu hướng ngược
-                    klines = exchange.get_klines(a_sym, "15m", limit=50)
-                    df = _klines_to_df(klines)
-                    close = df["close"]
-                    rsi   = calculate_rsi(close, 14).iloc[-1]
-                    ema9  = calculate_ema(close, 9).iloc[-1]
-                    ema21 = calculate_ema(close, 21).iloc[-1]
-
-                    if signal == "LONG":
-                        if rsi > 70 or (ema9 < ema21 and current_price < ema21):
-                            with lock:
-                                state.get("armed_entries", {}).pop(a_sym, None)
-                            armed_cancelled.append(f"{a_sym} LONG (xu hướng bearish, RSI={rsi:.0f})")
-                    else:
-                        if rsi < 30 or (ema9 > ema21 and current_price > ema21):
-                            with lock:
-                                state.get("armed_entries", {}).pop(a_sym, None)
-                            armed_cancelled.append(f"{a_sym} SHORT (xu hướng bullish, RSI={rsi:.0f})")
-
-                except Exception as e:
-                    logger.debug(f"[ArmedReview] Skip {a_sym}: {e}")
-
-            if armed_cancelled:
-                notifier.telegram.send(
-                    f"🔄 <b>PENDING ORDER REVIEW</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"❌ Đã hủy {len(armed_cancelled)} armed không còn hợp lý:\n" +
-                    "\n".join(f"• {c}" for c in armed_cancelled) +
-                    f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
-                )
-
         except Exception as e:
             logger.error(f"[PendingReview] Error: {e}")
 
