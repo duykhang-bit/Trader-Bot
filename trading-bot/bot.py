@@ -3386,9 +3386,10 @@ def pump_scan_engine(exchange, notifier):
                     }
 
                 for symbol in pump_shorts:
-                    # Tìm signal vừa scan cho coin này
+                    # Tìm signal vừa scan cho coin này — check cả pump mạnh lẫn pump nhẹ
+                    all_sigs = list(state.get("pump_signals", [])) + list(state.get("pump_nhe_signals", []))
                     sig_dict = next(
-                        (s for s in reversed(state.get("pump_signals", []))
+                        (s for s in reversed(all_sigs)
                          if s.get("symbol") == symbol), None
                     )
                     if not sig_dict:
