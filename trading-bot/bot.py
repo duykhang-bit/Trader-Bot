@@ -1451,8 +1451,21 @@ def position_reversal_monitor(exchange, notifier):
                     mfe_pct = (mfe_price - entry) / entry * 100
 
                 # ── Breakeven Exit: khi nào gần về entry thì đóng ──
-                # Chỉ đóng nếu từng có lời (mfe_pct > 0) để không đóng ngay lúc mới vào
-                if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                # Chỉ đóng nếu từng có lời (mfe_pct > 0) và đã giữ lệnh đủ lâu
+                min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 60)
+                entry_time = None
+                with lock:
+                    for t in reversed(state.get("trade_log", [])):
+                        if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                            entry_time = t.get("time")
+                            break
+                held_secs = 9999
+                if entry_time:
+                    try:
+                        held_secs = (datetime.now() - datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                    except Exception:
+                        pass
+                if mfe_pct > 0 and pnl_pct < 0.5 and held_secs >= min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     with lock:
                         state.pop(mfe_key, None)
                     qty = abs(amt)
@@ -1940,6 +1953,22 @@ def mfe_scan_monitor(exchange, notifier):
                 # Chỉ kích hoạt khi lời >= 3%
                 if mfe_pct < 3.0:
                     # Vẫn check breakeven dù chưa đủ 3% — đóng khi quay về entry
+                    # Nhưng phải đợi tối thiểu BREAKEVEN_MIN_HOLD_SECONDS sau khi vào lệnh
+                    min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 60)
+                    entry_time = None
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == sym and t.get("status") == "OPEN":
+                                entry_time = t.get("time")
+                                break
+                    if entry_time:
+                        try:
+                            from datetime import datetime as _dt
+                            held_secs = (datetime.now() - _dt.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                            if held_secs < min_hold:
+                                continue
+                        except Exception:
+                            pass
                     if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                         qty = abs(amt)
                         close_side = "SELL" if is_long else "BUY"
