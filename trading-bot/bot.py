@@ -2696,22 +2696,9 @@ def scan_engine(exchange, notifier):
                             logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>1h)")
                             continue
 
-                        # Review: giá xa > 3% → xóa (chỉ check sau khi armed >= 10 phút)
+                        # Chỉ check giá để trigger — không review ở đây
                         cur_p   = exchange.get_ticker_price(a_sym)
                         entry_p = a_info["entry_price"]
-                        armed_age = time.time() - a_info["ts"]
-                        if armed_age >= 600:  # 10 phút
-                            dist_pct = abs(cur_p - entry_p) / entry_p * 100
-                            if dist_pct > 3:
-                                with lock:
-                                    state.get("armed_entries", {}).pop(a_sym, None)
-                                logger.info(f"[Armed] ❌ Removed {a_sym}: giá xa {dist_pct:.1f}%")
-                                _ws_notifier_ref[0] and _ws_notifier_ref[0].telegram.send(
-                                    f"🎯 <b>ARMED ORDER REVIEW</b>\n"
-                                    f"❌ Hủy armed {a_sym}: giá xa {dist_pct:.1f}% khỏi entry\n"
-                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                )
-                                continue
 
                         # Skip nếu đã có position
                         with lock:
@@ -4496,7 +4483,7 @@ def pending_order_reviewer(exchange, notifier):
                            and not o.get("reduceOnly", False)]
 
             if not limit_orders:
-                time.sleep(14400)  # 4 tiếng
+                time.sleep(1800)  # 30 phút
                 continue
 
             cancelled = []
@@ -4543,10 +4530,60 @@ def pending_order_reviewer(exchange, notifier):
                     f"❌ Đã hủy {len(cancelled)} lệnh không còn hợp lý:\n" +
                     "\n".join(f"• {c}" for c in cancelled) +
                     f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
+
+            # ── Review ARMED entries ──────────────────────────────
+            with lock:
+                armed = dict(state.get("armed_entries", {}))
+            armed_cancelled = []
+            for a_sym, a_info in list(armed.items()):
+                try:
+                    current_price = exchange.get_ticker_price(a_sym)
+                    entry_p = a_info["entry_price"]
+                    signal  = a_info["signal"]
+
+                    # Check 1: giá xa > 3%
+                    dist_pct = abs(current_price - entry_p) / entry_p * 100
+                    if dist_pct > 3:
+                        with lock:
+                            state.get("armed_entries", {}).pop(a_sym, None)
+                        armed_cancelled.append(f"{a_sym} (giá xa {dist_pct:.1f}%)")
+                        logger.info(f"[ArmedReview] Removed {a_sym}: price moved {dist_pct:.1f}%")
+                        continue
+
+                    # Check 2: xu hướng ngược
+                    klines = exchange.get_klines(a_sym, "15m", limit=50)
+                    df = _klines_to_df(klines)
+                    close = df["close"]
+                    rsi   = calculate_rsi(close, 14).iloc[-1]
+                    ema9  = calculate_ema(close, 9).iloc[-1]
+                    ema21 = calculate_ema(close, 21).iloc[-1]
+
+                    if signal == "LONG":
+                        if rsi > 70 or (ema9 < ema21 and current_price < ema21):
+                            with lock:
+                                state.get("armed_entries", {}).pop(a_sym, None)
+                            armed_cancelled.append(f"{a_sym} LONG (xu hướng bearish, RSI={rsi:.0f})")
+                    else:
+                        if rsi < 30 or (ema9 > ema21 and current_price > ema21):
+                            with lock:
+                                state.get("armed_entries", {}).pop(a_sym, None)
+                            armed_cancelled.append(f"{a_sym} SHORT (xu hướng bullish, RSI={rsi:.0f})")
+
+                except Exception as e:
+                    logger.debug(f"[ArmedReview] Skip {a_sym}: {e}")
+
+            if armed_cancelled:
+                notifier.telegram.send(
+                    f"🎯 <b>ARMED ORDER REVIEW</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"❌ Đã hủy {len(armed_cancelled)} armed không còn hợp lý:\n" +
+                    "\n".join(f"• {c}" for c in armed_cancelled) +
+                    f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )        except Exception as e:
             logger.error(f"[PendingReview] Error: {e}")
 
-        time.sleep(14400)  # 4 tiếng
+        time.sleep(1800)  # 30 phút
 
 
 # ============================================================
