@@ -4457,7 +4457,7 @@ def orphan_order_cleanup(exchange, notifier):
         except Exception as e:
             logger.error(f"[OrphanCleanup] Error: {e}")
 
-        time.sleep(300)  # 5 phút
+        time.sleep(120)  # 2 phút
 
 
 def memory_cleanup():
