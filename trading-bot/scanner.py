@@ -88,6 +88,18 @@ def _load_initial_watchlist() -> List[str]:
     try:
         import config as _cfg
         if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            # Ưu tiên đọc watchlist.json (do dashboard lưu) nếu có
+            import json as _json, os as _os
+            wl_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "watchlist.json")
+            if _os.path.exists(wl_path):
+                try:
+                    with open(wl_path) as _f:
+                        saved = _json.load(_f)
+                    if saved:
+                        logger.info(f"📌 Watchlist from file: {len(saved)} coins")
+                        return list(saved)
+                except Exception:
+                    pass
             coins = list(getattr(_cfg, "FIXED_COINS", _FALLBACK_WATCHLIST))
             logger.info(f"📌 Fixed watchlist: {coins}")
             return coins
@@ -103,13 +115,24 @@ _active_universe: List[str] = []
 _universe_last_update = 0
 
 def get_watchlist(base_url: str = "https://testnet.binancefuture.com") -> List[str]:
-    """Trả về WATCHLIST. Fixed mode: dùng FIXED_COINS từ config. Dynamic mode: refresh mỗi 30 phút."""
+    """Trả về WATCHLIST. Fixed mode: dùng watchlist.json từ dashboard hoặc FIXED_COINS từ config."""
     import time
     global WATCHLIST, _watchlist_last_update
 
     try:
         import config as _cfg
         if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            # Đọc watchlist.json nếu có
+            import json as _json, os as _os
+            wl_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "watchlist.json")
+            if _os.path.exists(wl_path):
+                try:
+                    with open(wl_path) as _f:
+                        saved = _json.load(_f)
+                    if saved:
+                        return list(saved)
+                except Exception:
+                    pass
             return list(getattr(_cfg, "FIXED_COINS", WATCHLIST))
     except Exception:
         pass
@@ -134,10 +157,21 @@ def get_active_universe(base_url: str = "https://testnet.binancefuture.com",
     import time
     global _active_universe, _universe_last_update
 
-    # Fixed mode → trả thẳng, không fetch Binance
     try:
         import config as _cfg
         if getattr(_cfg, "WATCHLIST_MODE", "dynamic") == "fixed":
+            # Đọc watchlist.json nếu có
+            import json as _json, os as _os
+            wl_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "watchlist.json")
+            if _os.path.exists(wl_path):
+                try:
+                    with open(wl_path) as _f:
+                        saved = _json.load(_f)
+                    if saved:
+                        logger.info(f"🎯 Active universe (watchlist.json): {saved}")
+                        return list(saved)
+                except Exception:
+                    pass
             coins = list(getattr(_cfg, "FIXED_COINS", WATCHLIST))
             logger.info(f"🎯 Active universe (fixed): {coins}")
             return coins
