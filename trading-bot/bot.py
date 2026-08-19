@@ -1452,7 +1452,7 @@ def position_reversal_monitor(exchange, notifier):
 
                 # ── Breakeven Exit: khi nào gần về entry thì đóng ──
                 # Chỉ đóng nếu từng có lời (mfe_pct > 0) và đã giữ lệnh đủ lâu
-                min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 30)
+                min_hold = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 30)
                 entry_time = None
                 with lock:
                     for t in reversed(state.get("trade_log", [])):
@@ -1953,8 +1953,8 @@ def mfe_scan_monitor(exchange, notifier):
                 # Chỉ kích hoạt khi lời >= 3%
                 if mfe_pct < 3.0:
                     # Vẫn check breakeven dù chưa đủ 3% — đóng khi quay về entry
-                    # Nhưng phải đợi tối thiểu BREAKEVEN_MIN_HOLD_SECONDS sau khi vào lệnh
-                    min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 30)
+                    # Nhưng phải đợi tối thiểu BREAKEVEN_SCAN_HOLD_SECONDS sau khi vào lệnh
+                    min_hold = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 60)
                     entry_time = None
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
@@ -1986,8 +1986,8 @@ def mfe_scan_monitor(exchange, notifier):
                     continue
 
                 # Breakeven exit: khi nào gần về entry thì đóng (phải từng có lời trước)
-                # Đợi tối thiểu BREAKEVEN_MIN_HOLD_SECONDS sau khi vào lệnh
-                _min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 30)
+                # Đợi tối thiểu BREAKEVEN_SCAN_HOLD_SECONDS sau khi vào lệnh
+                _min_hold = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 60)
                 _entry_time = None
                 with lock:
                     for t in reversed(state.get("trade_log", [])):
