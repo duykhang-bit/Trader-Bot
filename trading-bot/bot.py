@@ -1969,6 +1969,9 @@ def mfe_scan_monitor(exchange, notifier):
                                 continue
                         except Exception:
                             pass
+                    else:
+                        # Không tìm được entry_time → chưa đủ thông tin → skip
+                        continue
                     if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                         qty = abs(amt)
                         close_side = "SELL" if is_long else "BUY"
@@ -2000,6 +2003,9 @@ def mfe_scan_monitor(exchange, notifier):
                         _held_secs = (datetime.now() - datetime.strptime(_entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
                     except Exception:
                         pass
+                else:
+                    # Không tìm được entry_time → skip
+                    continue
                 if mfe_pct > 0 and pnl_pct < 0.5 and _held_secs >= _min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     qty = abs(amt)
                     close_side = "SELL" if is_long else "BUY"
