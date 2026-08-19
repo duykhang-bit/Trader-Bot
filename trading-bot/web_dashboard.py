@@ -401,9 +401,11 @@ async function toggleBreakevenExit(enabled) {
     refresh();
 }
 async function setBreakevenHold() {
-    const pump = parseInt(document.getElementById('breakeven-pump-hold')?.value || 30);
-    const scan = parseInt(document.getElementById('breakeven-scan-hold')?.value || 60);
-    if (pump < 0 || pump > 300 || scan < 0 || scan > 300) { toast('Delay phải 0-300 giây', false); return; }
+    const pumpEl = document.getElementById('breakeven-pump-hold');
+    const scanEl = document.getElementById('breakeven-scan-hold');
+    const pump = pumpEl ? parseInt(pumpEl.value) : 30;
+    const scan = scanEl ? parseInt(scanEl.value) : 60;
+    if (isNaN(pump) || pump < 0 || pump > 300 || isNaN(scan) || scan < 0 || scan > 300) { toast('Delay phải 0-300 giây', false); return; }
     const r1 = await apiPost('/api/breakeven_exit/hold', {pump_seconds: pump, scan_seconds: scan});
     if (r1 && r1.msg) toast(r1.msg, r1.ok !== false);
     refresh();
@@ -762,8 +764,8 @@ function renderDashboard(d) {
             <span>&#x1F504; Breakeven Exit:</span>
             ${(() => {
                 const en = d.breakeven_exit_enabled !== false;
-                const pumpSecs = d.breakeven_pump_hold_seconds || 30;
-                const scanSecs = d.breakeven_scan_hold_seconds || 60;
+                const pumpSecs = d.breakeven_pump_hold_seconds ?? 30;
+                const scanSecs = d.breakeven_scan_hold_seconds ?? 60;
                 return `
                 <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleBreakevenExit(true)"
                         style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
