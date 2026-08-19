@@ -815,6 +815,7 @@ function renderDashboard(d) {
           <input id="ta-date" type="date" value="${new Date().toISOString().slice(0,10)}"
                  style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
           <select id="ta-provider" style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
+            <option value="deepseek">DeepSeek</option>
             <option value="groq">Groq (Free)</option>
             <option value="google">Google Gemini (Free)</option>
             <option value="openai">OpenAI</option>
@@ -830,9 +831,9 @@ function renderDashboard(d) {
         </div>
         <div style="margin-bottom:10px">
           <span style="font-size:11px;color:#484f58;margin-right:6px">Models:</span>
-          <input id="ta-deep-model" placeholder="Deep LLM" value="llama-3.3-70b-versatile"
+          <input id="ta-deep-model" placeholder="Deep LLM" value="deepseek-reasoner"
                  style="width:160px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px">
-          <input id="ta-quick-model" placeholder="Quick LLM" value="llama-3.1-8b-instant"
+          <input id="ta-quick-model" placeholder="Quick LLM" value="deepseek-chat"
                  style="width:175px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px;margin-left:6px">
         </div>
         <div style="margin-bottom:10px">
@@ -3086,10 +3087,10 @@ def api_pump_set_cooldown():
     cooldown = int(data.get("cooldown", 5))
     cooldown = max(1, min(300, cooldown))
     try:
-        import config as _cfg
+        import config as _cfg, os as _os
         _cfg.PUMP_SIGNAL_COOLDOWN_S = cooldown
         # Ghi vào file để persist
-        config_path = os.path.join(os.path.dirname(__file__), "config.py")
+        config_path = _os.path.join(_os.path.dirname(__file__), "config.py")
         with open(config_path, "r", encoding="utf-8") as f:
             content = f.read()
         content = re.sub(r'PUMP_SIGNAL_COOLDOWN_S\s*=\s*\d+',
@@ -3790,6 +3791,22 @@ def _ta_run_analysis(ticker: str, date: str, provider: str,
     if ta_path not in sys.path:
         sys.path.insert(0, ta_path)
 
+    # Load .env từ TradingAgents-main (chứa GROQ_API_KEY, GOOGLE_API_KEY...)
+    env_file = os.path.join(ta_path, ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    if _v.strip():
+                        os.environ[_k.strip()] = _v.strip()
+
+    # Override provider theo lựa chọn của user trên dashboard
+    os.environ["TRADINGAGENTS_LLM_PROVIDER"]    = provider
+    os.environ["TRADINGAGENTS_DEEP_THINK_LLM"]  = deep_model
+    os.environ["TRADINGAGENTS_QUICK_THINK_LLM"] = quick_model
+
     def _set_step(msg):
         with _ta_lock:
             _ta_state["step"] = msg
@@ -3799,14 +3816,16 @@ def _ta_run_analysis(ticker: str, date: str, provider: str,
         _set_step(f"Khởi tạo LLM ({provider})...")
 
         from tradingagents.graph import TradingAgentsGraph
+        from tradingagents.default_config import DEFAULT_CONFIG
 
-        config = {
+        config = DEFAULT_CONFIG.copy()
+        config.update({
             "llm_provider": provider,
             "deep_think_llm": deep_model,
             "quick_think_llm": quick_model,
             "max_debate_rounds": 1,
             "max_risk_discuss_rounds": 1,
-        }
+        })
 
         ta = TradingAgentsGraph(
             selected_analysts=analysts,
@@ -3875,7 +3894,7 @@ def _ta_run_analysis(ticker: str, date: str, provider: str,
         with _ta_lock:
             _ta_state["last_result"] = {"error": str(e)[:400], "ticker": ticker, "date": date}
             _ta_state["running"] = False
-            _ta_state["step"] = f"Lỗi: {str(e)[:80]}"
+            _ta_state["step"] = f"Lỗi: {str(e)[:200]}"
 
 
 @app.route("/api/ta/analyze", methods=["POST"])
@@ -3886,8 +3905,8 @@ def api_ta_analyze():
     ticker   = data.get("ticker", "BTC-USD").strip().upper()
     date     = data.get("date", "") or __import__("datetime").date.today().isoformat()
     provider = data.get("provider", "groq").strip()
-    deep_model  = data.get("deep_model",  "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
-    quick_model = data.get("quick_model", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
+    deep_model  = data.get("deep_model",  "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
+    quick_model = data.get("quick_model", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
     analysts = data.get("analysts", ["market", "news", "social"])
     if not isinstance(analysts, list) or not analysts:
         analysts = ["market", "news", "social"]
