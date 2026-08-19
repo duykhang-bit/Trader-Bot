@@ -3462,6 +3462,24 @@ def pump_scan_engine(exchange, notifier):
                     pump_pct  = sig_dict.get("pump_pct", 0)
                     score     = sig_dict.get("score", 0)
 
+                    # Đợi tối thiểu BREAKEVEN_PUMP_HOLD_SECONDS trước khi check reversal
+                    _min_hold_pump = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 30)
+                    _entry_time_pump = None
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == symbol and t.get("status") == "OPEN":
+                                _entry_time_pump = t.get("time")
+                                break
+                    if _entry_time_pump:
+                        try:
+                            _held = (datetime.now() - datetime.strptime(_entry_time_pump, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                            if _held < _min_hold_pump:
+                                continue
+                        except Exception:
+                            pass
+                    else:
+                        continue  # không tìm được entry_time → skip
+
                     # Điều kiện đóng SHORT sớm khi có dấu hiệu pump lên lại:
                     # - Đang có lời (giá < entry): đóng ngay khi pump_pct >= 3% hoặc score >= 25
                     # - Chưa có lời / đang lỗ ít: đóng khi pump_pct >= 7% và score >= 40 (tránh noise)
