@@ -1986,7 +1986,21 @@ def mfe_scan_monitor(exchange, notifier):
                     continue
 
                 # Breakeven exit: khi nào gần về entry thì đóng (phải từng có lời trước)
-                if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                # Đợi tối thiểu BREAKEVEN_MIN_HOLD_SECONDS sau khi vào lệnh
+                _min_hold = getattr(config, "BREAKEVEN_MIN_HOLD_SECONDS", 30)
+                _entry_time = None
+                with lock:
+                    for t in reversed(state.get("trade_log", [])):
+                        if t.get("symbol") == sym and t.get("status") == "OPEN":
+                            _entry_time = t.get("time")
+                            break
+                _held_secs = 9999
+                if _entry_time:
+                    try:
+                        _held_secs = (datetime.now() - datetime.strptime(_entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                    except Exception:
+                        pass
+                if mfe_pct > 0 and pnl_pct < 0.5 and _held_secs >= _min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     qty = abs(amt)
                     close_side = "SELL" if is_long else "BUY"
                     try:

@@ -400,6 +400,13 @@ async function toggleBreakevenExit(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function setBreakevenHold() {
+    const val = parseInt(document.getElementById('breakeven-hold-input')?.value || 30);
+    if (val < 0 || val > 300) { toast('Delay phải 0-300 giây', false); return; }
+    const r = await apiPost('/api/breakeven_exit/hold', {seconds: val});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function toggleMaxLoss(enabled) {
     const r = await apiPost('/api/max_loss', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -754,11 +761,18 @@ function renderDashboard(d) {
             <span>&#x1F504; Breakeven Exit:</span>
             ${(() => {
                 const en = d.breakeven_exit_enabled !== false;
+                const holdSecs = d.breakeven_min_hold_seconds || 30;
                 return `
                 <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleBreakevenExit(true)"
                         style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
                 <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleBreakevenExit(false)"
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:#484f58;margin-left:6px">delay</span>
+                <input id="breakeven-hold-input" type="number" min="0" max="300" value="${holdSecs}"
+                       style="width:44px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center"
+                       title="Giây chờ sau khi vào lệnh mới check breakeven">
+                <span style="font-size:11px;color:#484f58">s</span>
+                <button class="btn btn-sm" onclick="setBreakevenHold()" style="font-size:10px;padding:2px 6px;background:#0d1a2d;color:#58a6ff;border:1px solid #1a3a5a">Set</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#8b949e'}">
                     ${en?'Đóng sớm khi sắp về entry (pump/quick/scan)':'Đã tắt'}
                 </span>`;
@@ -2287,6 +2301,7 @@ def api_state():
         "mfe_scan_enabled":         getattr(_config, "MFE_SCAN_ENABLED", True),
         "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
         "breakeven_exit_enabled":   getattr(_config, "BREAKEVEN_EXIT_ENABLED", True),
+        "breakeven_min_hold_seconds": getattr(_config, "BREAKEVEN_MIN_HOLD_SECONDS", 30),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
@@ -3227,6 +3242,19 @@ def api_breakeven_exit():
     except Exception:
         pass
     return jsonify({"ok": True, "msg": f"Breakeven Exit: {'bật' if enabled else 'tắt'}", "enabled": bool(enabled)})
+
+@app.route("/api/breakeven_exit/hold", methods=["POST"])
+@require_auth
+def api_breakeven_exit_hold():
+    """Set thời gian delay trước khi check breakeven (giây)."""
+    data = request.get_json() or {}
+    seconds = max(0, min(300, int(data.get("seconds", 30))))
+    try:
+        import config as _cfg
+        _cfg.BREAKEVEN_MIN_HOLD_SECONDS = seconds
+    except Exception:
+        pass
+    return jsonify({"ok": True, "msg": f"Breakeven delay = {seconds}s", "seconds": seconds})
 
 @app.route("/api/mfe_scan", methods=["POST"])
 @require_auth
