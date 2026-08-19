@@ -4571,7 +4571,7 @@ def pending_order_reviewer(exchange, notifier):
 
             if armed_cancelled:
                 notifier.telegram.send(
-                    f"🔄 <b>PENDING ORDER REVIEW</b>\n"
+                    f"🎯 <b>ARMED ORDER REVIEW</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"❌ Đã hủy {len(armed_cancelled)} armed không còn hợp lý:\n" +
                     "\n".join(f"• {c}" for c in armed_cancelled) +
