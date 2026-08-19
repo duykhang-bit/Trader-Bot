@@ -4502,6 +4502,9 @@ def pending_order_reviewer(exchange, notifier):
     # Đợi 5 phút sau khi bot start
     time.sleep(300)
 
+    # Coin không bị auto cancel pending review
+    EXCLUDE_PENDING_REVIEW = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
+
     while state["running"]:
         try:
             # ── Chỉ chạy khi user bật toggle trên web ──────────
@@ -4523,6 +4526,10 @@ def pending_order_reviewer(exchange, notifier):
                 sym = order.get("symbol", "")
                 side = order.get("side", "")
                 order_price = float(order.get("price", 0))
+
+                # Skip coin không bị auto cancel
+                if sym in EXCLUDE_PENDING_REVIEW:
+                    continue
 
                 try:
                     current_price = exchange.get_ticker_price(sym)
