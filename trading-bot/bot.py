@@ -4530,7 +4530,8 @@ def pending_order_reviewer(exchange, notifier):
                     f"❌ Đã hủy {len(cancelled)} lệnh không còn hợp lý:\n" +
                     "\n".join(f"• {c}" for c in cancelled) +
                     f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
-                )        except Exception as e:
+                )
+        except Exception as e:
             logger.error(f"[PendingReview] Error: {e}")
 
         time.sleep(14400)  # 4 tiếng
