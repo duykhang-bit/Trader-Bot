@@ -3087,13 +3087,13 @@ def api_pump_set_cooldown():
     cooldown = int(data.get("cooldown", 5))
     cooldown = max(1, min(300, cooldown))
     try:
-        import config as _cfg, os as _os
+        import config as _cfg, os as _os, re as _re
         _cfg.PUMP_SIGNAL_COOLDOWN_S = cooldown
         # Ghi vào file để persist
         config_path = _os.path.join(_os.path.dirname(__file__), "config.py")
         with open(config_path, "r", encoding="utf-8") as f:
             content = f.read()
-        content = re.sub(r'PUMP_SIGNAL_COOLDOWN_S\s*=\s*\d+',
+        content = _re.sub(r'PUMP_SIGNAL_COOLDOWN_S\s*=\s*\d+',
                          f'PUMP_SIGNAL_COOLDOWN_S = {cooldown}', content)
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(content)
