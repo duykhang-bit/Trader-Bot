@@ -405,7 +405,7 @@ async function setBreakevenHold() {
     const scanEl = document.getElementById('breakeven-scan-hold');
     const pump = pumpEl ? parseInt(pumpEl.value) : 30;
     const scan = scanEl ? parseInt(scanEl.value) : 60;
-    if (isNaN(pump) || pump < 0 || pump > 300 || isNaN(scan) || scan < 0 || scan > 300) { toast('Delay phải 0-300 giây', false); return; }
+    if isNaN(pump) || pump < 0 || pump > 3600 || isNaN(scan) || scan < 0 || scan > 3600) { toast('Delay phải 0-3600 giây', false); return; }
     const r1 = await apiPost('/api/breakeven_exit/hold', {pump_seconds: pump, scan_seconds: scan});
     if (r1 && r1.msg) toast(r1.msg, r1.ok !== false);
     refresh();
@@ -772,11 +772,11 @@ function renderDashboard(d) {
                 <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleBreakevenExit(false)"
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:#484f58;margin-left:6px">Pump</span>
-                <input id="breakeven-pump-hold" type="number" min="0" max="300" value="${pumpSecs}"
+                <input id="breakeven-pump-hold" type="number" min="0" max="3600" value="${pumpSecs}"
                        style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#f85149;text-align:center"
                        title="Giây chờ sau khi vào lệnh pump">
                 <span style="font-size:11px;color:#484f58">s Scan</span>
-                <input id="breakeven-scan-hold" type="number" min="0" max="300" value="${scanSecs}"
+                <input id="breakeven-scan-hold" type="number" min="0" max="3600" value="${scanSecs}"
                        style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center"
                        title="Giây chờ sau khi vào lệnh scan/armed">
                 <span style="font-size:11px;color:#484f58">s</span>
@@ -3257,8 +3257,8 @@ def api_breakeven_exit():
 def api_breakeven_exit_hold():
     """Set thời gian delay riêng cho pump và scan."""
     data = request.get_json() or {}
-    pump_s = max(0, min(300, int(data.get("pump_seconds", 30))))
-    scan_s = max(0, min(300, int(data.get("scan_seconds", 60))))
+    pump_s = max(0, min(3600, int(data.get("pump_seconds", 60))))
+    scan_s = max(0, min(3600, int(data.get("scan_seconds", 300))))
     try:
         import config as _cfg
         _cfg.BREAKEVEN_PUMP_HOLD_SECONDS = pump_s
