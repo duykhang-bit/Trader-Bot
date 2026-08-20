@@ -3506,8 +3506,7 @@ def pump_scan_engine(exchange, notifier):
                         continue  # không tìm được entry_time → skip
 
                     # Điều kiện đóng SHORT sớm khi có dấu hiệu pump lên lại:
-                    # - Đang có lời (giá < entry): đóng ngay khi pump_pct >= 3% hoặc score >= 25
-                    # - Chưa có lời / đang lỗ ít: đóng khi pump_pct >= 7% và score >= 40 (tránh noise)
+                    # CHỈ đóng khi đang có lời — không cắt lỗ
                     try:
                         cur_price = exchange.get_ticker_price(symbol)
                         pos_entry = next(
@@ -3517,13 +3516,13 @@ def pump_scan_engine(exchange, notifier):
                         in_profit = pos_entry > 0 and cur_price < pos_entry
 
                         if in_profit:
-                            # Đang có lời → nhạy hơn, bắt đảo chiều sớm
+                            # Đang có lời → đóng khi pump_pct >= 3% hoặc score >= 25
                             should_exit = pump_pct >= 3.0 or score >= 25
                         else:
-                            # Chưa có lời → cần tín hiệu mạnh hơn mới đóng
-                            should_exit = pump_pct >= 7.0 and score >= 40
+                            # Đang lỗ → KHÔNG đóng, để SL lo
+                            should_exit = False
                     except Exception:
-                        should_exit = pump_pct >= 5.0 and score >= 30
+                        should_exit = False
 
                     if should_exit:
                         try:
