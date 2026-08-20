@@ -2889,12 +2889,13 @@ def scan_engine(exchange, notifier):
                 if not skip_reason:
                     atr_15m = calculate_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1]
                     if best.signal == "LONG":
-                        # SL: dưới entry 2%
-                        sl = round(entry_price * 0.98, 8)
-                        # TP: entry + ATR × 4 (RR ~1:2 tới 1:3)
+                        # SL: dưới entry ATR×2 (tối thiểu 2%)
+                        sl_dist = max(atr_15m * 2.0, entry_price * 0.02)
+                        sl = round(entry_price - sl_dist, 8)
                         tp = round(entry_price + atr_15m * 8, 8)
                     else:  # SHORT
-                        sl = round(entry_price * 1.02, 8)
+                        sl_dist = max(atr_15m * 2.0, entry_price * 0.02)
+                        sl = round(entry_price + sl_dist, 8)
                         tp = round(entry_price - atr_15m * 8, 8)
 
                     # RR check (sau phí + slippage ~0.1%)
