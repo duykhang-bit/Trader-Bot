@@ -1989,12 +1989,12 @@ def mfe_scan_monitor(exchange, notifier):
                     mfe_pct = (entry - mfe) / entry * 100
 
                 # ── Breakeven Exit: Peak Profit Trailing with Reversal Confirmation (Scan) ──
-                if mfe_pct < 3.0:
+                peak_pct  = getattr(config, "BREAKEVEN_SCAN_PEAK_PCT", 2.0)
+                if mfe_pct < peak_pct:
                     # chưa đủ peak → skip breakeven, chỉ MFE retracement mới check
                     pass
                 else:
                     min_hold  = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300)
-                    peak_pct  = getattr(config, "BREAKEVEN_SCAN_PEAK_PCT", 2.0)
                     pnl_floor = getattr(config, "BREAKEVEN_SCAN_PNL_FLOOR", 0.7)
                     confirm_n = getattr(config, "BREAKEVEN_REVERSAL_CONFIRM", 2)
 
