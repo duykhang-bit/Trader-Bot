@@ -86,8 +86,19 @@ MFE_RETRACE_PCT  = 0.40   # 40% retracement → đóng
 # Breakeven Exit — đóng khi sắp về entry (pump nhẹ/mạnh/quick short)
 BREAKEVEN_EXIT_ENABLED = True
 # Thời gian tối thiểu giữ lệnh trước khi check breakeven (giây) — tránh đóng ngay sau khi vào
-BREAKEVEN_PUMP_HOLD_SECONDS = 60    # pump mạnh/nhẹ
-BREAKEVEN_SCAN_HOLD_SECONDS = 300   # scan/armed/lệnh thường — 5 phút
+BREAKEVEN_PUMP_HOLD_SECONDS = 180   # pump mạnh/nhẹ
+BREAKEVEN_SCAN_HOLD_SECONDS = 300   # scan/armed/lệnh thường
+
+# Peak profit tối thiểu để activate breakeven monitor
+BREAKEVEN_PUMP_PEAK_PCT = 3.0   # pump cần từng lời >= 3%
+BREAKEVEN_SCAN_PEAK_PCT = 2.0   # scan cần từng lời >= 2%
+
+# PnL floor — chỉ cắt khi lời còn lại <= ngưỡng này
+BREAKEVEN_PUMP_PNL_FLOOR = 1.0   # pump: cắt khi còn <= 1%
+BREAKEVEN_SCAN_PNL_FLOOR = 0.7   # scan: cắt khi còn <= 0.7%
+
+# Số lần reversal confirm liên tiếp trước khi cắt
+BREAKEVEN_REVERSAL_CONFIRM = 2
 MAX_LOSS_PER_POSITION = 20.0
 MAX_LOSS_PCT_PER_POSITION = 0.20
 MAX_LOSS_ENABLED = True  # Bật/tắt safety net — tự đóng lệnh khi lỗ vượt MAX_LOSS

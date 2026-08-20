@@ -403,11 +403,25 @@ async function toggleBreakevenExit(enabled) {
 async function setBreakevenHold() {
     const pumpEl = document.getElementById('breakeven-pump-hold');
     const scanEl = document.getElementById('breakeven-scan-hold');
-    const pump = pumpEl ? parseInt(pumpEl.value) : 30;
-    const scan = scanEl ? parseInt(scanEl.value) : 60;
+    const pump = pumpEl ? parseInt(pumpEl.value) : 180;
+    const scan = scanEl ? parseInt(scanEl.value) : 300;
     if (isNaN(pump) || pump < 0 || pump > 3600 || isNaN(scan) || scan < 0 || scan > 3600) { toast('Delay phải 0-3600 giây', false); return; }
     const r1 = await apiPost('/api/breakeven_exit/hold', {pump_seconds: pump, scan_seconds: scan});
     if (r1 && r1.msg) toast(r1.msg, r1.ok !== false);
+    refresh();
+}
+async function setBreakevenAdvanced() {
+    const pumpPeak  = parseFloat(document.getElementById('be-pump-peak')?.value || 3.0);
+    const pumpFloor = parseFloat(document.getElementById('be-pump-floor')?.value || 1.0);
+    const scanPeak  = parseFloat(document.getElementById('be-scan-peak')?.value || 2.0);
+    const scanFloor = parseFloat(document.getElementById('be-scan-floor')?.value || 0.7);
+    const revN      = parseInt(document.getElementById('be-rev-confirm')?.value || 2);
+    const r = await apiPost('/api/breakeven_exit/advanced', {
+        pump_peak: pumpPeak, pump_floor: pumpFloor,
+        scan_peak: scanPeak, scan_floor: scanFloor,
+        reversal_confirm: revN
+    });
+    if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
 async function toggleMaxLoss(enabled) {
@@ -764,8 +778,13 @@ function renderDashboard(d) {
             <span>&#x1F504; Breakeven Exit:</span>
             ${(() => {
                 const en = d.breakeven_exit_enabled !== false;
-                const pumpSecs = d.breakeven_pump_hold_seconds ?? 30;
-                const scanSecs = d.breakeven_scan_hold_seconds ?? 60;
+                const pumpSecs = d.breakeven_pump_hold_seconds ?? 180;
+                const scanSecs = d.breakeven_scan_hold_seconds ?? 300;
+                const pumpPeak = d.breakeven_pump_peak_pct ?? 3.0;
+                const scanPeak = d.breakeven_scan_peak_pct ?? 2.0;
+                const pumpFloor = d.breakeven_pump_pnl_floor ?? 1.0;
+                const scanFloor = d.breakeven_scan_pnl_floor ?? 0.7;
+                const revConfirm = d.breakeven_reversal_confirm ?? 2;
                 return `
                 <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleBreakevenExit(true)"
                         style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
@@ -781,8 +800,25 @@ function renderDashboard(d) {
                        title="Giây chờ sau khi vào lệnh scan/armed">
                 <span style="font-size:11px;color:#484f58">s</span>
                 <button class="btn btn-sm" onclick="setBreakevenHold()" style="font-size:10px;padding:2px 6px;background:#0d1a2d;color:#58a6ff;border:1px solid #1a3a5a">Set</button>
+                <br style="margin:4px 0">
+                <span style="font-size:10px;color:#484f58">Peak Pump≥</span>
+                <input id="be-pump-peak" type="number" min="0.5" max="20" step="0.5" value="${pumpPeak}"
+                       style="width:36px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#f85149;text-align:center">
+                <span style="font-size:10px;color:#484f58">% Floor≤</span>
+                <input id="be-pump-floor" type="number" min="0" max="10" step="0.1" value="${pumpFloor}"
+                       style="width:36px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#f85149;text-align:center">
+                <span style="font-size:10px;color:#484f58">% | Peak Scan≥</span>
+                <input id="be-scan-peak" type="number" min="0.5" max="20" step="0.5" value="${scanPeak}"
+                       style="width:36px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center">
+                <span style="font-size:10px;color:#484f58">% Floor≤</span>
+                <input id="be-scan-floor" type="number" min="0" max="10" step="0.1" value="${scanFloor}"
+                       style="width:36px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center">
+                <span style="font-size:10px;color:#484f58">% Rev×</span>
+                <input id="be-rev-confirm" type="number" min="1" max="5" value="${revConfirm}"
+                       style="width:30px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center">
+                <button class="btn btn-sm" onclick="setBreakevenAdvanced()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#d29922;border:1px solid #3a2a00">Set</button>
                 <span style="font-size:11px;color:${en?'#3fb950':'#8b949e'}">
-                    ${en?'Đóng sớm khi sắp về entry':'Đã tắt'}
+                    ${en?'Peak Profit Trailing':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -2309,8 +2345,13 @@ def api_state():
         "mfe_scan_enabled":         getattr(_config, "MFE_SCAN_ENABLED", True),
         "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
         "breakeven_exit_enabled":     getattr(_config, "BREAKEVEN_EXIT_ENABLED", True),
-        "breakeven_pump_hold_seconds": getattr(_config, "BREAKEVEN_PUMP_HOLD_SECONDS", 30),
-        "breakeven_scan_hold_seconds": getattr(_config, "BREAKEVEN_SCAN_HOLD_SECONDS", 60),
+        "breakeven_pump_hold_seconds": getattr(_config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180),
+        "breakeven_scan_hold_seconds": getattr(_config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300),
+        "breakeven_pump_peak_pct":    getattr(_config, "BREAKEVEN_PUMP_PEAK_PCT", 3.0),
+        "breakeven_scan_peak_pct":    getattr(_config, "BREAKEVEN_SCAN_PEAK_PCT", 2.0),
+        "breakeven_pump_pnl_floor":   getattr(_config, "BREAKEVEN_PUMP_PNL_FLOOR", 1.0),
+        "breakeven_scan_pnl_floor":   getattr(_config, "BREAKEVEN_SCAN_PNL_FLOOR", 0.7),
+        "breakeven_reversal_confirm": getattr(_config, "BREAKEVEN_REVERSAL_CONFIRM", 2),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
@@ -3257,7 +3298,7 @@ def api_breakeven_exit():
 def api_breakeven_exit_hold():
     """Set thời gian delay riêng cho pump và scan."""
     data = request.get_json() or {}
-    pump_s = max(0, min(3600, int(data.get("pump_seconds", 60))))
+    pump_s = max(0, min(3600, int(data.get("pump_seconds", 180))))
     scan_s = max(0, min(3600, int(data.get("scan_seconds", 300))))
     try:
         import config as _cfg
@@ -3266,6 +3307,22 @@ def api_breakeven_exit_hold():
     except Exception:
         pass
     return jsonify({"ok": True, "msg": f"Breakeven delay: Pump={pump_s}s Scan={scan_s}s"})
+
+@app.route("/api/breakeven_exit/advanced", methods=["POST"])
+@require_auth
+def api_breakeven_exit_advanced():
+    """Set Peak Profit Trailing params."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+        _cfg.BREAKEVEN_PUMP_PEAK_PCT    = float(data.get("pump_peak", 3.0))
+        _cfg.BREAKEVEN_PUMP_PNL_FLOOR   = float(data.get("pump_floor", 1.0))
+        _cfg.BREAKEVEN_SCAN_PEAK_PCT    = float(data.get("scan_peak", 2.0))
+        _cfg.BREAKEVEN_SCAN_PNL_FLOOR   = float(data.get("scan_floor", 0.7))
+        _cfg.BREAKEVEN_REVERSAL_CONFIRM = int(data.get("reversal_confirm", 2))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "msg": f"Breakeven advanced: Pump peak={data.get('pump_peak')}% floor={data.get('pump_floor')}% | Scan peak={data.get('scan_peak')}% floor={data.get('scan_floor')}% | Rev×{data.get('reversal_confirm')}"})
 
 @app.route("/api/mfe_scan", methods=["POST"])
 @require_auth

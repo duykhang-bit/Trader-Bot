@@ -1457,38 +1457,67 @@ def position_reversal_monitor(exchange, notifier):
                 else:
                     mfe_pct = (mfe_price - entry) / entry * 100
 
-                # ── Breakeven Exit: khi nào gần về entry thì đóng ──
-                # Chỉ đóng nếu từng có lời (mfe_pct > 0) và đã giữ lệnh đủ lâu
-                min_hold = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 30)
+                # ── Breakeven Exit: Peak Profit Trailing with Reversal Confirmation ──
+                min_hold   = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180)
+                peak_pct   = getattr(config, "BREAKEVEN_PUMP_PEAK_PCT", 3.0)
+                pnl_floor  = getattr(config, "BREAKEVEN_PUMP_PNL_FLOOR", 1.0)
+                confirm_n  = getattr(config, "BREAKEVEN_REVERSAL_CONFIRM", 2)
+
                 entry_time = None
                 with lock:
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == symbol and t.get("status") == "OPEN":
                             entry_time = t.get("time")
                             break
-                held_secs = 9999
+                held_secs = 0
                 if entry_time:
                     try:
                         held_secs = (datetime.now() - datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
                     except Exception:
                         pass
+
+                if not getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                    pass
+                elif held_secs < min_hold:
+                    pass  # chưa đủ thời gian
+                elif mfe_pct < peak_pct:
+                    pass  # chưa đủ peak profit
                 else:
-                    held_secs = 0  # không tìm được → coi như mới vào → chưa đủ thời gian
-                if mfe_pct > 0 and pnl_pct < 1.0 and held_secs >= min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                    # Đủ điều kiện → check reversal
+                    rev_key = f"_be_rev_{symbol}"
+                    is_reversing = False
+                    if side == "SHORT":
+                        # SHORT đang reversing = giá đang tăng trở lại
+                        is_reversing = mark_price > mfe_price * 1.002
+                    else:
+                        is_reversing = mark_price < mfe_price * 0.998
+
                     with lock:
-                        state.pop(mfe_key, None)
-                    qty = abs(amt)
-                    close_side = "SELL" if side == "LONG" else "BUY"
-                    try:
-                        exchange.place_market_order(symbol, close_side, qty)
-                        exchange.cancel_all_orders(symbol)
-                        notifier.telegram.send(
-                            f"🔄 <b>BREAKEVEN EXIT</b>: {symbol} {side}\n"
-                            f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
-                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                        )
-                    except Exception as e:
-                        logger.error(f"[ReversalMon] BE close {symbol}: {e}")
+                        rev_count = state.get(rev_key, 0)
+                        if is_reversing:
+                            rev_count += 1
+                            state[rev_key] = rev_count
+                        else:
+                            # Giá quay đúng hướng → reset counter
+                            state[rev_key] = 0
+                            rev_count = 0
+
+                    if rev_count >= confirm_n and pnl_pct <= pnl_floor:
+                        with lock:
+                            state.pop(mfe_key, None)
+                            state.pop(rev_key, None)
+                        qty = abs(amt)
+                        close_side = "SELL" if side == "LONG" else "BUY"
+                        try:
+                            exchange.place_market_order(symbol, close_side, qty)
+                            exchange.cancel_all_orders(symbol)
+                            notifier.telegram.send(
+                                f"🔄 <b>BREAKEVEN EXIT (Pump)</b>: {symbol} {side}\n"
+                                f"Peak lời {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                        except Exception as e:
+                            logger.error(f"[ReversalMon] BE close {symbol}: {e}")
                     continue
 
                 # ── MFE retracement >= 40% → đóng giữ lời ──
@@ -1959,77 +1988,65 @@ def mfe_scan_monitor(exchange, notifier):
                 else:
                     mfe_pct = (entry - mfe) / entry * 100
 
-                # Chỉ kích hoạt khi lời >= 3%
+                # ── Breakeven Exit: Peak Profit Trailing with Reversal Confirmation (Scan) ──
                 if mfe_pct < 3.0:
-                    # Vẫn check breakeven dù chưa đủ 3% — đóng khi quay về entry
-                    # Nhưng phải đợi tối thiểu BREAKEVEN_SCAN_HOLD_SECONDS sau khi vào lệnh
-                    min_hold = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 60)
-                    entry_time = None
+                    # chưa đủ peak → skip breakeven, chỉ MFE retracement mới check
+                    pass
+                else:
+                    min_hold  = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300)
+                    peak_pct  = getattr(config, "BREAKEVEN_SCAN_PEAK_PCT", 2.0)
+                    pnl_floor = getattr(config, "BREAKEVEN_SCAN_PNL_FLOOR", 0.7)
+                    confirm_n = getattr(config, "BREAKEVEN_REVERSAL_CONFIRM", 2)
+
+                    _entry_time = None
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
                             if t.get("symbol") == sym and t.get("status") == "OPEN":
-                                entry_time = t.get("time")
+                                _entry_time = t.get("time")
                                 break
-                    if entry_time:
+                    _held_secs = 0
+                    if _entry_time:
                         try:
-                            from datetime import datetime as _dt
-                            held_secs = (datetime.now() - _dt.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
-                            if held_secs < min_hold:
-                                continue
+                            _held_secs = (datetime.now() - datetime.strptime(_entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
                         except Exception:
                             pass
                     else:
-                        # Không tìm được entry_time → chưa đủ thông tin → skip
-                        continue
-                    if mfe_pct > 0 and pnl_pct < 1.0 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
-                        qty = abs(amt)
-                        close_side = "SELL" if is_long else "BUY"
-                        try:
-                            exchange.place_market_order(sym, close_side, qty)
-                            exchange.cancel_all_orders(sym)
-                            _mfe_prices.pop(sym, None)
-                            notifier.telegram.send(
-                                f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
-                                f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
-                        except Exception as e:
-                            logger.error(f"[MFEScan] BE close {sym}: {e}")
-                    continue
+                        pass  # không tìm được → held_secs = 0 → chưa đủ
 
-                # Breakeven exit: khi nào gần về entry thì đóng (phải từng có lời trước)
-                # Đợi tối thiểu BREAKEVEN_SCAN_HOLD_SECONDS sau khi vào lệnh
-                _min_hold = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 60)
-                _entry_time = None
-                with lock:
-                    for t in reversed(state.get("trade_log", [])):
-                        if t.get("symbol") == sym and t.get("status") == "OPEN":
-                            _entry_time = t.get("time")
-                            break
-                _held_secs = 9999
-                if _entry_time:
-                    try:
-                        _held_secs = (datetime.now() - datetime.strptime(_entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
-                    except Exception:
-                        pass
-                else:
-                    # Không tìm được entry_time → skip
-                    continue
-                if mfe_pct > 0 and pnl_pct < 1.0 and _held_secs >= _min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
-                    qty = abs(amt)
-                    close_side = "SELL" if is_long else "BUY"
-                    try:
-                        exchange.place_market_order(sym, close_side, qty)
-                        exchange.cancel_all_orders(sym)
-                        _mfe_prices.pop(sym, None)
-                        notifier.telegram.send(
-                            f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
-                            f"Từng lời {mfe_pct:.1f}% → sắp về entry → đóng\n"
-                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                        )
-                    except Exception as e:
-                        logger.error(f"[MFEScan] BE close {sym}: {e}")
-                    continue
+                    if getattr(config, "BREAKEVEN_EXIT_ENABLED", True) and _held_secs >= min_hold and mfe_pct >= peak_pct:
+                        rev_key = f"_be_rev_{sym}"
+                        is_reversing = False
+                        if not is_long:
+                            is_reversing = mark > mfe * 1.002
+                        else:
+                            is_reversing = mark < mfe * 0.998
+
+                        with lock:
+                            rev_count = state.get(rev_key, 0)
+                            if is_reversing:
+                                rev_count += 1
+                                state[rev_key] = rev_count
+                            else:
+                                state[rev_key] = 0
+                                rev_count = 0
+
+                        if rev_count >= confirm_n and pnl_pct <= pnl_floor:
+                            qty = abs(amt)
+                            close_side = "SELL" if is_long else "BUY"
+                            try:
+                                exchange.place_market_order(sym, close_side, qty)
+                                exchange.cancel_all_orders(sym)
+                                _mfe_prices.pop(sym, None)
+                                with lock:
+                                    state.pop(rev_key, None)
+                                notifier.telegram.send(
+                                    f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
+                                    f"Peak {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
+                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                )
+                                continue
+                            except Exception as e:
+                                logger.error(f"[MFEScan] BE close {sym}: {e}")
 
                 # Tính retracement
                 retrace_pct = getattr(config, "MFE_RETRACE_PCT", 0.40)
