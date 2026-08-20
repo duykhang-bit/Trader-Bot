@@ -775,7 +775,7 @@ function renderDashboard(d) {
             })()}
         </div>
         <div class="control-row">
-            <span>&#x1F504; Breakeven Exit:</span>
+            <span>&#x1F4C8; Peak Profit Trailing:</span>
             ${(() => {
                 const en = d.breakeven_exit_enabled !== false;
                 const pumpSecs = d.breakeven_pump_hold_seconds ?? 180;

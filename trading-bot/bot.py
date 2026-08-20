@@ -1512,7 +1512,7 @@ def position_reversal_monitor(exchange, notifier):
                             exchange.place_market_order(symbol, close_side, qty)
                             exchange.cancel_all_orders(symbol)
                             notifier.telegram.send(
-                                f"🔄 <b>BREAKEVEN EXIT (Pump)</b>: {symbol} {side}\n"
+                                f"🔄 <b>📈 PEAK PROFIT EXIT (Pump)</b>: {symbol} {side}\n"
                                 f"Peak lời {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
@@ -2040,7 +2040,7 @@ def mfe_scan_monitor(exchange, notifier):
                                 with lock:
                                     state.pop(rev_key, None)
                                 notifier.telegram.send(
-                                    f"🔄 <b>BREAKEVEN EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
+                                    f"🔄 <b>📈 PEAK PROFIT EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
                                     f"Peak {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
                                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                 )
