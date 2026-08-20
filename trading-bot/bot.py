@@ -878,6 +878,13 @@ def _armed_execute(sym, info, trigger_price):
         if not sl_ok:
             exc.place_market_order(sym, info["close_side"], qty)
             logger.error(f"[Armed] SL FAILED {sym} — emergency close")
+            if noti:
+                noti.telegram.send(
+                    f"⚠️ <b>ARMED SL FAILED — Emergency Close</b>\n"
+                    f"🪙 {sym} {info['signal']}\n"
+                    f"SL đặt thất bại 3 lần → đóng lệnh ngay\n"
+                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
             return
 
         # TP
