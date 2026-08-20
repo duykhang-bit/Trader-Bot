@@ -405,7 +405,7 @@ async function setBreakevenHold() {
     const scanEl = document.getElementById('breakeven-scan-hold');
     const pump = pumpEl ? parseInt(pumpEl.value) : 30;
     const scan = scanEl ? parseInt(scanEl.value) : 60;
-    if isNaN(pump) || pump < 0 || pump > 3600 || isNaN(scan) || scan < 0 || scan > 3600) { toast('Delay phải 0-3600 giây', false); return; }
+    if (isNaN(pump) || pump < 0 || pump > 3600 || isNaN(scan) || scan < 0 || scan > 3600) { toast('Delay phải 0-3600 giây', false); return; }
     const r1 = await apiPost('/api/breakeven_exit/hold', {pump_seconds: pump, scan_seconds: scan});
     if (r1 && r1.msg) toast(r1.msg, r1.ok !== false);
     refresh();
