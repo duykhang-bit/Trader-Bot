@@ -1516,9 +1516,9 @@ def position_reversal_monitor(exchange, notifier):
                                 f"Peak lời {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
+                            continue  # đã đóng → skip MFE check bên dưới
                         except Exception as e:
                             logger.error(f"[ReversalMon] BE close {symbol}: {e}")
-                    continue
 
                 # ── MFE retracement >= 40% → đóng giữ lời ──
                 if mfe_pct >= 3.0:
