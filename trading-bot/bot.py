@@ -3474,6 +3474,10 @@ def pump_scan_engine(exchange, notifier):
                         and p["symbol"] in pump_trade_syms      # do pump engine vào
                     }
 
+                # Chỉ chạy khi Reversal Monitor đang bật
+                if not getattr(config, "REVERSAL_MONITOR_ENABLED", True):
+                    pump_shorts = set()
+
                 for symbol in pump_shorts:
                     # Tìm signal vừa scan cho coin này — check cả pump mạnh lẫn pump nhẹ
                     all_sigs = list(state.get("pump_signals", [])) + list(state.get("pump_nhe_signals", []))
