@@ -3488,7 +3488,7 @@ def pump_scan_engine(exchange, notifier):
                     score     = sig_dict.get("score", 0)
 
                     # Đợi tối thiểu BREAKEVEN_PUMP_HOLD_SECONDS trước khi check reversal
-                    _min_hold_pump = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 30)
+                    _min_hold_pump = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180)
                     _entry_time_pump = None
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
