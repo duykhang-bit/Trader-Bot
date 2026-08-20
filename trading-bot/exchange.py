@@ -286,38 +286,66 @@ class BinanceFutures:
         return result
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """SL — dùng Algo Conditional Order API"""
+        """SL — dùng Algo Conditional Order API, fallback sang order thường"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        result = self._post("/fapi/v1/algoOrder", {
-            "symbol": symbol, "side": side,
-            "algotype": "CONDITIONAL",
-            "type": "STOP_MARKET",
-            "triggerPrice": str(price),
-            "quantity": str(quantity),
-            "reduceOnly": "true",
-            "workingType": "MARK_PRICE"
-        })
-        logger.info(f"SL placed: {side} {symbol} qty={quantity} @ {price}")
-        return result
+        try:
+            result = self._post("/fapi/v1/algoOrder", {
+                "symbol": symbol, "side": side,
+                "algotype": "CONDITIONAL",
+                "type": "STOP_MARKET",
+                "triggerPrice": str(price),
+                "quantity": str(quantity),
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"SL placed (algo): {side} {symbol} qty={quantity} @ {price}")
+            return result
+        except Exception as e:
+            logger.warning(f"SL algo failed for {symbol}: {e} — fallback to regular order")
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "STOP_MARKET",
+                "stopPrice": str(price),
+                "quantity": str(quantity),
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE",
+                "timeInForce": "GTC"
+            })
+            logger.info(f"SL placed (regular): {side} {symbol} qty={quantity} @ {price}")
+            return result
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
-        """TP — dùng Algo Conditional Order API"""
+        """TP — dùng Algo Conditional Order API, fallback sang order thường"""
         price = self._round_price(stop_price)
         if quantity == int(quantity):
             quantity = int(quantity)
-        result = self._post("/fapi/v1/algoOrder", {
-            "symbol": symbol, "side": side,
-            "algotype": "CONDITIONAL",
-            "type": "TAKE_PROFIT_MARKET",
-            "triggerPrice": str(price),
-            "quantity": str(quantity),
-            "reduceOnly": "true",
-            "workingType": "MARK_PRICE"
-        })
-        logger.info(f"TP placed: {side} {symbol} qty={quantity} @ {price}")
-        return result
+        try:
+            result = self._post("/fapi/v1/algoOrder", {
+                "symbol": symbol, "side": side,
+                "algotype": "CONDITIONAL",
+                "type": "TAKE_PROFIT_MARKET",
+                "triggerPrice": str(price),
+                "quantity": str(quantity),
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE"
+            })
+            logger.info(f"TP placed (algo): {side} {symbol} qty={quantity} @ {price}")
+            return result
+        except Exception as e:
+            logger.warning(f"TP algo failed for {symbol}: {e} — fallback to regular order")
+            result = self._post("/fapi/v1/order", {
+                "symbol": symbol, "side": side,
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": str(price),
+                "quantity": str(quantity),
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE",
+                "timeInForce": "GTC"
+            })
+            logger.info(f"TP placed (regular): {side} {symbol} qty={quantity} @ {price}")
+            return result
 
     def cancel_all_orders(self, symbol: str):
         """Hủy tất cả lệnh đang mở"""
