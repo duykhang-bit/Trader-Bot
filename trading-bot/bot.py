@@ -1474,7 +1474,7 @@ def position_reversal_monitor(exchange, notifier):
                         pass
                 else:
                     held_secs = 0  # không tìm được → coi như mới vào → chưa đủ thời gian
-                if mfe_pct > 0 and pnl_pct < 0.5 and held_secs >= min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                if mfe_pct > 0 and pnl_pct < 1.0 and held_secs >= min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     with lock:
                         state.pop(mfe_key, None)
                     qty = abs(amt)
@@ -1981,7 +1981,7 @@ def mfe_scan_monitor(exchange, notifier):
                     else:
                         # Không tìm được entry_time → chưa đủ thông tin → skip
                         continue
-                    if mfe_pct > 0 and pnl_pct < 0.5 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                    if mfe_pct > 0 and pnl_pct < 1.0 and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                         qty = abs(amt)
                         close_side = "SELL" if is_long else "BUY"
                         try:
@@ -2015,7 +2015,7 @@ def mfe_scan_monitor(exchange, notifier):
                 else:
                     # Không tìm được entry_time → skip
                     continue
-                if mfe_pct > 0 and pnl_pct < 0.5 and _held_secs >= _min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
+                if mfe_pct > 0 and pnl_pct < 1.0 and _held_secs >= _min_hold and getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     qty = abs(amt)
                     close_side = "SELL" if is_long else "BUY"
                     try:
