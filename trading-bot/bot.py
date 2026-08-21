@@ -2082,7 +2082,7 @@ def mfe_scan_monitor(exchange, notifier):
                     _mfe_prices.pop(sym, None)
 
         except Exception as e:
-            logger.debug(f"[MFEScan] Error: {e}")
+            logger.error(f"[MFEScan] Error: {e}", exc_info=True)
 
         time.sleep(5)
 
