@@ -3480,8 +3480,10 @@ def pump_scan_engine(exchange, notifier):
                         and p["symbol"] in pump_trade_syms      # do pump engine vào
                     }
 
-                # Chỉ chạy khi Reversal Monitor đang bật
+                # Chỉ chạy khi Reversal Monitor đang bật VÀ không phải chỉ alert
                 if not getattr(config, "REVERSAL_MONITOR_ENABLED", True):
+                    pump_shorts = set()
+                elif getattr(config, "REVERSAL_ALERT_ONLY", False):
                     pump_shorts = set()
 
                 for symbol in pump_shorts:
