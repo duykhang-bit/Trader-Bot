@@ -106,8 +106,11 @@ MAX_LOSS_ENABLED = False  # Tắt mặc định — bật trên UI khi cần
 # Bật/tắt Position Reversal Monitor — tự động chốt lời khi phát hiện đảo chiều
 # True  = bot tự đóng khi có 2/3 tín hiệu đảo chiều
 # False = chỉ cảnh báo Telegram, không tự đóng
-REVERSAL_MONITOR_ENABLED = True
+REVERSAL_MONITOR_ENABLED = False  # Tắt mặc định — bật trên UI khi cần
 REVERSAL_ALERT_ONLY      = False   # True = chỉ alert, không đóng lệnh
+
+# Scan Protector — chốt lời sớm khi lệnh scan đảo chiều
+SCAN_PROTECT_ENABLED = False  # Tắt mặc định — bật trên UI khi cần
 
 # ============================================================
 # AUTO PROFIT LOCK — Tự chốt lời khi coin bay mạnh mà TP còn xa
