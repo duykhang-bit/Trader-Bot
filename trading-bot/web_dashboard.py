@@ -415,8 +415,6 @@ function updateTVChart() {
         frame.src = `https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${sym}&interval=${interval}&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&showpopupbutton=1&locale=vi`;
     }
 }
-    refresh();
-}
 async function toggleBreakevenExit(enabled) {
     const r = await apiPost('/api/breakeven_exit', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
