@@ -1972,28 +1972,14 @@ def mfe_scan_monitor(exchange, notifier):
                 else:
                     pnl_pct = (entry - mark) / entry * 100
 
-                # Track MFE — nếu chưa có trong cache, lấy từ klines để không miss đỉnh
+                # Track MFE — chỉ track từ lúc bot chạy, không init từ klines
                 if is_long:
-                    if sym not in _mfe_prices:
-                        try:
-                            k = exchange.get_klines(sym, "1m", limit=200)
-                            highs = [float(x[2]) for x in k]
-                            _mfe_prices[sym] = max(highs)
-                        except Exception:
-                            _mfe_prices[sym] = mark
-                    mfe = _mfe_prices[sym]
+                    mfe = _mfe_prices.get(sym, mark)
                     if mark > mfe:
                         _mfe_prices[sym] = mark
                         mfe = mark
                 else:
-                    if sym not in _mfe_prices:
-                        try:
-                            k = exchange.get_klines(sym, "1m", limit=200)
-                            lows = [float(x[3]) for x in k]
-                            _mfe_prices[sym] = min(lows)
-                        except Exception:
-                            _mfe_prices[sym] = mark
-                    mfe = _mfe_prices[sym]
+                    mfe = _mfe_prices.get(sym, mark)
                     if mark < mfe:
                         _mfe_prices[sym] = mark
                         mfe = mark
