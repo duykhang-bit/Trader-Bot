@@ -2560,9 +2560,11 @@ def api_quick_trade():
 
         msg = f"{'🔴' if side=='SHORT' else '🟢'} {side} {symbol} @ ${price:.6g} qty={qty} lev={leverage}x"
         logger.info(f"[QuickTrade] {msg}")
-        if _notifier:
-            try: _notifier.telegram.send(f"⚡ <b>QUICK {side}</b>\n🪙 {symbol} @ ${price:,.6g}\n📦 qty={qty} {leverage}x")
-            except: pass
+        try:
+            _noti = _state.get("_notifier") if _state else None
+            if _noti:
+                _noti.telegram.send(f"⚡ <b>QUICK {side}</b>\n🪙 {symbol} @ ${price:,.6g}\n📦 qty={qty} {leverage}x")
+        except: pass
         return jsonify({"ok": True, "msg": msg})
     except Exception as e:
         logger.error(f"[QuickTrade] {symbol} {side}: {e}")
