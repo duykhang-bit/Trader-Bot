@@ -313,6 +313,7 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
         </div>
     </div>
     <div id="content">Loading...</div>
+    <div id="tv-chart-section" class="section" style="padding:12px;margin:0 12px 12px"></div>
 </div>
 <div id="toast-container"></div>
 
@@ -394,6 +395,31 @@ async function toggleMfeScan(enabled) {
     const r = await apiPost('/api/mfe_scan', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
+}
+let _chartInitialized = false;
+function initTVChart(watchlist) {
+    const el = document.getElementById('tv-chart-section');
+    if (!el || el.dataset.loaded) return;
+    el.dataset.loaded = '1';
+    const chartSym = watchlist.length > 0 ? watchlist[0].replace('USDT','') + 'USDTPERP' : 'BTCUSDTPERP';
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:13px;color:#58a6ff;font-weight:600">📈 Chart</span>
+        <select id="tv-symbol-select" onchange="updateTVChart()"
+                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
+          ${watchlist.map(s => `<option value="${s.replace('USDT','')+'USDTPERP'}">${s.replace('USDT','')}</option>`).join('')}
+        </select>
+        <select id="tv-interval-select" onchange="updateTVChart()"
+                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
+          <option value="1">1m</option><option value="5">5m</option>
+          <option value="15" selected>15m</option><option value="60">1h</option><option value="240">4h</option>
+        </select>
+      </div>
+      <div style="height:400px;border-radius:6px;overflow:hidden">
+        <iframe id="tv-chart-frame"
+          src="https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${chartSym}&interval=15&hidesidetoolbar=0&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&locale=vi"
+          style="width:100%;height:400px;border:none" allowtransparency="true" scrolling="no"></iframe>
+      </div>`;
 }
 async function toggleEntryOffset(enabled) {
     const r = await apiPost('/api/entry_offset', {enabled});
@@ -879,30 +905,11 @@ function renderDashboard(d) {
     </div>`;
 
     // ── TRADINGVIEW CHART ────────────────────────────────────
-    const chartSym = (d.watchlist && d.watchlist.length > 0) ? d.watchlist[0].replace('USDT','') + 'USDTPERP' : 'BTCUSDTPERP';
-    html += `<div class="section" style="padding:12px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <span style="font-size:13px;color:#58a6ff;font-weight:600">📈 Chart</span>
-        <select id="tv-symbol-select" onchange="updateTVChart()"
-                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
-          ${(d.watchlist||[]).map(s => `<option value="${s.replace('USDT','') + 'USDTPERP'}" ${s===d.watchlist[0]?'selected':''}>${s.replace('USDT','')}</option>`).join('')}
-        </select>
-        <select id="tv-interval-select" onchange="updateTVChart()"
-                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
-          <option value="1">1m</option>
-          <option value="5">5m</option>
-          <option value="15" selected>15m</option>
-          <option value="60">1h</option>
-          <option value="240">4h</option>
-        </select>
-      </div>
-      <div id="tv-chart-container" style="height:400px;border-radius:6px;overflow:hidden">
-        <iframe id="tv-chart-frame"
-          src="https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${chartSym}&interval=15&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&showpopupbutton=1&studies_overrides={}&overrides={}&enabled_features=[]&disabled_features=[]&locale=vi&utm_source=localhost"
-          style="width:100%;height:400px;border:none"
-          allowtransparency="true" scrolling="no"></iframe>
-      </div>
-    </div>`;
+    // Chart render vào div cố định bên ngoài, không reload theo dashboard
+    if (!_chartInitialized) {
+        _chartInitialized = true;
+        setTimeout(() => initTVChart(d.watchlist || []), 100);
+    }
 
     // ── PUMP RADAR SECTION ──────────────────────────────────
     html += `<div class="section" style="padding:0;border-color:#3d1a1a">
