@@ -1997,6 +1997,8 @@ def mfe_scan_monitor(exchange, notifier):
                     min_hold  = getattr(config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300)
                     pnl_floor = getattr(config, "BREAKEVEN_SCAN_PNL_FLOOR", 0.7)
                     confirm_n = getattr(config, "BREAKEVEN_REVERSAL_CONFIRM", 2)
+                    be_enabled = getattr(config, "BREAKEVEN_EXIT_ENABLED", True)
+                    logger.info(f"[MFEScan] {sym}: mfe={mfe_pct:.1f}% pnl={pnl_pct:.1f}% be_enabled={be_enabled} peak_ok={mfe_pct>=peak_pct}")
 
                     _entry_time = None
                     with lock:
@@ -2058,6 +2060,8 @@ def mfe_scan_monitor(exchange, notifier):
                     if entry - mfe <= 0:
                         continue
                     retracement = (mark - mfe) / (entry - mfe)
+
+                logger.info(f"[MFEScan] {sym}: mfe={mfe_pct:.1f}% retrace={retracement*100:.0f}% threshold={retrace_pct*100:.0f}%")
 
                 if retracement >= retrace_pct:
                     qty = abs(amt)
