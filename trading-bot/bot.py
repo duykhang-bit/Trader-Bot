@@ -1475,6 +1475,8 @@ def position_reversal_monitor(exchange, notifier):
                         held_secs = (datetime.now() - datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")).total_seconds()
                     except Exception:
                         pass
+                else:
+                    held_secs = 9999  # không tìm được → coi như đã hold đủ
 
                 if not getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     pass
@@ -2027,7 +2029,7 @@ def mfe_scan_monitor(exchange, notifier):
                         except Exception:
                             pass
                     else:
-                        pass  # không tìm được → held_secs = 0 → chưa đủ
+                        _held_secs = 9999  # không tìm được → coi như đã hold đủ
 
                     if getattr(config, "BREAKEVEN_EXIT_ENABLED", True) and _held_secs >= min_hold and mfe_pct >= peak_pct:
                         rev_key = f"_be_rev_{sym}"
