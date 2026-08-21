@@ -1212,7 +1212,7 @@ def price_updater(exchange):
                     pnl = (entry - mark) * abs(amt)
 
                 if pnl < -max_loss:
-                    # Max loss → đóng NGAY dù có SL hay không (override SL)
+                    # Max loss → đóng NGAY khi lỗ vượt ngưỡng
                     qty = abs(amt)
                     close_side = "SELL" if amt > 0 else "BUY"
                     if qty == int(qty):
@@ -1226,15 +1226,15 @@ def price_updater(exchange):
                             exchange.place_market_order(sym, close_side, batch)
                             remaining -= batch
                         exchange.cancel_all_orders(sym)
-                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} (no SL on Binance, exceeded -${max_loss})")
+                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} exceeded -${max_loss}")
                         try:
                             notifier_inst = state.get("_notifier")
                             if notifier_inst:
                                 notifier_inst.telegram.send(
                                     f"🚨 <b>MAX LOSS SAFETY NET</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 {sym} (không có SL trên Binance)\n"
-                                    f"💵 PnL: <b>${pnl:.2f}</b> (exceeded -${max_loss})\n"
+                                    f"📊 {sym}\n"
+                                    f"💵 PnL: <b>${pnl:.2f}</b> (vượt -${max_loss})\n"
                                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                 )
                         except Exception:
