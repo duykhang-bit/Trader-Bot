@@ -101,7 +101,7 @@ BREAKEVEN_SCAN_PNL_FLOOR = 0.7   # scan: cắt khi còn <= 0.7%
 BREAKEVEN_REVERSAL_CONFIRM = 2
 MAX_LOSS_PER_POSITION = 20.0
 MAX_LOSS_PCT_PER_POSITION = 0.20
-MAX_LOSS_ENABLED = True  # Bật/tắt safety net — tự đóng lệnh khi lỗ vượt MAX_LOSS
+MAX_LOSS_ENABLED = False  # Tắt mặc định — bật trên UI khi cần
 
 # Bật/tắt Position Reversal Monitor — tự động chốt lời khi phát hiện đảo chiều
 # True  = bot tự đóng khi có 2/3 tín hiệu đảo chiều

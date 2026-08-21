@@ -237,7 +237,20 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 9999; animation: fadeIn 0.3s; }
 .toast-ok { background: #238636; color: #fff; } .toast-err { background: #da3633; color: #fff; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-@media (max-width: 768px) { .stats { grid-template-columns: repeat(2, 1fr); } .prices-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 768px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .prices-grid { grid-template-columns: repeat(2, 1fr); }
+  .control-row { flex-wrap: wrap; gap: 4px; font-size: 11px; }
+  .control-row span { min-width: 120px; }
+  .btn { padding: 4px 8px; font-size: 11px; }
+  .btn-sm { padding: 2px 6px; font-size: 10px; }
+  .section { padding: 10px; margin-bottom: 8px; }
+  table { font-size: 11px; }
+  th, td { padding: 4px 6px; }
+  #tv-chart-section { margin: 0 0 8px 0 !important; }
+  .container { padding: 0 6px; }
+  h2 { font-size: 13px; }
+}
 /* ── Pump Nhẹ Radar ── */
 .pnhe-wrap { background: linear-gradient(135deg,#0d1117 0%,#0a0d14 100%); border: 1px solid #1a2a3d; border-radius: 12px; padding: 16px; }
 .pnhe-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
