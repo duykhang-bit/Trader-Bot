@@ -395,6 +395,28 @@ async function toggleMfeScan(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleEntryOffset(enabled) {
+    const r = await apiPost('/api/entry_offset', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
+async function setEntryOffset() {
+    const pct = parseFloat(document.getElementById('entry-offset-pct')?.value || 0.3);
+    if (isNaN(pct) || pct < 0.1 || pct > 2.0) { toast('Offset phải 0.1-2.0%', false); return; }
+    const r = await apiPost('/api/entry_offset', {pct: pct / 100});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
+function updateTVChart() {
+    const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
+    const interval = document.getElementById('tv-interval-select')?.value || '15';
+    const frame = document.getElementById('tv-chart-frame');
+    if (frame) {
+        frame.src = `https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${sym}&interval=${interval}&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&showpopupbutton=1&locale=vi`;
+    }
+}
+    refresh();
+}
 async function toggleBreakevenExit(enabled) {
     const r = await apiPost('/api/breakeven_exit', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -837,6 +859,51 @@ function renderDashboard(d) {
                 </span>`;
             })()}
         </div>
+        <div class="control-row">
+            <span>&#x1F3AF; Entry Offset:</span>
+            ${(() => {
+                const eo = d.entry_offset_enabled === true;
+                const pct = ((d.entry_offset_pct || 0.003) * 100).toFixed(1);
+                return `
+                <button class="btn btn-sm ${eo ? 'btn-green' : ''}" onclick="toggleEntryOffset(true)"
+                        style="${eo ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!eo ? 'btn-red' : ''}" onclick="toggleEntryOffset(false)"
+                        style="${!eo ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <input id="entry-offset-pct" type="number" min="0.1" max="2.0" step="0.1" value="${pct}"
+                       style="width:44px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center">
+                <span style="font-size:11px;color:#484f58">%</span>
+                <button class="btn btn-sm" onclick="setEntryOffset()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#d29922;border:1px solid #3a2a00">Set</button>
+                <span style="font-size:11px;color:${eo?'#d29922':'#8b949e'}">
+                    ${eo?'LONG −'+pct+'% | SHORT +'+pct+'%':'Đã tắt — vào đúng giá liq'}
+                </span>`;
+            })()}
+        </div>
+    </div>`;
+
+    // ── TRADINGVIEW CHART ────────────────────────────────────
+    const chartSym = (d.watchlist && d.watchlist.length > 0) ? d.watchlist[0].replace('USDT','') + 'USDT.P' : 'BTCUSDT.P';
+    html += `<div class="section" style="padding:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:13px;color:#58a6ff;font-weight:600">📈 Chart</span>
+        <select id="tv-symbol-select" onchange="updateTVChart()"
+                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
+          ${(d.watchlist||[]).map(s => `<option value="${s.replace('USDT','') + 'USDT.P'}" ${s===d.watchlist[0]?'selected':''}>${s.replace('USDT','')}</option>`).join('')}
+        </select>
+        <select id="tv-interval-select" onchange="updateTVChart()"
+                style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
+          <option value="1">1m</option>
+          <option value="5">5m</option>
+          <option value="15" selected>15m</option>
+          <option value="60">1h</option>
+          <option value="240">4h</option>
+        </select>
+      </div>
+      <div id="tv-chart-container" style="height:400px;border-radius:6px;overflow:hidden">
+        <iframe id="tv-chart-frame"
+          src="https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${chartSym}&interval=15&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&showpopupbutton=1&studies_overrides={}&overrides={}&enabled_features=[]&disabled_features=[]&locale=vi&utm_source=localhost"
+          style="width:100%;height:400px;border:none"
+          allowtransparency="true" scrolling="no"></iframe>
+      </div>
     </div>`;
 
     // ── PUMP RADAR SECTION ──────────────────────────────────
@@ -1003,100 +1070,11 @@ function renderDashboard(d) {
         html += `</table></div>`;
     }
 
-    // Scan Status — coin đang quét + signals
-    html += `<div class="section"><h2>&#x1F50D; Scan Status</h2>`;
-
-    // Trend overview cho từng coin
-    html += `<div style="margin-bottom:12px"><b style="font-size:12px;color:#8b949e">COIN TREND:</b></div>`;
-    html += `<div class="prices-grid" style="margin-bottom:12px">`;
-    d.watchlist.forEach(sym => {
-        const name = sym.replace('USDT','');
-        const price = d.prices[sym] || 0;
-        // Find candidate for this coin
-        const cand = (d.candidates || []).find(c => c.symbol === sym);
-        let trendIcon = '&#x26AA;'; // neutral
-        let trendText = 'HOLD';
-        let trendCls = '';
-        if (cand) {
-            if (cand.signal === 'LONG') { trendIcon = '&#x1F7E2;'; trendText = 'LONG'; trendCls = 'green'; }
-            else if (cand.signal === 'SHORT') { trendIcon = '&#x1F534;'; trendText = 'SHORT'; trendCls = 'red'; }
-        }
-        // Check pending watch
-        const pending = (d.pending_watch || {})[sym];
-        if (!cand && pending) {
-            if (pending.signal === 'LONG') { trendIcon = '&#x1F7E1;'; trendText = `PENDING L WR=${pending.win_rate.toFixed(0)}% #${pending.retry}`; trendCls = 'yellow'; }
-            else if (pending.signal === 'SHORT') { trendIcon = '&#x1F7E1;'; trendText = `PENDING S WR=${pending.win_rate.toFixed(0)}% #${pending.retry}`; trendCls = 'yellow'; }
-        }
-        let pStr = price >= 1000 ? fmtUsd(price) : '$' + fmt(price, price >= 1 ? 2 : 5);
-
-        // AI Bias
-        const aiBias = (d.ai_bias || {})[sym] || '';
-        let aiHtml = '';
-        if (aiBias) {
-            const aiCls = aiBias === 'LONG' ? 'green' : (aiBias === 'SHORT' ? 'red' : 'yellow');
-            aiHtml = `<div style="font-size:9px;margin-top:2px"><span class="${aiCls}">AI: <b>${aiBias}</b></span></div>`;
-        }
-
-        // Entry targets from liq tracker
-        const targets = (d.entry_targets || {})[sym] || {};
-        let targetHtml = '';
-        if (targets.short_entry) {
-            const sp = targets.short_entry >= 1000 ? fmtUsd(targets.short_entry) : '$'+fmt(targets.short_entry, targets.short_entry>=1?2:5);
-            targetHtml += `<div style="font-size:10px;color:#f85149;margin-top:3px"><b>SHORT</b> @ ${sp}</div>`;
-        }
-        if (targets.long_entry) {
-            const lp = targets.long_entry >= 1000 ? fmtUsd(targets.long_entry) : '$'+fmt(targets.long_entry, targets.long_entry>=1?2:5);
-            targetHtml += `<div style="font-size:10px;color:#3fb950"><b>LONG</b> @ ${lp}</div>`;
-        }
-
-        html += `<div class="price-item">
-            <div class="coin">${trendIcon} ${name}</div>
-            <div class="price">${pStr}</div>
-            <div style="font-size:11px;margin-top:2px" class="${trendCls}"><b>${trendText}</b></div>
-            ${aiHtml}
-            ${targetHtml}
-        </div>`;
-    });
-    html += `</div>`;
-
-    // Signal details table
-    if (d.candidates && d.candidates.length > 0) {
-        html += `<table><tr><th>Coin</th><th>Signal</th><th>Score</th><th>Now</th><th>Entry Target</th><th>RSI</th><th>Reason</th></tr>`;
-        d.candidates.forEach(c => {
-            const filled = Math.round(c.score / 10);
-            const bar = '&#x2588;'.repeat(filled) + '&#x2591;'.repeat(10 - filled);
-            const pStr = c.price >= 1000 ? fmtUsd(c.price) : '$' + fmt(c.price, c.price >= 1 ? 3 : 5);
-            // Entry target: từ entry_targets
-            const targets = (d.entry_targets || {})[c.symbol] || {};
-            let entryStr = '-';
-            if (c.signal === 'LONG' && targets.long_entry) {
-                const ep = targets.long_entry >= 1000 ? fmtUsd(targets.long_entry) : '$'+fmt(targets.long_entry, targets.long_entry>=1?2:5);
-                entryStr = `<span style="color:#3fb950">${ep}</span>`;
-            } else if (c.signal === 'SHORT' && targets.short_entry) {
-                const ep = targets.short_entry >= 1000 ? fmtUsd(targets.short_entry) : '$'+fmt(targets.short_entry, targets.short_entry>=1?2:5);
-                entryStr = `<span style="color:#f85149">${ep}</span>`;
-            }
-            html += `<tr>
-                <td><b>${c.symbol.replace('USDT','')}</b></td>
-                <td>${sideHtml(c.signal)}</td>
-                <td>${bar} <b>${fmt(c.score,0)}%</b></td>
-                <td>${pStr}</td>
-                <td><b>${entryStr}</b></td>
-                <td>${fmt(c.rsi,0)}</td>
-                <td style="font-size:11px;color:#8b949e;max-width:200px;overflow:hidden;text-overflow:ellipsis">${c.reason}</td>
-            </tr>`;
-        });
-        html += `</table>`;
-    } else {
-        html += `<p style="color:#8b949e;font-size:12px">&#x23F3; Bot đang quét mỗi 60s. Chưa có coin nào đủ score ≥ 50%</p>`;
-        html += `<p style="color:#8b949e;font-size:11px;margin-top:4px">Điều kiện vào lệnh: RSI + EMA + MACD + Volume + MTF trend phải đồng thuận</p>`;
-    }
-
     // Armed Entries — lệnh đang chờ giá tới zone
     const armed = d.armed_entries || {};
     const armedKeys = Object.keys(armed);
     if (armedKeys.length > 0) {
-        html += `<div style="margin-top:12px;padding:10px;background:rgba(88,166,255,.05);border:1px solid #1a3a5a;border-radius:8px">`;
+        html += `<div class="section">`;
         html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới zone (MARKET ngay khi chạm):</b>`;
         html += `<table style="margin-top:6px"><tr><th>Coin</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>TTL</th></tr>`;
         armedKeys.forEach(sym => {
@@ -1115,72 +1093,6 @@ function renderDashboard(d) {
                 <td>1:${a.rr.toFixed(1)}</td>
                 <td style="color:#d29922">${ttlStr}</td>
             </tr>`;
-        });
-        html += `</table></div>`;
-    }
-
-    // Trigger prices - hiện rõ giá cụ thể bot sẽ vào lệnh
-    html += `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">`;
-    html += `<b style="font-size:12px;color:#58a6ff">&#x1F3AF; TRIGGER PRICES — Vùng liq bot sẽ vào lệnh:</b>`;
-    html += `<table style="margin-top:8px"><tr><th>Coin</th><th style="color:#f85149">SHORT khi giá pump lên ≥ (liq LONG zone)</th><th style="color:#3fb950">LONG khi giá dump xuống ≤ (liq SHORT zone)</th><th>Current</th><th>Khoảng cách</th></tr>`;
-    d.watchlist.forEach(sym => {
-        const name = sym.replace('USDT','');
-        const p = d.prices[sym] || 0;
-        const targets = (d.entry_targets || {})[sym] || {};
-        const shortP = targets.short_entry || 0;
-        const longP = targets.long_entry || 0;
-        const hasReal = targets.has_real_data || false;
-        const dataTag = hasReal ? '' : ' <span style="color:#d29922;font-size:9px">(đang thu thập...)</span>';
-        const shortStr = shortP > 0 ? (shortP >= 1000 ? fmtUsd(shortP) : '$'+fmt(shortP, shortP>=1?2:6)) : '⏳';
-        const longStr  = longP  > 0 ? (longP  >= 1000 ? fmtUsd(longP)  : '$'+fmt(longP,  longP >=1?2:6)) : '⏳';
-        const curStr   = p >= 1000 ? fmtUsd(p) : '$'+fmt(p, p>=1?2:5);
-        const shortGap = shortP > 0 ? fmt((shortP-p)/p*100,2)+'%' : '-';
-        const longGap  = longP  > 0 ? fmt((p-longP)/p*100,2)+'%'  : '-';
-        html += `<tr>
-            <td><b>${name}</b></td>
-            <td style="color:#f85149">${shortStr}${dataTag} <span style="font-size:10px;color:#8b949e">(+${shortGap})</span></td>
-            <td style="color:#3fb950">${longStr}${dataTag} <span style="font-size:10px;color:#8b949e">(-${longGap})</span></td>
-            <td>${curStr}</td>
-            <td style="font-size:10px;color:#8b949e">SHORT: ${shortGap} | LONG: ${longGap}</td>
-        </tr>`;
-    });
-    html += `</table></div>`;
-
-    // Liq Strategy pending entries
-    if (d.split_positions_web && d.split_positions_web.length > 0) {
-        html += `<h2 style="margin-top:16px;font-size:13px;color:#58a6ff;border-top:1px solid #30363d;padding-top:12px">&#x26A1; Pending Liq Entries (bot will auto-enter at these prices)</h2>`;
-        html += `<table><tr><th>Coin</th><th>Dir</th><th>Entry1 (35%)</th><th>Entry2 (65%)</th><th>SL</th><th>TP</th><th>Status</th></tr>`;
-        d.split_positions_web.forEach(p => {
-            const s1 = p.filled1 ? '&#x2705;' : '&#x23F3;';
-            const s2 = p.filled2 ? '&#x2705;' : '&#x23F3;';
-            html += `<tr>
-                <td><b>${p.symbol.replace('USDT','')}</b></td>
-                <td>${sideHtml(p.direction)}</td>
-                <td>${s1} ${fmtUsd(p.entry1)}</td>
-                <td>${s2} ${fmtUsd(p.entry2)}</td>
-                <td style="color:#f85149">${fmtUsd(p.sl)}</td>
-                <td style="color:#3fb950">${fmtUsd(p.tp)}</td>
-                <td>${p.filled1 && p.filled2 ? '&#x2705; Both' : p.filled1 ? '&#x23F3; Wait E2' : '&#x23F3; Wait E1'}</td>
-            </tr>`;
-        });
-        html += `</table>`;
-    }
-    html += `</div>`;
-
-    // Trade History
-    if (d.trades_history && d.trades_history.length > 0) {
-        html += `<div class="section">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-                <h2 style="margin:0">&#x1F4CB; Recent Trades</h2>
-                <button onclick="clearTradeHistory()" style="background:#da3633;border:none;color:#fff;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">🗑 Clear Data</button>
-            </div>
-            <table>
-            <tr><th>#</th><th>Coin</th><th>Side</th><th>Entry</th><th>Close</th><th>PnL</th><th>%</th><th>Time</th></tr>`;
-        d.trades_history.forEach((t,i) => {
-            html += `<tr><td>${i+1}</td><td><b>${t.symbol.replace('USDT','')}</b></td><td>${sideHtml(t.side)}</td>
-                <td>$${fmt(t.entry,4)}</td><td>$${fmt(t.close,4)}</td>
-                <td class="${pnlColor(t.pnl)}"><b>${fmtUsd(t.pnl)}</b></td>
-                <td class="${pnlColor(t.pct)}">${fmt(t.pct,2)}%</td><td>${t.time.substring(11,16)}</td></tr>`;
         });
         html += `</table></div>`;
     }
@@ -2344,6 +2256,8 @@ def api_state():
         "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
         "mfe_scan_enabled":         getattr(_config, "MFE_SCAN_ENABLED", True),
         "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
+        "entry_offset_enabled":     getattr(_config, "ENTRY_OFFSET_ENABLED", False),
+        "entry_offset_pct":         getattr(_config, "ENTRY_OFFSET_PCT", 0.003),
         "breakeven_exit_enabled":     getattr(_config, "BREAKEVEN_EXIT_ENABLED", True),
         "breakeven_pump_hold_seconds": getattr(_config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180),
         "breakeven_scan_hold_seconds": getattr(_config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300),
@@ -3337,6 +3251,24 @@ def api_mfe_scan():
         pass
     status = "bật" if enabled else "tắt"
     return jsonify({"ok": True, "msg": f"MFE Scan: {status}", "enabled": bool(enabled)})
+
+@app.route("/api/entry_offset", methods=["POST"])
+@require_auth
+def api_entry_offset():
+    """Bật/tắt và set Entry Offset % cho scan engine."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+        if "enabled" in data:
+            _cfg.ENTRY_OFFSET_ENABLED = bool(data["enabled"])
+        if "pct" in data:
+            _cfg.ENTRY_OFFSET_PCT = max(0.001, min(0.02, float(data["pct"])))
+        enabled = getattr(_cfg, "ENTRY_OFFSET_ENABLED", False)
+        pct     = getattr(_cfg, "ENTRY_OFFSET_PCT", 0.003)
+        status  = f"bật {pct*100:.1f}%" if enabled else "tắt"
+        return jsonify({"ok": True, "msg": f"Entry Offset: {status}", "enabled": enabled, "pct": pct})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
 
 @app.route("/api/trailing_lock", methods=["POST"])
 @require_auth

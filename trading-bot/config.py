@@ -301,7 +301,11 @@ AI_ANALYSIS_INTERVAL_HOURS = 4
 #cd /root/Trader-Bot && git pull && pkill -9 -f bot.py; sleep 2; nohup /root/start_bot.sh > /tmp/bot.log 2>&1 &
 #BOT7
 
-# ── Web Dashboard Security ──────────────────────────────────
+# ── Entry Offset — dịch entry xuống/lên để bắt giá tốt hơn ──
+# LONG: entry = liq_entry × (1 - ENTRY_OFFSET_PCT)  → thấp hơn để bắt đáy
+# SHORT: entry = liq_entry × (1 + ENTRY_OFFSET_PCT) → cao hơn để bắt đỉnh
+ENTRY_OFFSET_ENABLED = False   # Tắt mặc định — bật trên UI khi muốn dùng
+ENTRY_OFFSET_PCT     = 0.003   # 0.3% — an toàn, ít miss lệnh
 # Mật khẩu đăng nhập web dashboard
 # Đổi thành mật khẩu của mày trước khi deploy
 WEB_PASSWORD = "Cr7ronaldojk"

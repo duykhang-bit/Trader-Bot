@@ -2902,6 +2902,14 @@ def scan_engine(exchange, notifier):
                     if liq_entry:
                         entry_price = round(liq_entry["price"], 8)
                         dist_pct = liq_entry["dist_pct"]
+                        # ── Entry Offset: dịch entry để bắt giá tốt hơn ──
+                        if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                            offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                            if best.signal == "LONG":
+                                entry_price = round(entry_price * (1 - offset_pct), 8)
+                            else:
+                                entry_price = round(entry_price * (1 + offset_pct), 8)
+                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: offset {offset_pct*100:.1f}% → entry={entry_price:.6f}")
                         logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
                                     f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
