@@ -879,13 +879,13 @@ function renderDashboard(d) {
     </div>`;
 
     // ── TRADINGVIEW CHART ────────────────────────────────────
-    const chartSym = (d.watchlist && d.watchlist.length > 0) ? d.watchlist[0].replace('USDT','') + 'USDT.P' : 'BTCUSDT.P';
+    const chartSym = (d.watchlist && d.watchlist.length > 0) ? d.watchlist[0].replace('USDT','') + 'USDTPERP' : 'BTCUSDTPERP';
     html += `<div class="section" style="padding:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span style="font-size:13px;color:#58a6ff;font-weight:600">📈 Chart</span>
         <select id="tv-symbol-select" onchange="updateTVChart()"
                 style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
-          ${(d.watchlist||[]).map(s => `<option value="${s.replace('USDT','') + 'USDT.P'}" ${s===d.watchlist[0]?'selected':''}>${s.replace('USDT','')}</option>`).join('')}
+          ${(d.watchlist||[]).map(s => `<option value="${s.replace('USDT','') + 'USDTPERP'}" ${s===d.watchlist[0]?'selected':''}>${s.replace('USDT','')}</option>`).join('')}
         </select>
         <select id="tv-interval-select" onchange="updateTVChart()"
                 style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
