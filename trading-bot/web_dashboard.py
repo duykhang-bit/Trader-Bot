@@ -402,23 +402,33 @@ function initTVChart(watchlist) {
     if (!el || el.dataset.loaded) return;
     el.dataset.loaded = '1';
     const chartSym = watchlist.length > 0 ? watchlist[0].replace('USDT','') + 'USDTPERP' : 'BTCUSDTPERP';
+    const watchlistOpts = watchlist.map(s => `<option value="${s.replace('USDT','')+'USDTPERP'}" data-sym="${s}">${s.replace('USDT','')}</option>`).join('');
     el.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:13px;color:#58a6ff;font-weight:600">📈 Chart</span>
         <select id="tv-symbol-select" onchange="updateTVChart()"
                 style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
-          ${watchlist.map(s => `<option value="${s.replace('USDT','')+'USDTPERP'}">${s.replace('USDT','')}</option>`).join('')}
+          ${watchlistOpts}
         </select>
         <select id="tv-interval-select" onchange="updateTVChart()"
                 style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9;font-size:12px;padding:3px 8px;border-radius:4px">
           <option value="1">1m</option><option value="5">5m</option>
           <option value="15" selected>15m</option><option value="60">1h</option><option value="240">4h</option>
         </select>
+        <span style="margin-left:auto;font-size:13px;color:#f85149;font-weight:600">⚡ Quick Trade</span>
+        <select id="qs-symbol-select" onchange="document.getElementById('qs-symbol').value=this.value; document.getElementById('tv-symbol-select').value=this.value.replace('USDT','')+'USDTPERP'; updateTVChart();"
+                style="background:#0d1117;border:1px solid #5a1a1a;color:#f85149;font-size:12px;padding:3px 8px;border-radius:4px">
+          ${watchlist.map(s => `<option value="${s}">${s.replace('USDT','')}</option>`).join('')}
+        </select>
+        <input id="qs-symbol" placeholder="SYMBOL" value="${watchlist[0]||''}"
+               style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#e6edf3;font-size:12px;width:100px">
+        <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
+        <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
-      <div style="height:400px;border-radius:6px;overflow:hidden">
+      <div style="height:500px;border-radius:6px;overflow:hidden">
         <iframe id="tv-chart-frame"
           src="https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${chartSym}&interval=15&hidesidetoolbar=0&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&locale=vi"
-          style="width:100%;height:400px;border:none" allowtransparency="true" scrolling="no"></iframe>
+          style="width:100%;height:500px;border:none" allowtransparency="true" scrolling="no"></iframe>
       </div>`;
 }
 async function toggleEntryOffset(enabled) {
@@ -712,16 +722,6 @@ function renderDashboard(d) {
     let html = '';
 
     // ── Quick SHORT/LONG — bấm 1 nút vào ngay ──
-    html += `<div class="section" style="background:linear-gradient(135deg,#0d1117,#1a0a0a);border:1px solid #5a1a1a;border-radius:12px;padding:14px;margin-bottom:12px">
-        <h2 style="font-size:14px;margin:0 0 10px 0;color:#f85149">&#x26A1; Quick Trade</h2>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <input id="qs-symbol" placeholder="HEIUSDT" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:13px;width:130px">
-            <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">&#x1F534; SHORT</button>
-            <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">&#x1F7E2; LONG</button>
-            <span style="font-size:11px;color:#8b949e">$${d.settings?.max_order_usdt||15} × ${d.settings?.leverage||15}x</span>
-        </div>
-    </div>`;
-
     // Control Panel
     html += `<div class="section"><h2>&#x2699; Controls</h2>
         <div class="control-row">
