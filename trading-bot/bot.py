@@ -2691,6 +2691,16 @@ def scan_engine(exchange, notifier):
                             if limit_count >= 2:
                                 break
                             try:
+                                # Kiểm tra entry còn hợp lệ với mark price (85%-115%)
+                                cur_mark = exchange.get_ticker_price(a_sym)
+                                entry_p  = a_info["entry_price"]
+                                if cur_mark > 0:
+                                    ratio = entry_p / cur_mark
+                                    if ratio < 0.85 or ratio > 1.15:
+                                        with lock:
+                                            state.get("armed_entries", {}).pop(a_sym, None)
+                                        logger.info(f"[Armed] ❌ Remove {a_sym}: entry {entry_p:.6f} xa mark {cur_mark:.6f} ({ratio*100:.0f}%)")
+                                        continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                                 bal = exchange.get_account_balance()
                                 qty = calc_qty(bal, a_info["entry_price"], a_info["sl"], symbol=a_sym, exchange=exchange)
