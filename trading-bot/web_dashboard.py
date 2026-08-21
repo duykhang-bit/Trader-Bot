@@ -1068,6 +1068,35 @@ function renderDashboard(d) {
         html += `</table></div>`;
     }
 
+    // Signal candidates table
+    if (d.candidates && d.candidates.length > 0) {
+        html += `<div class="section"><table><tr><th>Coin</th><th>Signal</th><th>Score</th><th>Now</th><th>Entry Target</th><th>RSI</th><th>Reason</th></tr>`;
+        d.candidates.forEach(c => {
+            const filled = Math.round(c.score / 10);
+            const bar = '&#x2588;'.repeat(filled) + '&#x2591;'.repeat(10 - filled);
+            const pStr = c.price >= 1000 ? fmtUsd(c.price) : '$' + fmt(c.price, c.price >= 1 ? 3 : 5);
+            const targets = (d.entry_targets || {})[c.symbol] || {};
+            let entryStr = '-';
+            if (c.signal === 'LONG' && targets.long_entry) {
+                const ep = targets.long_entry >= 1000 ? fmtUsd(targets.long_entry) : '$'+fmt(targets.long_entry, targets.long_entry>=1?2:5);
+                entryStr = `<span style="color:#3fb950">${ep}</span>`;
+            } else if (c.signal === 'SHORT' && targets.short_entry) {
+                const ep = targets.short_entry >= 1000 ? fmtUsd(targets.short_entry) : '$'+fmt(targets.short_entry, targets.short_entry>=1?2:5);
+                entryStr = `<span style="color:#f85149">${ep}</span>`;
+            }
+            html += `<tr>
+                <td><b>${c.symbol.replace('USDT','')}</b></td>
+                <td>${sideHtml(c.signal)}</td>
+                <td>${bar} <b>${fmt(c.score,0)}%</b></td>
+                <td>${pStr}</td>
+                <td><b>${entryStr}</b></td>
+                <td>${fmt(c.rsi,0)}</td>
+                <td style="font-size:11px;color:#8b949e;max-width:200px;overflow:hidden;text-overflow:ellipsis">${c.reason}</td>
+            </tr>`;
+        });
+        html += `</table></div>`;
+    }
+
     // Armed Entries — lệnh đang chờ giá tới zone
     const armed = d.armed_entries || {};
     const armedKeys = Object.keys(armed);
