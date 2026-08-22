@@ -2415,13 +2415,7 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
             except Exception:
                 time.sleep(0.5)
         if not sl_ok:
-            exchange.place_market_order(symbol, "BUY", qty)
-            return
-
-        try:
-            exchange.place_take_profit_order(symbol, "BUY", qty, sig.tp1_price)
-        except Exception:
-            pass
+            logger.warning(f"[PumpShort] SL failed for {symbol} — keeping position, auto_sltp will retry")
 
         with lock:
             state["trade_log"].append({
@@ -2475,8 +2469,7 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
             except Exception:
                 time.sleep(0.5)
         if not sl_ok:
-            exchange.place_market_order(symbol, "SELL", qty)
-            return
+            logger.warning(f"[SpikeShort] SL failed for {symbol} — keeping position")
 
         try:
             exchange.place_take_profit_order(symbol, "SELL", qty, tp)
@@ -2826,11 +2819,7 @@ def scan_engine(exchange, notifier):
                                 except Exception:
                                     time.sleep(0.3)
                             if not sl_ok:
-                                exchange.place_market_order(a_sym, a_info["close_side"], qty)
-                                logger.error(f"[Armed] SL FAILED {a_sym} — emergency close")
-                                with lock:
-                                    state.get("armed_entries", {}).pop(a_sym, None)
-                                continue
+                                logger.warning(f"[Armed] SL FAILED {a_sym} — keeping position, auto_sltp will retry")
 
                             # TP
                             try:
@@ -3439,8 +3428,7 @@ def pump_scan_engine(exchange, notifier):
                                                     time.sleep(0.5)
 
                                             if not sl_ok_nhe:
-                                                exchange.place_market_order(symbol, "BUY", qty_nhe)
-                                                logger.error(f"[PumpNhe] SL failed, closed immediately {symbol}")
+                                                logger.warning(f"[PumpNhe] SL failed for {symbol} — keeping position")
                                             else:
                                                 try:
                                                     exchange.place_take_profit_order(
@@ -3768,12 +3756,7 @@ def pump_scan_engine(exchange, notifier):
                                 logger.warning(f"[PumpEngine] SL attempt {_attempt+1} {symbol}: {e}")
                                 time.sleep(0.5)
                         if not sl_ok:
-                            logger.error(f"[PumpEngine] ⚠️ SL FAILED after 3 attempts for {symbol} — closing position for safety")
-                            try:
-                                exchange.place_market_order(symbol, "BUY", qty)  # đóng ngay nếu không đặt được SL
-                            except Exception as ce:
-                                logger.error(f"[PumpEngine] Emergency close failed: {ce}")
-                            continue
+                            logger.warning(f"[PumpEngine] SL FAILED for {symbol} — keeping position, auto_sltp will retry")
 
                         # Đặt TP (không bắt buộc, lỗi thì bỏ qua)
                         try:
@@ -4129,19 +4112,7 @@ def limit_order_monitor(exchange, notifier):
                                     time.sleep(0.5)
 
                             if not sl_ok:
-                                # SL thất bại hoàn toàn → đóng lệnh ngay
-                                logger.error(f"[PumpLimit] ⚠️ SL FAILED {sym} — emergency close!")
-                                try:
-                                    exchange.place_market_order(sym, "BUY", qty)
-                                    notifier.telegram.send(
-                                        f"⚠️ <b>EMERGENCY CLOSE</b> {sym}\n"
-                                        f"SL không đặt được → đóng ngay để tránh cháy"
-                                    )
-                                except Exception as ce:
-                                    logger.error(f"[PumpLimit] Emergency close failed: {ce}")
-                                with lock:
-                                    state.get("pump_limit_orders", {}).pop(sym, None)
-                                continue
+                                logger.warning(f"[PumpLimit] SL FAILED {sym} — keeping position, auto_sltp will retry")
                             else:
                                 logger.info(f"[PumpLimit] SL placed: {sym} @ {sl_price}")
 
