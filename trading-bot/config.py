@@ -316,3 +316,7 @@ WEB_PASSWORD = "Cr7ronaldojk"
 # Secret key cho Flask session (random mỗi lần start — session hết hạn khi restart bot)
 import secrets as _secrets
 WEB_SECRET_KEY = _secrets.token_hex(32)
+
+# Pump Reversal Exit — min profit để cắt (tránh lỗ sau phí)
+PUMP_REVERSAL_MIN_PROFIT_PCT = 0.5   # từng lời >= 0.5% mới activate
+PUMP_REVERSAL_FLOOR_PCT      = 0.3   # quay về còn <= 0.3% thì cắt

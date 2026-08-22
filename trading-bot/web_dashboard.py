@@ -394,6 +394,15 @@ async function toggleScanProtector(enabled) {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function setPumpReversalConfig() {
+    const peak  = parseFloat(document.getElementById('pump-rev-peak')?.value || 0.5);
+    const floor = parseFloat(document.getElementById('pump-rev-floor')?.value || 0.3);
+    const r = await apiPost('/api/pump_reversal_config', {peak, floor});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
+    refresh();
+}
 async function toggleProfitLock(enabled) {
     const r = await apiPost('/api/profit_lock', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -770,7 +779,15 @@ function renderDashboard(d) {
                         style="${mode==='off'   ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:${mode==='auto'?'#3fb950':mode==='alert'?'#58a6ff':'#f85149'}">
                     ${mode==='auto'?'Đang tự chốt lời khi đảo chiều':mode==='alert'?'Chỉ gửi alert':'Đã tắt'}
-                </span>`;
+                </span>
+                <span style="font-size:10px;color:#484f58;margin-left:8px">Peak≥</span>
+                <input id="pump-rev-peak" type="number" min="0.1" max="10" step="0.1" value="${d.pump_reversal_min_profit_pct??0.5}"
+                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#3fb950;text-align:center">
+                <span style="font-size:10px;color:#484f58">% Floor≤</span>
+                <input id="pump-rev-floor" type="number" min="0" max="5" step="0.1" value="${d.pump_reversal_floor_pct??0.3}"
+                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center">
+                <span style="font-size:10px;color:#484f58">%</span>
+                <button class="btn btn-sm" onclick="setPumpReversalConfig()" style="font-size:10px;padding:2px 6px;background:#0d2a1a;color:#3fb950;border:1px solid #1a4a2a">Set</button>`;
             })()}
         </div>
         <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
@@ -2298,6 +2315,8 @@ def api_state():
         },
         "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
+        "pump_reversal_min_profit_pct": getattr(_config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 0.5),
+        "pump_reversal_floor_pct":      getattr(_config, "PUMP_REVERSAL_FLOOR_PCT", 0.3),
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
         "trailing_lock_enabled":    getattr(_config, "TRAILING_LOCK_ENABLED", True),
@@ -3373,6 +3392,21 @@ def api_reversal_monitor():
         "enabled":    getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "alert_only": getattr(_config, "REVERSAL_ALERT_ONLY", False),
     })
+
+@app.route("/api/pump_reversal_config", methods=["POST"])
+@require_auth
+def api_pump_reversal_config():
+    """Set Peak/Floor cho Pump Reversal Exit."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+        if "peak" in data:
+            _cfg.PUMP_REVERSAL_MIN_PROFIT_PCT = max(0.1, min(10.0, float(data["peak"])))
+        if "floor" in data:
+            _cfg.PUMP_REVERSAL_FLOOR_PCT = max(0.0, min(5.0, float(data["floor"])))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "msg": f"Pump Reversal: Peak≥{getattr(_config,'PUMP_REVERSAL_MIN_PROFIT_PCT',0.5)}% Floor≤{getattr(_config,'PUMP_REVERSAL_FLOOR_PCT',0.3)}%"})
 
 
 

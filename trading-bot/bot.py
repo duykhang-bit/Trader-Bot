@@ -3536,21 +3536,32 @@ def pump_scan_engine(exchange, notifier):
                         continue  # không tìm được entry_time → skip
 
                     # Điều kiện đóng SHORT sớm khi có dấu hiệu pump lên lại:
-                    # CHỈ đóng khi đang có lời >= 0.3% (cover phí)
+                    # Cần từng lời >= PUMP_REVERSAL_MIN_PROFIT_PCT rồi quay về <= PUMP_REVERSAL_FLOOR_PCT
                     try:
                         cur_price = exchange.get_ticker_price(symbol)
                         pos_entry = next(
                             (float(p.get("entryPrice", 0)) for p in open_positions
                              if p["symbol"] == symbol), 0
                         )
-                        if pos_entry > 0:
-                            pnl_pct_pump = (pos_entry - cur_price) / pos_entry * 100  # SHORT
-                            in_profit = pnl_pct_pump >= 0.3  # lời >= 0.3% mới cắt
-                        else:
-                            in_profit = False
+                        min_profit = getattr(config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 0.5)
+                        floor_pct  = getattr(config, "PUMP_REVERSAL_FLOOR_PCT", 0.3)
 
-                        if in_profit:
-                            should_exit = pump_pct >= 3.0 or score >= 25
+                        if pos_entry > 0:
+                            cur_pnl_pct = (pos_entry - cur_price) / pos_entry * 100  # SHORT
+
+                            # Track MFE cho pump reversal
+                            mfe_key_pump = f"_pump_mfe_{symbol}"
+                            with lock:
+                                prev_mfe = state.get(mfe_key_pump, 0)
+                                if cur_pnl_pct > prev_mfe:
+                                    state[mfe_key_pump] = cur_pnl_pct
+                                    prev_mfe = cur_pnl_pct
+
+                            # Chỉ cắt khi: từng lời >= min_profit VÀ hiện còn <= floor_pct
+                            if prev_mfe >= min_profit and cur_pnl_pct <= floor_pct:
+                                should_exit = pump_pct >= 3.0 or score >= 25
+                            else:
+                                should_exit = False
                         else:
                             should_exit = False
                     except Exception:
