@@ -2896,6 +2896,16 @@ def scan_engine(exchange, notifier):
                 side       = "BUY"  if best.signal == "LONG" else "SELL"
                 close_side = "SELL" if best.signal == "LONG" else "BUY"
                 entry_price = price
+
+                # ── Entry Offset: dịch entry để bắt giá tốt hơn ──
+                if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                    offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                    if best.signal == "LONG":
+                        entry_price = round(price * (1 - offset_pct), 8)
+                    else:
+                        entry_price = round(price * (1 + offset_pct), 8)
+                    logger.info(f"[EntryOffset] {best.symbol} {best.signal}: offset {offset_pct*100:.1f}% → entry={entry_price:.6f}")
+
                 sl = tp = 0.0
                 order_type_used = "SKIP"
                 skip_reason = None
