@@ -401,8 +401,6 @@ async function setPumpReversalConfig() {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
-    refresh();
-}
 async function toggleProfitLock(enabled) {
     const r = await apiPost('/api/profit_lock', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
