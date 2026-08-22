@@ -3543,8 +3543,8 @@ def pump_scan_engine(exchange, notifier):
                             (float(p.get("entryPrice", 0)) for p in open_positions
                              if p["symbol"] == symbol), 0
                         )
-                        min_profit = getattr(config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 0.5)
-                        floor_pct  = getattr(config, "PUMP_REVERSAL_FLOOR_PCT", 0.3)
+                        min_profit = getattr(config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 3.0)
+                        floor_pct  = getattr(config, "PUMP_REVERSAL_FLOOR_PCT", 1.5)
 
                         if pos_entry > 0:
                             cur_pnl_pct = (pos_entry - cur_price) / pos_entry * 100  # SHORT
