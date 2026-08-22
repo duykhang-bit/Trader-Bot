@@ -897,13 +897,12 @@ def _armed_execute(sym, info, trigger_price):
             except Exception:
                 time.sleep(0.3)
         if not sl_ok:
-            exc.place_market_order(sym, info["close_side"], qty)
-            logger.error(f"[Armed] SL FAILED {sym} — emergency close")
+            logger.error(f"[Armed] SL FAILED {sym} — keeping position, will retry via auto_sltp")
             if noti:
                 noti.telegram.send(
-                    f"⚠️ <b>ARMED SL FAILED — Emergency Close</b>\n"
+                    f"⚠️ <b>ARMED SL FAILED</b>\n"
                     f"🪙 {sym} {info['signal']}\n"
-                    f"SL đặt thất bại 3 lần → đóng lệnh ngay\n"
+                    f"SL đặt thất bại → giữ lệnh, auto SL/TP sẽ thử lại\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
             return
