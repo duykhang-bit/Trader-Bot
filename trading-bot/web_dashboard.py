@@ -1146,17 +1146,20 @@ function renderDashboard(d) {
             const a = armed[sym];
             const ttl = Math.max(0, 900 - Math.round(Date.now()/1000 - a.ts));
             const ttlStr = ttl > 60 ? Math.floor(ttl/60)+'m' : ttl+'s';
-            const ep = a.entry_price >= 1 ? '$'+a.entry_price.toFixed(4) : '$'+a.entry_price.toFixed(6);
+            const ep  = a.entry_price >= 1 ? '$'+a.entry_price.toFixed(4) : '$'+a.entry_price.toFixed(6);
             const slp = a.sl >= 1 ? '$'+a.sl.toFixed(4) : '$'+a.sl.toFixed(6);
             const tpp = a.tp >= 1 ? '$'+a.tp.toFixed(4) : '$'+a.tp.toFixed(6);
-            // Badge offset nếu bật
-            const offsetBadge = offsetOn
-                ? `<span style="font-size:9px;color:#d29922;margin-left:3px">(${a.signal==='LONG'?'-':'+'}${offsetPct}%)</span>`
-                : '';
+            // Hiển thị giá gốc → giá sau offset
+            const rawEp = (a.raw_entry || a.entry_price);
+            const hasOffset = offsetOn && Math.abs(rawEp - a.entry_price) > 0.000001;
+            const rawFmt = rawEp >= 1 ? '$'+rawEp.toFixed(4) : '$'+rawEp.toFixed(6);
+            const entryDisplay = hasOffset
+                ? `<span style="color:#8b949e;text-decoration:line-through;font-size:10px">${rawFmt}</span> <b style="color:#d29922">${ep}</b>`
+                : `<b>${ep}</b>`;
             html += `<tr>
                 <td><b>${sym.replace('USDT','')}</b></td>
                 <td>${a.signal === 'LONG' ? '<span class="green">LONG</span>' : '<span class="red">SHORT</span>'}</td>
-                <td><b>${ep}</b>${offsetBadge}</td>
+                <td>${entryDisplay}</td>
                 <td style="color:#f85149">${slp}</td>
                 <td style="color:#3fb950">${tpp}</td>
                 <td>1:${a.rr.toFixed(1)}</td>
@@ -2361,6 +2364,7 @@ def api_state():
                         for c in candidates[:10]] if candidates else [],
         "pending_watch": _get_pending_watch_safe(),
         "armed_entries": {sym: {"signal": v["signal"], "entry_price": v["entry_price"],
+                                "raw_entry": v.get("raw_entry", v["entry_price"]),
                                 "sl": v["sl"], "tp": v["tp"], "rr": v["rr"],
                                 "score": v["score"], "ts": v["ts"],
                                 "reason": v.get("reason","")}

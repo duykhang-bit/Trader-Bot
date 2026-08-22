@@ -2936,15 +2936,16 @@ def scan_engine(exchange, notifier):
 
                     if liq_entry:
                         entry_price = round(liq_entry["price"], 8)
+                        raw_entry   = entry_price  # giá gốc trước offset
                         dist_pct = liq_entry["dist_pct"]
                         # ── Entry Offset: dịch entry để bắt giá tốt hơn ──
                         if getattr(config, "ENTRY_OFFSET_ENABLED", False):
                             offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
                             if best.signal == "LONG":
-                                entry_price = round(entry_price * (1 - offset_pct), 8)
+                                entry_price = round(raw_entry * (1 - offset_pct), 8)
                             else:
-                                entry_price = round(entry_price * (1 + offset_pct), 8)
-                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: offset {offset_pct*100:.1f}% → entry={entry_price:.6f}")
+                                entry_price = round(raw_entry * (1 + offset_pct), 8)
+                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: {raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
                         logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
                                     f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
@@ -3019,6 +3020,7 @@ def scan_engine(exchange, notifier):
                             # LIMIT fail → lưu armed backup
                             armed[best.symbol] = {
                                 "signal": best.signal, "entry_price": entry_price,
+                                "raw_entry": raw_entry if 'raw_entry' in dir() else entry_price,
                                 "sl": sl, "tp": tp, "rr": rr, "score": best.score,
                                 "side": side, "close_side": close_side, "ts": time.time(),
                             }
@@ -3028,6 +3030,7 @@ def scan_engine(exchange, notifier):
                         # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
                         armed[best.symbol] = {
                             "signal": best.signal, "entry_price": entry_price,
+                            "raw_entry": raw_entry if 'raw_entry' in dir() else entry_price,
                             "sl": sl, "tp": tp, "rr": rr, "score": best.score,
                             "side": side, "close_side": close_side, "ts": time.time(),
                         }
