@@ -2050,7 +2050,9 @@ let _refreshPaused = false;  // dừng refresh khi bot tắt
 async function refresh(){
     try{
         const r = await fetch('/api/state');
+        if (r.status === 401 || r.redirected) { window.location.href = '/login'; return; }
         const d = await r.json();
+        if (d.ok === false && d.msg === 'Unauthorized') { window.location.href = '/login'; return; }
 
         // Backend chưa init xong (bot đang khởi động)
         if (d.error) {
