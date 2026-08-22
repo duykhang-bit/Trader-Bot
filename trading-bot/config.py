@@ -320,3 +320,4 @@ WEB_SECRET_KEY = _secrets.token_hex(32)
 # Pump Reversal Exit — min profit để cắt (tránh lỗ sau phí)
 PUMP_REVERSAL_MIN_PROFIT_PCT = 3.0   # từng lời >= 3% mới activate
 PUMP_REVERSAL_FLOOR_PCT      = 1.5   # quay về còn <= 1.5% thì cắt
+PUMP_REVERSAL_HOLD_SECONDS   = 60    # đợi tối thiểu 60s sau khi vào lệnh mới check

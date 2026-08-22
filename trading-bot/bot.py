@@ -897,12 +897,11 @@ def _armed_execute(sym, info, trigger_price):
             except Exception:
                 time.sleep(0.3)
         if not sl_ok:
-            logger.error(f"[Armed] SL FAILED {sym} — keeping position, will retry via auto_sltp")
+            logger.debug(f"[Armed] SL FAILED {sym} — keeping position, auto_sltp will retry")
             if noti:
                 noti.telegram.send(
-                    f"⚠️ <b>ARMED SL FAILED</b>\n"
-                    f"🪙 {sym} {info['signal']}\n"
-                    f"SL đặt thất bại → giữ lệnh, auto SL/TP sẽ thử lại\n"
+                    f"⚠️ <b>SL FAILED</b>: {sym} {info['signal']}\n"
+                    f"Không đặt được SL — giữ lệnh, auto SL/TP sẽ thử lại\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
             return
@@ -1497,7 +1496,6 @@ def position_reversal_monitor(exchange, notifier):
                 min_hold   = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180)
                 peak_pct   = getattr(config, "BREAKEVEN_PUMP_PEAK_PCT", 3.0)
                 pnl_floor  = getattr(config, "BREAKEVEN_PUMP_PNL_FLOOR", 1.0)
-                confirm_n  = getattr(config, "BREAKEVEN_REVERSAL_CONFIRM", 2)
 
                 entry_time = None
                 with lock:
@@ -1521,29 +1519,13 @@ def position_reversal_monitor(exchange, notifier):
                 elif mfe_pct < peak_pct:
                     pass  # chưa đủ peak profit
                 else:
-                    # Đủ điều kiện → check reversal
-                    rev_key = f"_be_rev_{symbol}"
-                    is_reversing = False
-                    if side == "SHORT":
-                        # SHORT đang reversing = giá đang tăng trở lại
-                        is_reversing = mark_price > mfe_price * 1.002
-                    else:
-                        is_reversing = mark_price < mfe_price * 0.998
-
-                    with lock:
-                        rev_count = state.get(rev_key, 0)
-                        if is_reversing:
-                            rev_count += 1
-                            state[rev_key] = rev_count
-                        else:
-                            # Giá quay đúng hướng → reset counter
-                            state[rev_key] = 0
-                            rev_count = 0
-
-                    if rev_count >= confirm_n and pnl_pct <= pnl_floor:
+                    # Đủ điều kiện: đã hold đủ thời gian + từng lời >= peak_pct
+                    # → chốt ngay khi pnl còn lại <= pnl_floor (không cần confirm reversal)
+                    # Logic cũ dùng rev_count confirm liên tiếp → dễ miss vì reset liên tục
+                    if pnl_pct <= pnl_floor:
                         with lock:
                             state.pop(mfe_key, None)
-                            state.pop(rev_key, None)
+                            state.pop(f"_be_rev_{symbol}", None)
                         qty = abs(amt)
                         close_side = "SELL" if side == "LONG" else "BUY"
                         try:
@@ -1551,7 +1533,7 @@ def position_reversal_monitor(exchange, notifier):
                             exchange.cancel_all_orders(symbol)
                             notifier.telegram.send(
                                 f"🔄 <b>📈 PEAK PROFIT EXIT (Pump)</b>: {symbol} {side}\n"
-                                f"Peak lời {mfe_pct:.1f}% → reversal {rev_count}× → còn {pnl_pct:.1f}% → đóng\n"
+                                f"Peak lời {mfe_pct:.1f}% → còn {pnl_pct:.1f}% ≤ floor {pnl_floor:.1f}% → đóng\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
                             continue  # đã đóng → skip MFE check bên dưới
@@ -1571,7 +1553,9 @@ def position_reversal_monitor(exchange, notifier):
                         else:
                             retracement = 0
 
-                    if retracement >= 0.40:
+                    if retracement >= 0.40 and pnl_pct > 0.3:
+                        # Chỉ đóng khi còn lời thực tế (pnl_pct > 0.3%)
+                        # Tránh MFE EXIT khi giá đã hồi vượt entry → lệnh đang lỗ
                         with lock:
                             state.pop(mfe_key, None)
                         qty = abs(amt)
@@ -1588,6 +1572,9 @@ def position_reversal_monitor(exchange, notifier):
                         except Exception as e:
                             logger.error(f"[ReversalMon] MFE close {symbol}: {e}")
                         continue
+                    elif retracement >= 0.40 and pnl_pct <= 0.3:
+                        # Hồi đủ nhưng đang lỗ/hòa vốn → để SL lo, không đóng thêm lần
+                        logger.info(f"[ReversalMon] MFE SKIP {symbol}: retrace={retracement*100:.0f}% nhưng pnl={pnl_pct:.1f}% — để SL xử lý")
 
                 try:
                     # Lấy klines 1m để bắt đảo chiều nhanh
@@ -1623,31 +1610,39 @@ def position_reversal_monitor(exchange, notifier):
                     # ── Điều kiện đảo chiều ──────────────────
                     signals = []
 
-                    # 1. RSI đảo chiều
+                    # 1. RSI đảo chiều — ngưỡng chặt hơn để tránh false positive khi pump
                     if side == "SHORT":
-                        # SHORT đang lời: RSI đã xuống rồi bật lên
-                        if rsi_prev < 45 and rsi_now > rsi_prev + 3:
+                        # SHORT đang lời: RSI phải về oversold thật (<35) rồi mới bật
+                        # Tránh bắt RSI dao động bình thường trong pump
+                        if rsi_prev < 35 and rsi_now > rsi_prev + 5:
                             signals.append(f"RSI bounce {rsi_prev:.0f}→{rsi_now:.0f}")
                     else:
-                        # LONG đang lời: RSI đã lên cao rồi quay xuống (overbought drop)
-                        if rsi_prev > 62 and rsi_now < rsi_prev - 4:
+                        # LONG đang lời: RSI đã lên overbought cao (>70) rồi quay xuống rõ
+                        if rsi_prev > 70 and rsi_now < rsi_prev - 6:
                             signals.append(f"RSI drop {rsi_prev:.0f}→{rsi_now:.0f}")
 
-                    # 2. EMA cross ngược chiều
-                    if side == "SHORT" and ema9 > ema21:
-                        signals.append(f"EMA cross UP (9>{21:.0f})")
-                    elif side == "LONG" and ema9 < ema21:
+                    # 2. EMA cross ngược chiều — cần giá close ĐÃ vượt EMA21
+                    # Tránh trigger khi EMA9 > EMA21 do đang giữa pump spike (giá chưa quay đầu)
+                    if side == "SHORT" and ema9 > ema21 and close > ema21 * 1.003:
+                        # SHORT bị đảo: giá close vẫn vọt cao hơn EMA21 rõ ràng — chưa phải reversal thật
+                        # Chỉ tính signal khi close đã kéo EMA9 lên trên EMA21 VÀ profit_travel > 0
+                        # (tức giá đã đi về hướng short rồi mới quay ngược lại)
+                        if profit_travel > 0.5:
+                            signals.append(f"EMA cross UP (9>{21:.0f}) sau lời {profit_travel:.1f}%")
+                    elif side == "LONG" and ema9 < ema21 and close < ema21 * 0.997:
                         signals.append(f"EMA cross DOWN (9<21)")
 
                     # 3. Pullback mạnh sau khi đã đi được lời tốt
-                    if profit_travel >= 1.5 and pullback >= 35:
+                    # Yêu cầu profit_travel >= 2% (đã lời thật, không phải vừa vào)
+                    # và pullback >= 40% (hồi đáng kể)
+                    if profit_travel >= 2.0 and pullback >= 40:
                         signals.append(f"Pullback {pullback:.0f}% sau khi profit_travel={profit_travel:.1f}%")
 
                     _prev_rsi[symbol] = rsi_now
 
-                    # Cần >= 2 tín hiệu mới đóng (tránh false positive)
-                    # Ngoại lệ: pullback mạnh >= 40% từ đỉnh → đóng ngay với 1 tín hiệu
-                    min_signals = 1 if (profit_travel >= 1.0 and pullback >= 40) else 2
+                    # Luôn cần >= 2 tín hiệu — bỏ fast-path 1 signal
+                    # Lệnh pump nhẹ chưa đủ lời không nên bị cắt chỉ vì 1 pullback ngắn
+                    min_signals = 2
                     if len(signals) < min_signals:
                         continue
 
@@ -1782,6 +1777,11 @@ def scan_position_protector(exchange, notifier):
 
                 # Không đóng nếu đang lỗ
                 if pnl_pct <= 0:
+                    continue
+
+                # Lời >= 8% → để Trailing Lock / MFE lo, không cắt sớm
+                # Tránh cắt SHORT giữa pump khi giá chưa kịp đảo chiều thật
+                if pnl_pct >= 8.0:
                     continue
 
                 # Track giá cực trị (dùng chung cho cả 15m và 1m)
@@ -3529,20 +3529,8 @@ def pump_scan_engine(exchange, notifier):
                     pump_shorts = set()
 
                 for symbol in pump_shorts:
-                    # Tìm signal vừa scan cho coin này — check cả pump mạnh lẫn pump nhẹ
-                    all_sigs = list(state.get("pump_signals", [])) + list(state.get("pump_nhe_signals", []))
-                    sig_dict = next(
-                        (s for s in reversed(all_sigs)
-                         if s.get("symbol") == symbol), None
-                    )
-                    if not sig_dict:
-                        continue
-
-                    pump_pct  = sig_dict.get("pump_pct", 0)
-                    score     = sig_dict.get("score", 0)
-
-                    # Đợi tối thiểu BREAKEVEN_PUMP_HOLD_SECONDS trước khi check reversal
-                    _min_hold_pump = getattr(config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180)
+                    # Đợi tối thiểu PUMP_REVERSAL_HOLD_SECONDS trước khi check reversal
+                    _min_hold_pump = getattr(config, "PUMP_REVERSAL_HOLD_SECONDS", 60)
                     _entry_time_pump = None
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
@@ -3556,10 +3544,10 @@ def pump_scan_engine(exchange, notifier):
                                 continue
                         except Exception:
                             pass
-                    else:
-                        continue  # không tìm được entry_time → skip
+                    # Không còn skip khi không tìm được entry_time — coi như đã hold đủ
+                    # (tránh bug: lệnh không ghi log → không bao giờ check)
 
-                    # Điều kiện đóng SHORT sớm khi có dấu hiệu pump lên lại:
+                    # Điều kiện đóng SHORT sớm:
                     # Cần từng lời >= PUMP_REVERSAL_MIN_PROFIT_PCT rồi quay về <= PUMP_REVERSAL_FLOOR_PCT
                     try:
                         cur_price = exchange.get_ticker_price(symbol)
@@ -3581,9 +3569,16 @@ def pump_scan_engine(exchange, notifier):
                                     state[mfe_key_pump] = cur_pnl_pct
                                     prev_mfe = cur_pnl_pct
 
-                            # Chỉ cắt khi: từng lời >= min_profit VÀ hiện còn <= floor_pct
+                            logger.debug(
+                                f"[PumpRevExit] {symbol}: held={_held if _entry_time_pump else 'n/a'}s "
+                                f"mfe={prev_mfe:.2f}% cur={cur_pnl_pct:.2f}% "
+                                f"min_profit={min_profit}% floor={floor_pct}%"
+                            )
+
+                            # Cắt khi: từng lời >= min_profit VÀ hiện còn <= floor_pct
+                            # Bỏ điều kiện pump_pct/score — không cần thiết, chỉ làm block exit
                             if prev_mfe >= min_profit and cur_pnl_pct <= floor_pct:
-                                should_exit = pump_pct >= 3.0 or score >= 25
+                                should_exit = True
                             else:
                                 should_exit = False
                         else:
