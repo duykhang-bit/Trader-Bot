@@ -1136,8 +1136,11 @@ function renderDashboard(d) {
     const armed = d.armed_entries || {};
     const armedKeys = Object.keys(armed);
     if (armedKeys.length > 0) {
+        const offsetOn  = d.entry_offset_enabled === true;
+        const offsetPct = ((d.entry_offset_pct || 0.003) * 100).toFixed(1);
         html += `<div class="section">`;
-        html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới zone (MARKET ngay khi chạm):</b>`;
+        html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới zone (MARKET ngay khi chạm):</b>`
+              + (offsetOn ? `<span style="font-size:11px;color:#d29922;margin-left:8px">⚡ Entry Offset ${offsetPct}% bật</span>` : '');
         html += `<table style="margin-top:6px"><tr><th>Coin</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>TTL</th></tr>`;
         armedKeys.forEach(sym => {
             const a = armed[sym];
@@ -1146,10 +1149,14 @@ function renderDashboard(d) {
             const ep = a.entry_price >= 1 ? '$'+a.entry_price.toFixed(4) : '$'+a.entry_price.toFixed(6);
             const slp = a.sl >= 1 ? '$'+a.sl.toFixed(4) : '$'+a.sl.toFixed(6);
             const tpp = a.tp >= 1 ? '$'+a.tp.toFixed(4) : '$'+a.tp.toFixed(6);
+            // Badge offset nếu bật
+            const offsetBadge = offsetOn
+                ? `<span style="font-size:9px;color:#d29922;margin-left:3px">(${a.signal==='LONG'?'-':'+'}${offsetPct}%)</span>`
+                : '';
             html += `<tr>
                 <td><b>${sym.replace('USDT','')}</b></td>
                 <td>${a.signal === 'LONG' ? '<span class="green">LONG</span>' : '<span class="red">SHORT</span>'}</td>
-                <td><b>${ep}</b></td>
+                <td><b>${ep}</b>${offsetBadge}</td>
                 <td style="color:#f85149">${slp}</td>
                 <td style="color:#3fb950">${tpp}</td>
                 <td>1:${a.rr.toFixed(1)}</td>
@@ -2505,9 +2512,8 @@ def api_add_coin():
         if symbol not in WATCHLIST:
             WATCHLIST.append(symbol)
         # Cập nhật config.FIXED_COINS trong memory để scan_market dùng ngay
-        import config as _cfg
-        if hasattr(_cfg, "FIXED_COINS") and symbol not in _cfg.FIXED_COINS:
-            _cfg.FIXED_COINS.append(symbol)
+        if hasattr(_config, "FIXED_COINS") and symbol not in _config.FIXED_COINS:
+            _config.FIXED_COINS.append(symbol)
     except Exception:
         pass
 
@@ -3340,13 +3346,12 @@ def api_entry_offset():
     """Bật/tắt và set Entry Offset % cho scan engine."""
     data = request.get_json() or {}
     try:
-        import config as _cfg
         if "enabled" in data:
-            _cfg.ENTRY_OFFSET_ENABLED = bool(data["enabled"])
+            _config.ENTRY_OFFSET_ENABLED = bool(data["enabled"])
         if "pct" in data:
-            _cfg.ENTRY_OFFSET_PCT = max(0.001, min(0.02, float(data["pct"])))
-        enabled = getattr(_cfg, "ENTRY_OFFSET_ENABLED", False)
-        pct     = getattr(_cfg, "ENTRY_OFFSET_PCT", 0.003)
+            _config.ENTRY_OFFSET_PCT = max(0.001, min(0.02, float(data["pct"])))
+        enabled = getattr(_config, "ENTRY_OFFSET_ENABLED", False)
+        pct     = getattr(_config, "ENTRY_OFFSET_PCT", 0.003)
         status  = f"bật {pct*100:.1f}%" if enabled else "tắt"
         return jsonify({"ok": True, "msg": f"Entry Offset: {status}", "enabled": enabled, "pct": pct})
     except Exception as e:
