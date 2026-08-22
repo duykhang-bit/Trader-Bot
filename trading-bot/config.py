@@ -313,9 +313,8 @@ ENTRY_OFFSET_PCT     = 0.003   # 0.3% — an toàn, ít miss lệnh
 # Đổi thành mật khẩu của mày trước khi deploy
 WEB_PASSWORD = "Cr7ronaldojk"
 
-# Secret key cho Flask session (random mỗi lần start — session hết hạn khi restart bot)
-import secrets as _secrets
-WEB_SECRET_KEY = _secrets.token_hex(32)
+# Secret key cho Flask session — cố định để session không mất khi restart bot
+WEB_SECRET_KEY = "trading-bot-fixed-secret-key-2026"
 
 # Pump Reversal Exit — min profit để cắt (tránh lỗ sau phí)
 PUMP_REVERSAL_MIN_PROFIT_PCT = 3.0   # từng lời >= 3% mới activate
