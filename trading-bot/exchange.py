@@ -303,7 +303,7 @@ class BinanceFutures:
             logger.info(f"SL placed (algo): {side} {symbol} qty={quantity} @ {price}")
             return result
         except Exception as e:
-            logger.warning(f"SL algo failed for {symbol}: {e} — fallback to regular order")
+            logger.debug(f"SL algo failed for {symbol}: {e} — fallback to regular order")
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
                 "type": "STOP_MARKET",
@@ -334,7 +334,7 @@ class BinanceFutures:
             logger.info(f"TP placed (algo): {side} {symbol} qty={quantity} @ {price}")
             return result
         except Exception as e:
-            logger.warning(f"TP algo failed for {symbol}: {e} — fallback to regular order")
+            logger.debug(f"TP algo failed for {symbol}: {e} — fallback to regular order")
             result = self._post("/fapi/v1/order", {
                 "symbol": symbol, "side": side,
                 "type": "TAKE_PROFIT_MARKET",

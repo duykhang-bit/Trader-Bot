@@ -2819,7 +2819,7 @@ def scan_engine(exchange, notifier):
                                 except Exception:
                                     time.sleep(0.3)
                             if not sl_ok:
-                                logger.warning(f"[Armed] SL FAILED {a_sym} — keeping position, auto_sltp will retry")
+                                logger.debug(f"[Armed] SL FAILED {a_sym} — keeping position, auto_sltp will retry")
 
                             # TP
                             try:
@@ -3753,7 +3753,7 @@ def pump_scan_engine(exchange, notifier):
                                 sl_ok = True
                                 break
                             except Exception as e:
-                                logger.warning(f"[PumpEngine] SL attempt {_attempt+1} {symbol}: {e}")
+                                logger.debug(f"[PumpEngine] SL attempt {_attempt+1} {symbol}: {e}")
                                 time.sleep(0.5)
                         if not sl_ok:
                             logger.warning(f"[PumpEngine] SL FAILED for {symbol} — keeping position, auto_sltp will retry")
