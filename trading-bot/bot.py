@@ -1178,10 +1178,26 @@ def price_updater(exchange):
                                 notifier_inst = state.get("_notifier")
                                 if notifier_inst:
                                     icon = "✅" if pnl_usd >= 0 else "❌"
+                                    # Xác định SL hay TP hit
+                                    close_reason = ""
+                                    with lock:
+                                        for tlog in reversed(state.get("trade_log", [])):
+                                            if tlog.get("symbol") == sym and tlog.get("status") == "CLOSED":
+                                                sl_p = tlog.get("sl", 0)
+                                                tp_p = tlog.get("tp", 0)
+                                                if tp_p and abs(close_price - tp_p) / tp_p < 0.005:
+                                                    close_reason = "🎯 TP hit"
+                                                elif sl_p and abs(close_price - sl_p) / sl_p < 0.005:
+                                                    close_reason = "🛑 SL hit"
+                                                elif pnl_usd > 0:
+                                                    close_reason = "🎯 Chốt lời"
+                                                else:
+                                                    close_reason = "🛑 Cắt lỗ"
+                                                break
                                     notifier_inst.telegram.send(
-                                        f"🔒 <b>LỆNH ĐÓNG (từ Binance app)</b>\n"
+                                        f"🔒 <b>LỆNH ĐÓNG (từ Binance)</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"📊 {sym} {side}\n"
+                                        f"📊 {sym} {side} {close_reason}\n"
                                         f"💵 PnL: <b>{icon} ${pnl_usd:+.2f}</b> ({pnl_pct:+.1f}%)\n"
                                         f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                     )
