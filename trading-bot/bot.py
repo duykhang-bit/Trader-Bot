@@ -4428,6 +4428,7 @@ def orphan_order_cleanup(exchange, notifier):
             open_syms = {p["symbol"] for p in all_pos
                         if abs(float(p.get("positionAmt", 0))) > 0}
             cancelled = []
+            logger.info(f"[OrphanCleanup] Running — open positions: {len(open_syms)} coins")
 
             # Algo orders
             try:
