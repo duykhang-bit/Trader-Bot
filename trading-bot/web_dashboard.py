@@ -2027,7 +2027,7 @@ function scrollToCoin(sym) {
 }
 
 // Pump radar auto-refresh riêng — nhanh hơn main (2s)
-setInterval(fetchPump, 2000);
+setInterval(fetchPump, 3000);
 fetchPump();
 
 // PnL stats refresh mỗi 30s (không cần nhanh)
@@ -2166,7 +2166,7 @@ function _patchDashboard(d) {
 }
 
 setInterval(updateClock,1000);
-setInterval(refresh, 2000);
+setInterval(refresh, 3000);
 updateClock();
 refresh();
 </script>
