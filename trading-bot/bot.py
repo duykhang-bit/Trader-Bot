@@ -1233,60 +1233,60 @@ def price_updater(exchange):
             max_loss_enabled = getattr(config, "MAX_LOSS_ENABLED", True)
             max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
             if max_loss_enabled:
-             for p in open_pos:
-                sym = p["symbol"]
-                amt = float(p.get("positionAmt", 0))
-                if abs(amt) == 0:
-                    continue
+                for p in open_pos:
+                    sym = p["symbol"]
+                    amt = float(p.get("positionAmt", 0))
+                    if abs(amt) == 0:
+                        continue
 
-                # Tính PnL trực tiếp từ Binance (không dùng _pnl cache)
-                entry = float(p.get("entryPrice", 0))
-                mark = float(p.get("markPrice", 0)) or state.get("prices", {}).get(sym, 0)
-                if entry <= 0 or mark <= 0:
-                    continue
-                if amt > 0:  # LONG
-                    pnl = (mark - entry) * abs(amt)
-                else:  # SHORT
-                    pnl = (entry - mark) * abs(amt)
+                    # Tính PnL trực tiếp từ Binance (không dùng _pnl cache)
+                    entry = float(p.get("entryPrice", 0))
+                    mark = float(p.get("markPrice", 0)) or state.get("prices", {}).get(sym, 0)
+                    if entry <= 0 or mark <= 0:
+                        continue
+                    if amt > 0:  # LONG
+                        pnl = (mark - entry) * abs(amt)
+                    else:  # SHORT
+                        pnl = (entry - mark) * abs(amt)
 
-                if pnl < -max_loss:
-                    # Max loss → đóng NGAY khi lỗ vượt ngưỡng
-                    qty = abs(amt)
-                    close_side = "SELL" if amt > 0 else "BUY"
-                    if qty == int(qty):
-                        qty = int(qty)
-                    try:
-                        remaining = qty
-                        while remaining > 0:
-                            batch = min(remaining, 100000)
-                            if batch == int(batch):
-                                batch = int(batch)
-                            exchange.place_market_order(sym, close_side, batch)
-                            remaining -= batch
-                        exchange.cancel_all_orders(sym)
-                        logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} exceeded -${max_loss}")
+                    if pnl < -max_loss:
+                        # Max loss → đóng NGAY khi lỗ vượt ngưỡng
+                        qty = abs(amt)
+                        close_side = "SELL" if amt > 0 else "BUY"
+                        if qty == int(qty):
+                            qty = int(qty)
                         try:
-                            notifier_inst = state.get("_notifier")
-                            if notifier_inst:
-                                notifier_inst.telegram.send(
-                                    f"🚨 <b>MAX LOSS SAFETY NET</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 {sym}\n"
-                                    f"💵 PnL: <b>${pnl:.2f}</b> (vượt -${max_loss})\n"
-                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                )
-                        except Exception:
-                            pass
-                        with lock:
-                            for t in reversed(state.get("trade_log", [])):
-                                if t.get("symbol") == sym and t.get("status") == "OPEN":
-                                    t.update({"status": "CLOSED", "close": p.get("_mark", 0),
-                                              "pnl_usdt": round(pnl, 2), "pnl_pct": round(p.get("_pct", 0), 2)})
-                                    break
-                        from trade_history import save_history
-                        save_history(state["trade_log"])
-                    except Exception as e:
-                        logger.error(f"[MAX LOSS] Close failed {sym}: {e}")
+                            remaining = qty
+                            while remaining > 0:
+                                batch = min(remaining, 100000)
+                                if batch == int(batch):
+                                    batch = int(batch)
+                                exchange.place_market_order(sym, close_side, batch)
+                                remaining -= batch
+                            exchange.cancel_all_orders(sym)
+                            logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} exceeded -${max_loss}")
+                            try:
+                                notifier_inst = state.get("_notifier")
+                                if notifier_inst:
+                                    notifier_inst.telegram.send(
+                                        f"🚨 <b>MAX LOSS SAFETY NET</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 {sym}\n"
+                                        f"💵 PnL: <b>${pnl:.2f}</b> (vượt -${max_loss})\n"
+                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                            except Exception:
+                                pass
+                            with lock:
+                                for t in reversed(state.get("trade_log", [])):
+                                    if t.get("symbol") == sym and t.get("status") == "OPEN":
+                                        t.update({"status": "CLOSED", "close": p.get("_mark", 0),
+                                                  "pnl_usdt": round(pnl, 2), "pnl_pct": round(p.get("_pct", 0), 2)})
+                                        break
+                            from trade_history import save_history
+                            save_history(state["trade_log"])
+                        except Exception as e:
+                            logger.error(f"[MAX LOSS] Close failed {sym}: {e}")
 
         except Exception as e:
             consecutive_errors += 1
