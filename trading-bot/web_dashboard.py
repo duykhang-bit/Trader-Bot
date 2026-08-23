@@ -2223,7 +2223,7 @@ def api_state():
     if now_ts - _pending_orders_last_fetch > _PENDING_ORDERS_TTL:
         try:
             if _exchange:
-                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True)
+                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=5)
                 _pending_orders_cache = [{
                     "symbol": o.get("symbol", ""),
                     "side": o.get("side", ""),
@@ -3740,7 +3740,7 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
         log = logging.getLogger("werkzeug")
         log.setLevel(logging.WARNING)
         try:
-            app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+            app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
         except OSError as e:
             logger.warning(f"Web dashboard port {port} error: {e}")
         except Exception as e:
