@@ -4428,7 +4428,7 @@ def orphan_order_cleanup(exchange, notifier):
             open_syms = {p["symbol"] for p in all_pos
                         if abs(float(p.get("positionAmt", 0))) > 0}
             cancelled = []
-            logger.info(f"[OrphanCleanup] Running — {len(open_syms)} positions, checking orders...")
+            logger.debug(f"[OrphanCleanup] cycle done, cancelled={len(cancelled)}")
 
             # Algo orders
             try:
@@ -4541,7 +4541,7 @@ def orphan_order_cleanup(exchange, notifier):
         except Exception as e:
             logger.error(f"[OrphanCleanup] Error: {e}")
 
-        time.sleep(120)  # 2 phút
+        time.sleep(60)  # 1 phút
 
 
 def memory_cleanup():
