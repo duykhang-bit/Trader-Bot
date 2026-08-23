@@ -3718,9 +3718,11 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
 
     # Set secret key từ config — session hết hạn khi restart bot
     app.config["SECRET_KEY"] = getattr(config, "WEB_SECRET_KEY", "fallback-secret-key-change-me")
-    # Session timeout 24h
+    # Session timeout 30 ngày — không bị mất khi đóng tab
     from datetime import timedelta
-    app.permanent_session_lifetime = timedelta(hours=24)
+    app.permanent_session_lifetime = timedelta(days=30)
+    app.config["SESSION_COOKIE_PERMANENT"] = True
+    app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
     # Store watchlist in state for web access
     from scanner import WATCHLIST
