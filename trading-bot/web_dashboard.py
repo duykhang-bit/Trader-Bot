@@ -3723,6 +3723,9 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     app.permanent_session_lifetime = timedelta(days=30)
     app.config["SESSION_COOKIE_PERMANENT"] = True
     app.config["SESSION_REFRESH_EACH_REQUEST"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = False  # HTTP không cần Secure
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
 
     # Store watchlist in state for web access
     from scanner import WATCHLIST
