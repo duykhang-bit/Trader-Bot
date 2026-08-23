@@ -3715,7 +3715,7 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     app.config["SECRET_KEY"] = getattr(config, "WEB_SECRET_KEY", "fallback-secret-key-change-me")
     # Session timeout 30 ngày — không bị mất khi đóng tab
     from datetime import timedelta
-    app.permanent_session_lifetime = timedelta(days=30)
+    app.permanent_session_lifetime = timedelta(days=365)
     app.config["SESSION_COOKIE_PERMANENT"] = True
     app.config["SESSION_REFRESH_EACH_REQUEST"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
