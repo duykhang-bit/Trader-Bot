@@ -1142,8 +1142,8 @@ def price_updater(exchange):
                     pass
 
             with lock:
-                    # Tìm lệnh OPEN tương ứng trong trade_log
-                    for t in reversed(state.get("trade_log", [])):
+                # Tìm lệnh OPEN tương ứng trong trade_log
+                for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
                             entry = t.get("entry", 0)
                             side  = t.get("side", "LONG")
