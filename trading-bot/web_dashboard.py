@@ -2059,7 +2059,7 @@ let _refreshPaused = false;  // dừng refresh khi bot tắt
 
 async function refresh(){
     try{
-        const r = await fetch('/api/state', {signal: AbortSignal.timeout(5000)});
+        const r = await fetch('/api/state');
         const d = await r.json();
 
         // Backend busy hoặc chưa init — skip, không xóa dashboard
@@ -2189,10 +2189,7 @@ def api_state():
     if _state is None:
         return jsonify({"error": "not initialized"})
 
-    acquired = _lock.acquire(timeout=8)
-    if not acquired:
-        return jsonify({"error": "not initialized"})
-    try:
+    with _lock:
         s = dict(_state)
         tlog = list(_state.get("trade_log", []))
         open_pos = list(_state.get("open_positions", []))
@@ -2201,8 +2198,6 @@ def api_state():
         liq_data = dict(_state.get("liq_data", {}))
         watchlist = list(_state.get("_watchlist", []))
         candidates = list(_state.get("candidates", []))
-    finally:
-        _lock.release()
 
     today = datetime.now().strftime("%Y-%m-%d")
     closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]
