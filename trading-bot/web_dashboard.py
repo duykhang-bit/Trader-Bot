@@ -2059,16 +2059,11 @@ let _refreshPaused = false;  // dừng refresh khi bot tắt
 
 async function refresh(){
     try{
-        const r = await fetch('/api/state');
+        const r = await fetch('/api/state', {signal: AbortSignal.timeout(5000)});
         const d = await r.json();
 
-        // Backend chưa init xong (bot đang khởi động)
-        if (d.error) {
-            document.getElementById('content').innerHTML =
-                '<p style="color:#8b949e;text-align:center;padding:40px">⏳ Bot đang khởi động... (' + d.error + ')</p>';
-            _firstRender = true;
-            return;
-        }
+        // Backend busy hoặc chưa init — skip, không xóa dashboard
+        if (d.error) { return; }
 
         // Luôn render dashboard dù bot đang paused hay running
         if (_firstRender) {
@@ -2195,7 +2190,10 @@ def api_state():
     if _state is None:
         return jsonify({"error": "not initialized"})
 
-    with _lock:
+    acquired = _lock.acquire(timeout=2)
+    if not acquired:
+        return jsonify({"error": "not initialized"})  # trả về lỗi nhẹ, JS skip không xóa dashboard
+    try:
         s = dict(_state)
         tlog = list(_state.get("trade_log", []))
         open_pos = list(_state.get("open_positions", []))
@@ -2204,6 +2202,8 @@ def api_state():
         liq_data = dict(_state.get("liq_data", {}))
         watchlist = list(_state.get("_watchlist", []))
         candidates = list(_state.get("candidates", []))
+    finally:
+        _lock.release()
 
     today = datetime.now().strftime("%Y-%m-%d")
     closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]

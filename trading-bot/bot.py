@@ -4533,10 +4533,10 @@ def orphan_order_cleanup(exchange, notifier):
 
 
 def memory_cleanup():
-    """Mỗi 2 giờ: garbage collect + giới hạn trade_log + clear caches"""
+    """Mỗi 30 phút: garbage collect + giới hạn trade_log + clear caches"""
     import gc
     while state["running"]:
-        time.sleep(7200)  # 2 giờ
+        time.sleep(1800)  # 30 phút
         try:
             gc.collect()
             with lock:
