@@ -1121,23 +1121,27 @@ def price_updater(exchange):
             except:
                 open_pos = []
 
+            # Lấy balance NGOÀI lock — tránh block Flask khi gọi Binance API
+            new_balance = exchange.get_account_balance()
+
             with lock:
                 state["prices"].update(new_prices)
-                state["balance"] = exchange.get_account_balance()
-
+                state["balance"] = new_balance
                 # ── Detect positions closed externally (app/web Binance) ──
                 prev_positions = {p["symbol"] for p in state.get("open_positions", [])
                                   if abs(float(p.get("positionAmt", 0))) > 0}
                 curr_positions = {p["symbol"] for p in open_pos}
                 closed_externally = prev_positions - curr_positions
 
-                for sym in closed_externally:
-                    # Huỷ SL/TP mồ côi NGAY khi detect position đóng
-                    try:
-                        exchange.cancel_all_orders(sym)
-                        logger.info(f"[Sync] Cancelled orphan orders for {sym}")
-                    except Exception:
-                        pass
+            # Huỷ SL/TP mồ côi NGOÀI lock — tránh block Flask
+            for sym in closed_externally:
+                try:
+                    exchange.cancel_all_orders(sym)
+                    logger.info(f"[Sync] Cancelled orphan orders for {sym}")
+                except Exception:
+                    pass
+
+            with lock:
                     # Tìm lệnh OPEN tương ứng trong trade_log
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
