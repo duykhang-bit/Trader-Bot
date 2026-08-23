@@ -2189,9 +2189,9 @@ def api_state():
     if _state is None:
         return jsonify({"error": "not initialized"})
 
-    acquired = _lock.acquire(timeout=2)
+    acquired = _lock.acquire(timeout=8)
     if not acquired:
-        return jsonify({"error": "not initialized"})  # trả về lỗi nhẹ, JS skip không xóa dashboard
+        return jsonify({"error": "not initialized"})
     try:
         s = dict(_state)
         tlog = list(_state.get("trade_log", []))
