@@ -4430,28 +4430,22 @@ def orphan_order_cleanup(exchange, notifier):
             cancelled = []
             logger.debug(f"[OrphanCleanup] cycle done, cancelled={len(cancelled)}")
 
-            # Algo orders
+            # Algo orders — dùng cancel_all_orders cho coin mồ côi
             try:
                 algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
                 if isinstance(algo_orders, list):
+                    orphan_algo_syms = set()
                     for o in algo_orders:
                         sym = o.get("symbol", "")
                         if sym and sym not in open_syms and sym not in EXCLUDE_AUTO_CANCEL:
-                            try:
-                                exchange._delete("/fapi/v1/algoOrder", {"algoId": o.get("algoId", "")})
-                                cancelled.append(f"{sym} (algo)")
-                                logger.info(f"[OrphanCleanup] Cancelled algo order: {sym} algoId={o.get('algoId')}")
-                            except Exception as _ae:
-                                logger.warning(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
-                                # Thử cancel qua openOrders thường nếu algo cancel fail
-                                try:
-                                    all_ords = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
-                                    for ord_ in all_ords:
-                                        if ord_.get("reduceOnly", False):
-                                            exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": ord_.get("orderId")})
-                                            cancelled.append(f"{sym} (reduceOnly fallback)")
-                                except Exception:
-                                    pass
+                            orphan_algo_syms.add(sym)
+                    for sym in orphan_algo_syms:
+                        try:
+                            exchange.cancel_all_orders(sym)
+                            cancelled.append(f"{sym} (algo)")
+                            logger.info(f"[OrphanCleanup] Cancelled algo orders: {sym}")
+                        except Exception as _ae:
+                            logger.warning(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
             except Exception as _algo_e:
                 logger.warning(f"[OrphanCleanup] openAlgoOrders error: {_algo_e}")
 
