@@ -1134,57 +1134,67 @@ def price_updater(exchange):
                 curr_positions = {p["symbol"] for p in open_pos}
                 closed_externally = prev_positions - curr_positions
 
+                # Lấy thông tin cần thiết từ trade_log TRONG lock
+                closed_ext_info = {}
                 for sym in closed_externally:
-                    # Huỷ SL/TP mồ côi NGAY khi detect position đóng
-                    try:
-                        exchange.cancel_all_orders(sym)
-                        logger.info(f"[Sync] Cancelled orphan orders for {sym}")
-                    except Exception:
-                        pass
-                    # Tìm lệnh OPEN tương ứng trong trade_log
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
-                            entry = t.get("entry", 0)
-                            side  = t.get("side", "LONG")
-                            qty   = t.get("qty", 0)
+                            closed_ext_info[sym] = {
+                                "entry": t.get("entry", 0),
+                                "side":  t.get("side", "LONG"),
+                                "qty":   t.get("qty", 0),
+                                "close_price": state["prices"].get(sym, t.get("entry", 0)),
+                                "sl": t.get("sl", 0),
+                                "tp": t.get("tp", 0),
+                            }
+                            break
 
-                            # ── Lấy realized PnL thật từ Binance userTrades ──
-                            # Chỉ gọi 1 lần khi detect close, không poll liên tục
-                            close_price = state["prices"].get(sym, entry)
-                            pnl_usd     = 0.0
-                            pnl_pct     = 0.0
-                            try:
-                                trades = exchange._get("/fapi/v1/userTrades", {
-                                    "symbol": sym,
-                                    "limit":  10,   # chỉ lấy 10 trade gần nhất
-                                }, signed=True)
-                                if trades:
-                                    # Lấy realized PnL từ các trade gần nhất
-                                    # (lệnh đóng thường là 1-2 trade fill cuối)
-                                    realized = sum(
-                                        float(tr.get("realizedPnl", 0))
-                                        for tr in trades[-5:]
-                                        if float(tr.get("realizedPnl", 0)) != 0
-                                    )
-                                    if realized != 0:
-                                        pnl_usd = realized
-                                        pnl_pct = pnl_usd / (entry * qty) * 100 if entry > 0 and qty > 0 else 0
-                                        # Lấy giá đóng thật từ trade cuối
-                                        last_trade = trades[-1]
-                                        close_price = float(last_trade.get("price", close_price))
-                                        logger.info(f"[Sync] Binance PnL for {sym}: ${pnl_usd:+.2f} @ ${close_price}")
-                                    else:
-                                        # Fallback tính từ giá nếu PnL = 0
-                                        if entry > 0:
-                                            pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
-                                            pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
-                            except Exception as _fe:
-                                logger.debug(f"[Sync] userTrades fetch failed {sym}: {_fe}")
-                                # Fallback tính từ giá WS
-                                if entry > 0:
-                                    pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
-                                    pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+            # ── Xử lý closed_externally NGOÀI lock — tránh block Flask ──
+            for sym, info in closed_ext_info.items():
+                entry       = info["entry"]
+                side        = info["side"]
+                qty         = info["qty"]
+                close_price = info["close_price"]
+                pnl_usd     = 0.0
+                pnl_pct     = 0.0
 
+                # Huỷ SL/TP mồ côi
+                try:
+                    exchange.cancel_all_orders(sym)
+                    logger.info(f"[Sync] Cancelled orphan orders for {sym}")
+                except Exception:
+                    pass
+
+                # Lấy PnL thật từ Binance
+                try:
+                    trades = exchange._get("/fapi/v1/userTrades", {
+                        "symbol": sym, "limit": 10,
+                    }, signed=True)
+                    if trades:
+                        realized = sum(
+                            float(tr.get("realizedPnl", 0))
+                            for tr in trades[-5:]
+                            if float(tr.get("realizedPnl", 0)) != 0
+                        )
+                        if realized != 0:
+                            pnl_usd = realized
+                            pnl_pct = pnl_usd / (entry * qty) * 100 if entry > 0 and qty > 0 else 0
+                            close_price = float(trades[-1].get("price", close_price))
+                            logger.info(f"[Sync] Binance PnL for {sym}: ${pnl_usd:+.2f} @ ${close_price}")
+                        else:
+                            if entry > 0:
+                                pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                                pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+                except Exception as _fe:
+                    logger.debug(f"[Sync] userTrades fetch failed {sym}: {_fe}")
+                    if entry > 0:
+                        pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                        pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+
+                # Ghi lại state TRONG lock — nhanh, không có API call
+                with lock:
+                    for t in reversed(state.get("trade_log", [])):
+                        if t.get("symbol") == sym and t.get("status") == "OPEN":
                             t.update({
                                 "status":   "CLOSED",
                                 "close":    close_price,
@@ -1192,40 +1202,39 @@ def price_updater(exchange):
                                 "pnl_pct":  round(pnl_pct, 2),
                                 "note":     "closed_external"
                             })
-                            logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
-                            from trade_history import save_history
-                            save_history(state["trade_log"])
-                            # Notify
-                            try:
-                                notifier_inst = state.get("_notifier")
-                                if notifier_inst:
-                                    icon = "✅" if pnl_usd >= 0 else "❌"
-                                    # Xác định SL hay TP hit
-                                    close_reason = ""
-                                    with lock:
-                                        for tlog in reversed(state.get("trade_log", [])):
-                                            if tlog.get("symbol") == sym and tlog.get("status") == "CLOSED":
-                                                sl_p = tlog.get("sl", 0)
-                                                tp_p = tlog.get("tp", 0)
-                                                if tp_p and abs(close_price - tp_p) / tp_p < 0.005:
-                                                    close_reason = "🎯 TP hit"
-                                                elif sl_p and abs(close_price - sl_p) / sl_p < 0.005:
-                                                    close_reason = "🛑 SL hit"
-                                                elif pnl_usd > 0:
-                                                    close_reason = "🎯 Chốt lời"
-                                                else:
-                                                    close_reason = "🛑 Cắt lỗ"
-                                                break
-                                    notifier_inst.telegram.send(
-                                        f"🔒 <b>LỆNH ĐÓNG (từ Binance)</b>\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"📊 {sym} {side} {close_reason}\n"
-                                        f"💵 PnL: <b>{icon} ${pnl_usd:+.2f}</b> ({pnl_pct:+.1f}%)\n"
-                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                    )
-                            except Exception:
-                                pass
                             break
+
+                logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
+                from trade_history import save_history
+                with lock:
+                    save_history(state["trade_log"])
+
+                # Notify
+                try:
+                    notifier_inst = state.get("_notifier")
+                    if notifier_inst:
+                        icon = "✅" if pnl_usd >= 0 else "❌"
+                        sl_p = info.get("sl", 0)
+                        tp_p = info.get("tp", 0)
+                        if tp_p and abs(close_price - tp_p) / max(tp_p, 0.0001) < 0.005:
+                            close_reason = "🎯 TP hit"
+                        elif sl_p and abs(close_price - sl_p) / max(sl_p, 0.0001) < 0.005:
+                            close_reason = "🛑 SL hit"
+                        elif pnl_usd > 0:
+                            close_reason = "🎯 Chốt lời"
+                        else:
+                            close_reason = "🛑 Cắt lỗ"
+                        notifier_inst.telegram.send(
+                            f"🔒 <b>LỆNH ĐÓNG (từ Binance)</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 {sym} {side} {close_reason}\n"
+                            f"💵 PnL: <b>{icon} ${pnl_usd:+.2f}</b> ({pnl_pct:+.1f}%)\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                except Exception:
+                    pass
+
+            with lock:
 
                 state["open_positions"] = open_pos
 
