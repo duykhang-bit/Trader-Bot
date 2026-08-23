@@ -2060,14 +2060,7 @@ let _refreshPaused = false;  // dừng refresh khi bot tắt
 async function refresh(){
     try{
         const r = await fetch('/api/state');
-        if (r.status === 401 || r.redirected) { window.location.href = '/login'; return; }
         const d = await r.json();
-        if (d.ok === false && d.msg === 'Unauthorized') { window.location.href = '/login'; return; }
-
-        // Backend busy (lock timeout) → thử lại, không xóa dashboard
-        if (d.error === 'server busy') { return; }
-
-        _connErrCount = 0; // reset error counter khi thành công
 
         // Backend chưa init xong (bot đang khởi động)
         if (d.error) {
@@ -2096,12 +2089,8 @@ async function refresh(){
         }
     }
     catch(e){
-        // Chỉ hiện Connection lost sau 3 lần lỗi liên tiếp, không xóa dashboard ngay
-        _connErrCount = (_connErrCount || 0) + 1;
-        if (_connErrCount >= 3) {
-            document.getElementById('content').innerHTML='<p style="color:#f85149;text-align:center;padding:40px">⚠️ Connection lost — đang thử lại...</p>';
-            _firstRender = true;
-        }
+        document.getElementById('content').innerHTML='<p style="color:#f85149;text-align:center;padding:40px">⚠️ Connection lost — đang thử lại...</p>';
+        _firstRender = true;
     }
 }
 
@@ -2206,10 +2195,7 @@ def api_state():
     if _state is None:
         return jsonify({"error": "not initialized"})
 
-    acquired = _lock.acquire(timeout=3)
-    if not acquired:
-        return jsonify({"error": "server busy"})
-    try:
+    with _lock:
         s = dict(_state)
         tlog = list(_state.get("trade_log", []))
         open_pos = list(_state.get("open_positions", []))
@@ -2218,8 +2204,6 @@ def api_state():
         liq_data = dict(_state.get("liq_data", {}))
         watchlist = list(_state.get("_watchlist", []))
         candidates = list(_state.get("candidates", []))
-    finally:
-        _lock.release()
 
     today = datetime.now().strftime("%Y-%m-%d")
     closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]
