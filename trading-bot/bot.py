@@ -4442,7 +4442,7 @@ def orphan_order_cleanup(exchange, notifier):
                                 cancelled.append(f"{sym} (algo)")
                                 logger.info(f"[OrphanCleanup] Cancelled algo order: {sym} algoId={o.get('algoId')}")
                             except Exception as _ae:
-                                logger.debug(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
+                                logger.warning(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
                                 # Thử cancel qua openOrders thường nếu algo cancel fail
                                 try:
                                     all_ords = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
@@ -4453,7 +4453,7 @@ def orphan_order_cleanup(exchange, notifier):
                                 except Exception:
                                     pass
             except Exception as _algo_e:
-                logger.debug(f"[OrphanCleanup] openAlgoOrders error: {_algo_e}")
+                logger.warning(f"[OrphanCleanup] openAlgoOrders error: {_algo_e}")
 
             # Regular reduceOnly orders
             try:
@@ -4541,7 +4541,7 @@ def orphan_order_cleanup(exchange, notifier):
         except Exception as e:
             logger.error(f"[OrphanCleanup] Error: {e}")
 
-        time.sleep(60)  # 1 phút
+        time.sleep(120)  # 2 phút
 
 
 def memory_cleanup():
