@@ -348,8 +348,20 @@ class BinanceFutures:
             return result
 
     def cancel_all_orders(self, symbol: str):
-        """Hủy tất cả lệnh đang mở"""
+        """Hủy tất cả lệnh đang mở — bao gồm cả algo orders (TP/SL Market)"""
         result = self._delete("/fapi/v1/allOpenOrders", {"symbol": symbol})
+        # Cancel thêm algo orders (TP/SL Market) vì allOpenOrders không cancel được
+        try:
+            algo_orders = self._get("/fapi/v1/openAlgoOrders", signed=True)
+            if isinstance(algo_orders, list):
+                for o in algo_orders:
+                    if o.get("symbol") == symbol:
+                        try:
+                            self._delete("/fapi/v1/algoOrder", {"algoId": o.get("algoId", ""), "symbol": symbol})
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         logger.info(f"All open orders cancelled for {symbol}")
         return result
 
