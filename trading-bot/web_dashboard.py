@@ -2084,8 +2084,7 @@ async function refresh(){
         }
     }
     catch(e){
-        document.getElementById('content').innerHTML='<p style="color:#f85149;text-align:center;padding:40px">⚠️ Connection lost — đang thử lại...</p>';
-        _firstRender = true;
+        // Không xóa dashboard khi 1 request fail — chỉ thử lại lần sau
     }
 }
 
