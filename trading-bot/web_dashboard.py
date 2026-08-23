@@ -2062,8 +2062,14 @@ async function refresh(){
         const r = await fetch('/api/state');
         const d = await r.json();
 
-        // Backend busy hoặc chưa init — skip, không xóa dashboard
-        if (d.error) { return; }
+        // Backend busy — nếu dashboard chưa render thì hiện waiting, nếu đã render thì skip
+        if (d.error) {
+            if (_firstRender) {
+                document.getElementById('content').innerHTML =
+                    '<p style="color:#8b949e;text-align:center;padding:40px">⏳ Đang kết nối...</p>';
+            }
+            return;
+        }
 
         // Luôn render dashboard dù bot đang paused hay running
         if (_firstRender) {
@@ -2189,7 +2195,12 @@ def api_state():
     if _state is None:
         return jsonify({"error": "not initialized"})
 
-    with _lock:
+    # Dùng timeout để không block mãi khi bot đang giữ lock
+    acquired = _lock.acquire(timeout=5)
+    if not acquired:
+        # Trả về data cũ từ cache nếu có, không để dashboard trắng
+        return jsonify({"error": "not initialized"})
+    try:
         s = dict(_state)
         tlog = list(_state.get("trade_log", []))
         open_pos = list(_state.get("open_positions", []))
@@ -2198,6 +2209,8 @@ def api_state():
         liq_data = dict(_state.get("liq_data", {}))
         watchlist = list(_state.get("_watchlist", []))
         candidates = list(_state.get("candidates", []))
+    finally:
+        _lock.release()
 
     today = datetime.now().strftime("%Y-%m-%d")
     closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]
