@@ -286,7 +286,12 @@ def load_bias() -> dict:
         analyzed_at = datetime.fromisoformat(data["analyzed_at"])
         age_hours = (datetime.now() - analyzed_at).total_seconds() / 3600
         if age_hours > 8:
-            logger.warning(f"AI bias expired ({age_hours:.1f}h)")
+            # Chỉ log 1 lần mỗi giờ, không spam mỗi 2s
+            _last_warn = getattr(load_bias, '_last_warn', 0)
+            import time as _t
+            if _t.time() - _last_warn > 3600:
+                logger.debug(f"AI bias expired ({age_hours:.1f}h) — chạy AI analyze để làm mới")
+                load_bias._last_warn = _t.time()
             return {}
         return {sym: info["bias"] for sym, info in data.get("coins", {}).items()}
     except Exception as e:
