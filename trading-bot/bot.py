@@ -1206,8 +1206,7 @@ def price_updater(exchange):
 
                 logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
                 from trade_history import save_history
-                with lock:
-                    save_history(state["trade_log"])
+                save_history(state["trade_log"])
 
                 # Notify
                 try:
