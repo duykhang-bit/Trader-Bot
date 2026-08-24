@@ -206,7 +206,7 @@ tr:hover { background: #1c2128; }
 .price-item .coin { font-size: 11px; color: #8b949e; }
 .price-item .price { font-size: 15px; font-weight: bold; color: #c9d1d9; margin-top: 2px; }
 /* PnL Stats */
-.pnl-stats-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.pnl-stats-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .pnl-tab { padding: 5px 16px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #8b949e; cursor: pointer; font-size: 13px; transition: all .2s; }
 .pnl-tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
 .pnl-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -1209,6 +1209,8 @@ function renderPnlStats() {
         <div class="pnl-tab ${_pnlTab==='weekly'?'active':''}" onclick="setPnlTab('weekly')">Theo Tuần</div>
         <div class="pnl-tab ${_pnlTab==='monthly'?'active':''}" onclick="setPnlTab('monthly')">Theo Tháng</div>
         <div class="pnl-tab ${_pnlTab==='by_coin'?'active':''}" onclick="setPnlTab('by_coin')">Theo Coin</div>
+        <div style="flex:1"></div>
+        <button onclick="clearTradeHistory()" style="padding:5px 14px;border-radius:6px;border:1px solid #f85149;background:transparent;color:#f85149;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s;" onmouseover="this.style.background='#f85149';this.style.color='#fff'" onmouseout="this.style.background='transparent';this.style.color='#f85149'">🗑 Clear Data</button>
     </div>
     <div class="pnl-summary-row">
         <div class="pnl-summary-card">

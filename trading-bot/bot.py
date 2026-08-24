@@ -829,6 +829,31 @@ def _set_sltp_cooldown(symbol: str):
         state.setdefault("_sltp_cooldown", {})[symbol] = time.time()
 
 
+def _fetch_actual_pnl(exchange_ref, symbol: str, side: str,
+                      qty: float, entry: float, cur_price: float,
+                      open_time_ms: int = 0) -> float:
+    """
+    Lấy PnL thực tế sau khi đóng lệnh từ Binance /fapi/v1/income.
+    Kết quả khớp với app Binance (đã tính phí).
+    Fallback: tính thủ công nếu API lỗi hoặc trả về 0.
+    """
+    try:
+        # Dùng open_time nếu có, không thì lùi 30 phút để chắc bắt được lệnh
+        start_ms = open_time_ms if open_time_ms > 0 else int(time.time() * 1000) - 1_800_000
+        realized = exchange_ref.get_realized_pnl(symbol, start_ms)
+        if realized != 0:
+            logger.debug(f"[PnL] {symbol} income API: ${realized:+.4f}")
+            return round(realized, 4)
+    except Exception as e:
+        logger.debug(f"[PnL] income API failed {symbol}: {e}")
+
+    # Fallback: qty × delta_price (không có phí — ước tính)
+    if side == "LONG":
+        return round(qty * (cur_price - entry), 4)
+    else:
+        return round(qty * (entry - cur_price), 4)
+
+
 def _armed_execute(sym, info, trigger_price):
     """Thực thi armed entry — chạy trong thread riêng, không block WS."""
     try:
@@ -1181,6 +1206,13 @@ def price_updater(exchange):
                 for sym in closed_externally:
                     for t in reversed(state.get("trade_log", [])):
                         if t.get("symbol") == sym and t.get("status") == "OPEN":
+                            # Parse open_time → ms để query Binance income đúng lệnh
+                            try:
+                                from datetime import datetime as _dtp
+                                _ot_str = t.get("time", "")
+                                _ot_ms  = int(_dtp.strptime(_ot_str, "%Y-%m-%d %H:%M:%S").timestamp() * 1000) if _ot_str else 0
+                            except Exception:
+                                _ot_ms = 0
                             closed_ext_info[sym] = {
                                 "entry": t.get("entry", 0),
                                 "side":  t.get("side", "LONG"),
@@ -1188,6 +1220,7 @@ def price_updater(exchange):
                                 "close_price": state["prices"].get(sym, t.get("entry", 0)),
                                 "sl": t.get("sl", 0),
                                 "tp": t.get("tp", 0),
+                                "open_time_ms": _ot_ms,
                             }
                             break
 
@@ -1207,31 +1240,27 @@ def price_updater(exchange):
                 except Exception:
                     pass
 
-                # Lấy PnL thật từ Binance
+                # Lấy PnL thật từ Binance income (khớp với app Binance, đã trừ phí)
                 try:
-                    trades = exchange._get("/fapi/v1/userTrades", {
-                        "symbol": sym, "limit": 10,
-                    }, signed=True)
-                    if trades:
-                        realized = sum(
-                            float(tr.get("realizedPnl", 0))
-                            for tr in trades[-5:]
-                            if float(tr.get("realizedPnl", 0)) != 0
-                        )
-                        if realized != 0:
-                            pnl_usd = realized
-                            pnl_pct = pnl_usd / (entry * qty) * 100 if entry > 0 and qty > 0 else 0
-                            close_price = float(trades[-1].get("price", close_price))
-                            logger.info(f"[Sync] Binance PnL for {sym}: ${pnl_usd:+.2f} @ ${close_price}")
-                        else:
-                            if entry > 0:
-                                pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
-                                pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+                    open_ms = info.get("open_time_ms", 0)
+                    # Nếu không có open_time thì dùng 10 phút trước để an toàn
+                    start_ms = open_ms if open_ms > 0 else int(time.time() * 1000) - 600_000
+                    realized = exchange.get_realized_pnl(sym, start_ms)
+                    if realized != 0:
+                        pnl_usd = realized
+                        pnl_pct = pnl_usd / (entry * qty / config.LEVERAGE) * 100 if entry > 0 and qty > 0 else 0
+                        logger.info(f"[Sync] Binance income PnL for {sym}: ${pnl_usd:+.2f}")
+                    else:
+                        # Fallback: tính thủ công nếu income API trả về 0
+                        if entry > 0:
+                            pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
+                            pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
+                            logger.info(f"[Sync] Fallback calc PnL for {sym}: ${pnl_usd:+.2f}")
                 except Exception as _fe:
-                    logger.debug(f"[Sync] userTrades fetch failed {sym}: {_fe}")
+                    logger.debug(f"[Sync] get_realized_pnl failed {sym}: {_fe}")
                     if entry > 0:
                         pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
-                        pnl_usd = qty * abs(close_price - entry) * (1 if pnl_pct > 0 else -1)
+                        pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
 
                 # Ghi lại state TRONG lock — nhanh, không có API call
                 with lock:
@@ -1328,10 +1357,23 @@ def price_updater(exchange):
                             except Exception:
                                 pass
                             with lock:
+                                _ml_open_ms = 0
                                 for t in reversed(state.get("trade_log", [])):
                                     if t.get("symbol") == sym and t.get("status") == "OPEN":
-                                        t.update({"status": "CLOSED", "close": p.get("_mark", 0),
-                                                  "pnl_usdt": round(pnl, 2), "pnl_pct": round(p.get("_pct", 0), 2)})
+                                        try:
+                                            from datetime import datetime as _dtp_ml
+                                            _ml_open_ms = int(_dtp_ml.strptime(t["time"], "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                                        except Exception:
+                                            pass
+                                        break
+                            time.sleep(0.5)
+                            _ml_actual_pnl = _fetch_actual_pnl(exchange, sym, "LONG" if amt > 0 else "SHORT",
+                                                               qty, entry, p.get("_mark", mark), _ml_open_ms)
+                            with lock:
+                                for t in reversed(state.get("trade_log", [])):
+                                    if t.get("symbol") == sym and t.get("status") == "OPEN":
+                                        t.update({"status": "CLOSED", "close": p.get("_mark", mark),
+                                                  "pnl_usdt": round(_ml_actual_pnl, 2), "pnl_pct": round(p.get("_pct", 0), 2)})
                                         break
                             from trade_history import save_history
                             save_history(state["trade_log"])
@@ -1727,7 +1769,19 @@ def position_reversal_monitor(exchange, notifier):
                     exchange.place_market_order(symbol, close_side, qty)
                     exchange.cancel_all_orders(symbol)
 
-                    actual_pnl = qty * (entry - cur_price) if side == "SHORT" else qty * (cur_price - entry)
+                    # Lấy open_time từ trade_log để query PnL đúng lệnh
+                    _open_ms = 0
+                    with lock:
+                        for _t in reversed(state.get("trade_log", [])):
+                            if _t.get("symbol") == symbol and _t.get("status") == "OPEN":
+                                try:
+                                    from datetime import datetime as _dtp2
+                                    _open_ms = int(_dtp2.strptime(_t["time"], "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                                except Exception:
+                                    pass
+                                break
+                    time.sleep(0.5)  # chờ Binance settle income record
+                    actual_pnl = _fetch_actual_pnl(exchange, symbol, side, qty, entry, cur_price, _open_ms)
                     icon = "✅" if actual_pnl >= 0 else "⚠️"
 
                     # Ghi trade log
@@ -1892,11 +1946,23 @@ def scan_position_protector(exchange, notifier):
                             qty        = abs(amt)
                             close_side = "SELL" if side == "LONG" else "BUY"
                             cur_price  = exchange.get_ticker_price(symbol)
-                            actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
-                            icon       = "✅" if actual_pnl >= 0 else "⚠️"
 
                             exchange.place_market_order(symbol, close_side, qty)
                             exchange.cancel_all_orders(symbol)
+
+                            _open_ms2 = 0
+                            with lock:
+                                for _t2 in reversed(state.get("trade_log", [])):
+                                    if _t2.get("symbol") == symbol and _t2.get("status") == "OPEN":
+                                        try:
+                                            from datetime import datetime as _dtp3
+                                            _open_ms2 = int(_dtp3.strptime(_t2["time"], "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                                        except Exception:
+                                            pass
+                                        break
+                            time.sleep(0.5)
+                            actual_pnl = _fetch_actual_pnl(exchange, symbol, side, qty, entry, cur_price, _open_ms2)
+                            icon       = "✅" if actual_pnl >= 0 else "⚠️"
 
                             with lock:
                                 for t in reversed(state.get("trade_log", [])):
@@ -1969,11 +2035,23 @@ def scan_position_protector(exchange, notifier):
                     qty        = abs(amt)
                     close_side = "SELL" if side == "LONG" else "BUY"
                     cur_price  = exchange.get_ticker_price(symbol)
-                    actual_pnl = qty * (cur_price - entry) if side == "LONG" else qty * (entry - cur_price)
-                    icon       = "✅" if actual_pnl >= 0 else "⚠️"
 
                     exchange.place_market_order(symbol, close_side, qty)
                     exchange.cancel_all_orders(symbol)
+
+                    _open_ms3 = 0
+                    with lock:
+                        for _t3 in reversed(state.get("trade_log", [])):
+                            if _t3.get("symbol") == symbol and _t3.get("status") == "OPEN":
+                                try:
+                                    from datetime import datetime as _dtp4
+                                    _open_ms3 = int(_dtp4.strptime(_t3["time"], "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                                except Exception:
+                                    pass
+                                break
+                    time.sleep(0.5)
+                    actual_pnl = _fetch_actual_pnl(exchange, symbol, side, qty, entry, cur_price, _open_ms3)
+                    icon       = "✅" if actual_pnl >= 0 else "⚠️"
 
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
@@ -2819,8 +2897,8 @@ def scan_engine(exchange, notifier):
             if armed:
                 for a_sym, a_info in list(armed.items()):
                     try:
-                        # Expiry 1 giờ
-                        if time.time() - a_info["ts"] > 3600:
+                        # Expiry 2 giờ
+                        if time.time() - a_info["ts"] > 7200:
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
                             logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>15min)")
@@ -3656,11 +3734,24 @@ def pump_scan_engine(exchange, notifier):
                             entry = float(pos.get("entryPrice", 0))
                             close_price = exchange.get_ticker_price(symbol)
 
+                            # Lấy open_time_ms từ trade_log trước khi đóng
+                            _pr_open_ms = 0
+                            with lock:
+                                for _t_pr in reversed(state.get("trade_log", [])):
+                                    if _t_pr.get("symbol") == symbol and _t_pr.get("status") == "OPEN":
+                                        try:
+                                            from datetime import datetime as _dtp_pr
+                                            _pr_open_ms = int(_dtp_pr.strptime(_t_pr["time"], "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                                        except Exception:
+                                            pass
+                                        break
+
                             # Đóng SHORT → BUY
                             exchange.place_market_order(symbol, "BUY", qty)
                             exchange.cancel_all_orders(symbol)
 
-                            pnl = qty * (entry - close_price)
+                            time.sleep(0.5)
+                            pnl = _fetch_actual_pnl(exchange, symbol, "SHORT", qty, entry, close_price, _pr_open_ms)
 
                             # Ghi trade log
                             with lock:

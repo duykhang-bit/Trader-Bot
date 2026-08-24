@@ -373,3 +373,32 @@ class BinanceFutures:
         side = "SELL" if amt > 0 else "BUY"
         quantity = abs(amt)
         return self.place_market_order(symbol, side, quantity)
+
+    def get_realized_pnl(self, symbol: str, start_time_ms: int) -> float:
+        """
+        Lấy PnL realized chính xác từ Binance /fapi/v1/income.
+        Đây là số liệu khớp với app Binance (đã trừ phí).
+
+        Args:
+            symbol: VD "BTCUSDT"
+            start_time_ms: timestamp mở lệnh (milliseconds) để lọc đúng lệnh này
+
+        Returns:
+            float: tổng realized PnL (USDT), đã trừ phí
+        """
+        try:
+            records = self._get("/fapi/v1/income", {
+                "symbol":     symbol,
+                "incomeType": "REALIZED_PNL",
+                "startTime":  start_time_ms,
+                "limit":      50,
+            }, signed=True)
+
+            if not records:
+                return 0.0
+
+            total = sum(float(r.get("income", 0)) for r in records)
+            return total
+        except Exception as e:
+            logger.warning(f"get_realized_pnl {symbol} failed: {e}")
+            return 0.0
