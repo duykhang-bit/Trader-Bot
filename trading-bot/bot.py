@@ -970,6 +970,48 @@ def price_ws_streamer():
                 with lock:
                     state["prices"][sym] = mark
 
+                # ── MAX LOSS REALTIME CHECK — check ngay trên WS tick ──
+                if getattr(config, "MAX_LOSS_ENABLED", False):
+                    max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
+                    with lock:
+                        open_pos_ws = list(state.get("open_positions", []))
+                    for _p in open_pos_ws:
+                        if _p.get("symbol") != sym:
+                            continue
+                        _amt = float(_p.get("positionAmt", 0))
+                        if abs(_amt) == 0:
+                            continue
+                        _entry = float(_p.get("entryPrice", 0))
+                        if _entry <= 0:
+                            continue
+                        _pnl = (mark - _entry) * abs(_amt) if _amt > 0 else (_entry - mark) * abs(_amt)
+                        if _pnl < -max_loss:
+                            exc  = _ws_exchange_ref[0]
+                            noti = _ws_notifier_ref[0]
+                            if exc:
+                                import threading as _th_ml
+                                def _do_max_loss_close(_sym, _close_side, _qty, _pnl_val):
+                                    try:
+                                        exc.place_market_order(_sym, _close_side, _qty)
+                                        exc.cancel_all_orders(_sym)
+                                        logger.info(f"[MAX LOSS WS] Closed {_sym} pnl=${_pnl_val:.2f}")
+                                        if noti:
+                                            noti.telegram.send(
+                                                f"🚨 <b>MAX LOSS</b>: {_sym}\n"
+                                                f"💵 PnL: <b>${_pnl_val:.2f}</b> (vượt -${max_loss})\n"
+                                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                            )
+                                    except Exception as _e:
+                                        logger.error(f"[MAX LOSS WS] {_sym}: {_e}")
+                                _close_side = "SELL" if _amt > 0 else "BUY"
+                                _qty = abs(_amt)
+                                _th_ml.Thread(
+                                    target=_do_max_loss_close,
+                                    args=(sym, _close_side, _qty, _pnl),
+                                    daemon=True
+                                ).start()
+                        break
+
                 # ── ARMED ENTRY CHECK — khớp ngay khi giá tới zone ──
                 with lock:
                     armed = state.get("armed_entries", {})
