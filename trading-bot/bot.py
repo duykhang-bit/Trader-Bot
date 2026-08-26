@@ -2147,24 +2147,23 @@ def auto_profit_lock(exchange, notifier):
                     should_lock = False
                     reason = ""
 
-                    # Lời cao + bất kỳ dấu hiệu đảo → chốt ngay
+                    # Lời cao → chốt ngay không cần check tốc độ
                     if pnl_pct >= high_pct:
                         should_lock = True
                         reason = f"lời cao {pnl_pct:.1f}% ≥ {high_pct:.1f}%"
 
-                    # Lời >= min + coin bay mạnh trong 3s
+                    # Coin bay nhanh theo chiều có lợi + đang lời >= min_pct → chốt giữ lời
+                    # SHORT đang lời = giá đang giảm nhanh → chốt trước khi hồi
+                    # LONG đang lời = giá đang tăng nhanh → chốt trước khi dump
                     elif price_chg >= speed_pct and pnl_pct >= min_pct:
-                        # Bay theo chiều lệnh hay ngược lại?
-                        if side == "SHORT":
-                            # Giá đang tăng (hại cho SHORT) → chốt
-                            if close_now > close_3ago:
-                                should_lock = True
-                                reason = f"giá tăng {price_chg:.2f}% trong 3 nến, đang SHORT lời {pnl_pct:.1f}%"
-                        else:
-                            # Giá đang giảm (hại cho LONG) → chốt
-                            if close_now < close_3ago:
-                                should_lock = True
-                                reason = f"giá giảm {price_chg:.2f}% trong 3 nến, đang LONG lời {pnl_pct:.1f}%"
+                        if side == "SHORT" and close_now < close_3ago:
+                            # Giá đang giảm nhanh = SHORT đang ăn → chốt giữ lời
+                            should_lock = True
+                            reason = f"SHORT: giá dump {price_chg:.2f}% trong 3 nến, lời {pnl_pct:.1f}%"
+                        elif side == "LONG" and close_now > close_3ago:
+                            # Giá đang tăng nhanh = LONG đang ăn → chốt giữ lời
+                            should_lock = True
+                            reason = f"LONG: giá pump {price_chg:.2f}% trong 3 nến, lời {pnl_pct:.1f}%"
 
                     if not should_lock:
                         continue
