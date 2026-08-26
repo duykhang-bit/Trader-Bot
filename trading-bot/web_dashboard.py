@@ -395,9 +395,8 @@ async function toggleScanProtector(enabled) {
     refresh();
 }
 async function setPumpReversalConfig() {
-    const peak  = parseFloat(document.getElementById('pump-rev-peak')?.value || 0.5);
     const floor = parseFloat(document.getElementById('pump-rev-floor')?.value || 0.3);
-    const r = await apiPost('/api/pump_reversal_config', {peak, floor});
+    const r = await apiPost('/api/pump_reversal_config', {floor});
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
@@ -578,6 +577,39 @@ const _taAnalysts = ['market', 'news', 'social', 'fundamentals'];
 let _taActiveAnalysts = new Set(['market', 'news', 'social']);
 let _taPolling = null;
 
+// Model presets theo provider
+const _taModelPresets = {
+    'openrouter':  { deep: 'nvidia/nemotron-3-ultra-550b-a55b:free', quick: 'openai/gpt-oss-20b:free' },
+    'groq':        { deep: 'llama-3.3-70b-versatile',                quick: 'llama-3.1-8b-instant' },
+    'google':      { deep: 'gemini-2.0-flash',                       quick: 'gemini-2.0-flash' },
+    'deepseek':    { deep: 'deepseek-v4-pro',                        quick: 'deepseek-v4-flash' },
+    'openai':      { deep: 'gpt-4o',                                 quick: 'gpt-4o-mini' },
+    'anthropic':   { deep: 'claude-opus-4-5',                        quick: 'claude-haiku-4-5' },
+    'ollama':      { deep: 'llama3.2',                               quick: 'llama3.2' },
+};
+
+function taUpdateModels(provider) {
+    const preset = _taModelPresets[provider] || { deep: '', quick: '' };
+    document.getElementById('ta-deep-model').value  = preset.deep;
+    document.getElementById('ta-quick-model').value = preset.quick;
+}
+
+// Per-slot model presets (quick model cho analyst/researcher, deep cho manager)
+const _taSlotModels = {
+    'deepseek':    { analyst: 'deepseek-v4-flash',      researcher: 'deepseek-v4-flash',      manager: 'deepseek-v4-pro' },
+    'groq':        { analyst: 'openai/gpt-oss-20b',     researcher: 'openai/gpt-oss-20b',    manager: 'openai/gpt-oss-20b' },
+    'google':      { analyst: 'gemini-3.6-flash',       researcher: 'gemini-3.6-flash',       manager: 'gemini-3.6-flash' },
+    'openai':      { analyst: 'gpt-4o-mini',            researcher: 'gpt-4o-mini',            manager: 'gpt-4o' },
+    'anthropic':   { analyst: 'claude-haiku-4-5',       researcher: 'claude-haiku-4-5',       manager: 'claude-sonnet-4-5' },
+    'openrouter':  { analyst: 'openai/gpt-oss-20b:free',researcher: 'openai/gpt-oss-20b:free',manager: 'nvidia/nemotron-3-ultra-550b-a55b:free' },
+};
+
+function taUpdateSlotModel(slot, provider) {
+    const presets = _taSlotModels[provider] || {};
+    const modelEl = document.getElementById('ta-model-' + slot);
+    if (modelEl && presets[slot]) modelEl.value = presets[slot];
+}
+
 function taToggleAnalyst(key) {
     if (_taActiveAnalysts.has(key)) {
         if (_taActiveAnalysts.size > 1) _taActiveAnalysts.delete(key);
@@ -612,15 +644,27 @@ async function taAnalyze() {
     const ticker = document.getElementById('ta-ticker').value.trim().toUpperCase() || 'BTC-USD';
     const dateEl = document.getElementById('ta-date');
     const date   = dateEl && dateEl.value ? dateEl.value : new Date().toISOString().slice(0,10);
-    const provider  = document.getElementById('ta-provider').value;
-    const deepModel = document.getElementById('ta-deep-model').value.trim();
-    const quickModel= document.getElementById('ta-quick-model').value.trim();
     const analysts  = [..._taActiveAnalysts];
 
-    const resultEl = document.getElementById('ta-result');
-    resultEl.innerHTML = `<div class="ta-progress"><span class="ta-spinner"></span>Đang phân tích <b>${ticker}</b> ngày <b>${date}</b>... (3-10 phút)</div>`;
+    // Multi-provider slots
+    const analystProv  = document.getElementById('ta-prov-analyst')?.value    || 'deepseek';
+    const analystModel = document.getElementById('ta-model-analyst')?.value   || 'deepseek-v4-flash';
+    const resProv      = document.getElementById('ta-prov-researcher')?.value || 'groq';
+    const resModel     = document.getElementById('ta-model-researcher')?.value|| 'llama-3.3-70b-versatile';
+    const mgrProv      = document.getElementById('ta-prov-manager')?.value    || 'google';
+    const mgrModel     = document.getElementById('ta-model-manager')?.value   || 'gemini-2.0-flash';
 
-    const r = await apiPost('/api/ta/analyze', { ticker, date, provider, deep_model: deepModel, quick_model: quickModel, analysts });
+    const resultEl = document.getElementById('ta-result');
+    resultEl.innerHTML = `<div class="ta-progress"><span class="ta-spinner"></span>Đang phân tích <b>${ticker}</b> ngày <b>${date}</b>...<br><span style="font-size:10px;color:#484f58">Analyst: ${analystProv}/${analystModel} · Researcher: ${resProv}/${resModel} · Manager: ${mgrProv}/${mgrModel}</span></div>`;
+
+    const r = await apiPost('/api/ta/analyze', {
+        ticker, date, analysts,
+        multi_provider: {
+            analyst:    { provider: analystProv, model: analystModel },
+            researcher: { provider: resProv,     model: resModel },
+            manager:    { provider: mgrProv,     model: mgrModel },
+        },
+    });
     if (!r || !r.ok) {
         resultEl.innerHTML = `<div style="color:#f85149">❌ ${r?.msg || 'Lỗi không xác định'}</div>`;
         return;
@@ -637,11 +681,18 @@ async function taAnalyze() {
                 _taPolling = null;
                 _taShowResult(sd.last_result);
             } else {
-                const p = resultEl.querySelector('.ta-progress');
-                if (p) {
-                    const elapsed = sd.elapsed_sec ? ` (${sd.elapsed_sec}s)` : '';
-                    p.innerHTML = `<span class="ta-spinner"></span>${sd.step || 'Đang chạy...'}${elapsed}`;
-                }
+                const elapsed = sd.elapsed_sec || 0;
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+                const log = (sd.agent_log || []).slice(-4).join('<br>');
+                resultEl.innerHTML = `
+                    <div class="ta-progress">
+                        <span class="ta-spinner"></span>
+                        <span style="color:#58a6ff;font-weight:700">${sd.step || 'Đang chạy...'}</span>
+                        <span style="color:#484f58;font-size:10px;margin-left:8px">⏱ ${timeStr}</span>
+                    </div>
+                    ${log ? `<div style="font-size:10px;color:#484f58;margin-top:6px;font-family:monospace;line-height:1.6">${log}</div>` : ''}`;
             }
         } catch(e) {}
     }, 3000);
@@ -778,10 +829,7 @@ function renderDashboard(d) {
                 <span style="font-size:11px;color:${mode==='auto'?'#3fb950':mode==='alert'?'#58a6ff':'#f85149'}">
                     ${mode==='auto'?'Đang tự chốt lời khi đảo chiều':mode==='alert'?'Chỉ gửi alert':'Đã tắt'}
                 </span>
-                <span style="font-size:10px;color:#484f58;margin-left:8px">Peak≥</span>
-                <input id="pump-rev-peak" type="number" min="0.1" max="10" step="0.1" value="${d.pump_reversal_min_profit_pct??0.5}"
-                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#3fb950;text-align:center">
-                <span style="font-size:10px;color:#484f58">% Floor≤</span>
+                <span style="font-size:10px;color:#484f58;margin-left:8px">Floor≤</span>
                 <input id="pump-rev-floor" type="number" min="0" max="5" step="0.1" value="${d.pump_reversal_floor_pct??0.3}"
                        style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center">
                 <span style="font-size:10px;color:#484f58">%</span>
@@ -965,35 +1013,87 @@ function renderDashboard(d) {
         <div class="ta-header">
           <div class="ta-dot"></div>
           <span style="color:#58a6ff;font-size:14px;font-weight:700;letter-spacing:2px">&#x1F9E0; TRADINGAGENTS AI ANALYSIS</span>
-          <span style="color:#1a3a5a;font-size:11px">Multi-agent · LLM-powered</span>
+          <span style="color:#1a3a5a;font-size:11px">Multi-agent · Multi-provider</span>
         </div>
+
+        <!-- Row 1: ticker / date / analyze -->
         <div class="ta-form">
           <input id="ta-ticker" placeholder="BTC-USD / ETH-USD / NVDA" value="BTC-USD"
                  style="width:160px;background:#0d1117;border:1px solid #1a3a5a;color:#58a6ff;font-weight:700;letter-spacing:1px">
           <input id="ta-date" type="date" value="${new Date().toISOString().slice(0,10)}"
                  style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
-          <select id="ta-provider" style="background:#0d1117;border:1px solid #1a3a5a;color:#c9d1d9">
-            <option value="deepseek">DeepSeek</option>
-            <option value="groq">Groq (Free)</option>
-            <option value="google">Google Gemini (Free)</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="ollama">Ollama (local)</option>
-          </select>
           <button onclick="taAnalyze()"
                   style="background:linear-gradient(135deg,#1f6feb,#388bfd);color:#fff;border:none;border-radius:6px;
                          padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px">
             &#x1F50D; Phân tích
           </button>
         </div>
-        <div style="margin-bottom:10px">
-          <span style="font-size:11px;color:#484f58;margin-right:6px">Models:</span>
-          <input id="ta-deep-model" placeholder="Deep LLM" value="deepseek-reasoner"
-                 style="width:160px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px">
-          <input id="ta-quick-model" placeholder="Quick LLM" value="deepseek-chat"
-                 style="width:175px;font-size:11px;background:#0d1117;border:1px solid #21262d;color:#8b949e;border-radius:4px;padding:3px 8px;margin-left:6px">
+
+        <!-- Multi-provider grid: 3 slots -->
+        <div style="margin:8px 0 6px;font-size:11px;color:#388bfd;font-weight:700;letter-spacing:1px">
+          &#x26A1; MULTI-PROVIDER ROUTING — tránh rate limit
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+
+          <!-- Slot 1: Analysts -->
+          <div style="background:#0d1117;border:1px solid #1a3a5a;border-radius:6px;padding:6px 8px">
+            <div style="font-size:10px;color:#388bfd;font-weight:700;margin-bottom:4px">
+              &#x1F4CA; ANALYSTS <span style="color:#484f58;font-weight:400">(4 calls)</span>
+            </div>
+            <div style="font-size:9px;color:#484f58;margin-bottom:3px">market · social · news · fundamentals</div>
+            <select id="ta-prov-analyst" onchange="taUpdateSlotModel('analyst',this.value)"
+                    style="width:100%;background:#161b22;border:1px solid #21262d;color:#c9d1d9;font-size:11px;border-radius:3px;padding:2px 4px;margin-bottom:3px">
+              <option value="google">Google (Free)</option>
+              <option value="groq">Groq (Free)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+            <input id="ta-model-analyst" placeholder="model" value="gemini-3.6-flash"
+                   style="width:100%;background:#161b22;border:1px solid #21262d;color:#8b949e;font-size:10px;border-radius:3px;padding:2px 4px;box-sizing:border-box">
+          </div>
+
+          <!-- Slot 2: Researchers -->
+          <div style="background:#0d1117;border:1px solid #1a3a5a;border-radius:6px;padding:6px 8px">
+            <div style="font-size:10px;color:#f0883e;font-weight:700;margin-bottom:4px">
+              &#x1F50D; RESEARCHERS <span style="color:#484f58;font-weight:400">(6 calls)</span>
+            </div>
+            <div style="font-size:9px;color:#484f58;margin-bottom:3px">bull · bear · trader · risk×3</div>
+            <select id="ta-prov-researcher" onchange="taUpdateSlotModel('researcher',this.value)"
+                    style="width:100%;background:#161b22;border:1px solid #21262d;color:#c9d1d9;font-size:11px;border-radius:3px;padding:2px 4px;margin-bottom:3px">
+              <option value="google">Google (Free)</option>
+              <option value="groq">Groq (Free)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+            <input id="ta-model-researcher" placeholder="model" value="gemini-3.6-flash"
+                   style="width:100%;background:#161b22;border:1px solid #21262d;color:#8b949e;font-size:10px;border-radius:3px;padding:2px 4px;box-sizing:border-box">
+          </div>
+
+          <!-- Slot 3: Managers -->
+          <div style="background:#0d1117;border:1px solid #1a3a5a;border-radius:6px;padding:6px 8px">
+            <div style="font-size:10px;color:#3fb950;font-weight:700;margin-bottom:4px">
+              &#x1F9E0; MANAGERS <span style="color:#484f58;font-weight:400">(2 calls)</span>
+            </div>
+            <div style="font-size:9px;color:#484f58;margin-bottom:3px">research mgr · portfolio mgr</div>
+            <select id="ta-prov-manager" onchange="taUpdateSlotModel('manager',this.value)"
+                    style="width:100%;background:#161b22;border:1px solid #21262d;color:#c9d1d9;font-size:11px;border-radius:3px;padding:2px 4px;margin-bottom:3px">
+              <option value="google">Google (Free)</option>
+              <option value="groq">Groq (Free)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+            <input id="ta-model-manager" placeholder="model" value="gemini-3.6-flash"
+                   style="width:100%;background:#161b22;border:1px solid #21262d;color:#8b949e;font-size:10px;border-radius:3px;padding:2px 4px;box-sizing:border-box">
+          </div>
+        </div>
+
+        <!-- Analysts selector -->
         <div style="margin-bottom:10px">
           <span style="font-size:11px;color:#484f58;margin-right:4px">Analysts:</span>
           <span class="ta-analyst-chip active" data-key="market" onclick="taToggleAnalyst('market')">&#x1F4C8; Market</span>
@@ -1001,8 +1101,9 @@ function renderDashboard(d) {
           <span class="ta-analyst-chip active" data-key="social" onclick="taToggleAnalyst('social')">&#x1F4AC; Social</span>
           <span class="ta-analyst-chip" data-key="fundamentals" onclick="taToggleAnalyst('fundamentals')">&#x1F4CA; Fundamentals</span>
         </div>
+
         <div id="ta-result" style="color:#484f58;font-size:12px;padding:10px 0">
-          Nhập ticker và nhấn Phân tích. Mỗi lần chạy mất 3–10 phút.
+          Mỗi slot dùng provider khác nhau → tránh rate limit. Mỗi lần chạy 3–10 phút.
         </div>
       </div>
     </div>`;
@@ -2332,7 +2433,6 @@ def api_state():
         },
         "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
-        "pump_reversal_min_profit_pct": getattr(_config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 0.5),
         "pump_reversal_floor_pct":      getattr(_config, "PUMP_REVERSAL_FLOOR_PCT", 0.3),
         "scan_protect_enabled":     getattr(_config, "SCAN_PROTECT_ENABLED", True),
         "profit_lock_enabled":      getattr(_config, "PROFIT_LOCK_ENABLED", True),
@@ -3412,17 +3512,15 @@ def api_reversal_monitor():
 @app.route("/api/pump_reversal_config", methods=["POST"])
 @require_auth
 def api_pump_reversal_config():
-    """Set Peak/Floor cho Pump Reversal Exit."""
+    """Set Floor cho Pump Reversal Exit."""
     data = request.get_json() or {}
     try:
         import config as _cfg
-        if "peak" in data:
-            _cfg.PUMP_REVERSAL_MIN_PROFIT_PCT = max(0.1, min(10.0, float(data["peak"])))
         if "floor" in data:
             _cfg.PUMP_REVERSAL_FLOOR_PCT = max(0.0, min(5.0, float(data["floor"])))
     except Exception:
         pass
-    return jsonify({"ok": True, "msg": f"Pump Reversal: Peak≥{getattr(_config,'PUMP_REVERSAL_MIN_PROFIT_PCT',0.5)}% Floor≤{getattr(_config,'PUMP_REVERSAL_FLOOR_PCT',0.3)}%"})
+    return jsonify({"ok": True, "msg": f"Pump Reversal: Floor≤{getattr(_config,'PUMP_REVERSAL_FLOOR_PCT',0.3)}%"})
 
 
 
@@ -3907,12 +4005,12 @@ _ta_state = {
     "elapsed_sec": 0,
     "last_result": None,
     "start_ts": 0,
+    "agent_log": [],   # list các bước đã qua
 }
 _ta_lock = _threading.Lock()
 
 
-def _ta_run_analysis(ticker: str, date: str, provider: str,
-                     deep_model: str, quick_model: str, analysts: list):
+def _ta_run_analysis(ticker: str, date: str, analysts: list, multi_provider: dict):
     """Run TradingAgents analysis in background thread."""
     import sys, os
 
@@ -3923,7 +4021,7 @@ def _ta_run_analysis(ticker: str, date: str, provider: str,
     if ta_path not in sys.path:
         sys.path.insert(0, ta_path)
 
-    # Load .env từ TradingAgents-main (chứa GROQ_API_KEY, GOOGLE_API_KEY...)
+    # Load .env từ TradingAgents-main (chứa API keys)
     env_file = os.path.join(ta_path, ".env")
     if os.path.exists(env_file):
         with open(env_file) as _f:
@@ -3934,35 +4032,120 @@ def _ta_run_analysis(ticker: str, date: str, provider: str,
                     if _v.strip():
                         os.environ[_k.strip()] = _v.strip()
 
-    # Override provider theo lựa chọn của user trên dashboard
-    os.environ["TRADINGAGENTS_LLM_PROVIDER"]    = provider
-    os.environ["TRADINGAGENTS_DEEP_THINK_LLM"]  = deep_model
-    os.environ["TRADINGAGENTS_QUICK_THINK_LLM"] = quick_model
+    # Kiểm tra API keys cho tất cả provider được dùng
+    _api_key_map = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "groq":       "GROQ_API_KEY",
+        "deepseek":   "DEEPSEEK_API_KEY",
+        "google":     "GOOGLE_API_KEY",
+        "openai":     "OPENAI_API_KEY",
+        "anthropic":  "ANTHROPIC_API_KEY",
+    }
+    seen_providers = set()
+    for slot_name, slot_cfg in multi_provider.items():
+        prov = slot_cfg.get("provider", "")
+        if prov and prov not in seen_providers:
+            seen_providers.add(prov)
+            env_key = _api_key_map.get(prov)
+            if env_key and not os.environ.get(env_key):
+                raise ValueError(
+                    f"Thiếu API key cho slot '{slot_name}' provider '{prov}'. "
+                    f"Hãy điền {env_key} vào TradingAgents-main/.env"
+                )
 
     def _set_step(msg):
         with _ta_lock:
-            _ta_state["step"] = msg
-            _ta_state["elapsed_sec"] = int(_time.time() - _ta_state["start_ts"])
+            elapsed = int(_time.time() - _ta_state["start_ts"])
+            _ta_state["step"] = f"{msg} ({elapsed}s)"
+            _ta_state["elapsed_sec"] = elapsed
+            _ta_state["agent_log"].append(f"[{elapsed:>4}s] {msg}")
+            logger.info("[TradingAgents] %s (%ds)", msg, elapsed)
 
     try:
-        _set_step(f"Khởi tạo LLM ({provider})...")
+        slot_summary = " | ".join(
+            f"{k}: {v['provider']}/{v['model']}" for k, v in multi_provider.items()
+        )
+        _set_step(f"Khởi tạo multi-provider LLMs")
+        logger.info("[TradingAgents] Multi-provider: %s", slot_summary)
 
         from tradingagents.graph import TradingAgentsGraph
         from tradingagents.default_config import DEFAULT_CONFIG
+        from langchain_core.callbacks import BaseCallbackHandler
+
+        # Callback để track từng agent node đang chạy
+        class _StepTracker(BaseCallbackHandler):
+            _AGENT_LABELS = {
+                "market":       "📈 Market Analyst",
+                "social":       "💬 Social Analyst",
+                "news":         "📰 News Analyst",
+                "fundamentals": "📊 Fundamentals Analyst",
+                "Bull":         "🐂 Bull Researcher",
+                "Bear":         "🐻 Bear Researcher",
+                "Research":     "🧠 Research Manager",
+                "Trader":       "💹 Trader",
+                "Aggressive":   "⚡ Risk (Aggressive)",
+                "Conservative": "🛡️ Risk (Conservative)",
+                "Neutral":      "⚖️ Risk (Neutral)",
+                "Portfolio":    "📋 Portfolio Manager",
+            }
+            def on_chat_model_start(self, serialized, messages, **kwargs):
+                # Đoán agent từ messages nếu có thể
+                pass
+            def on_llm_start(self, serialized, prompts, **kwargs):
+                name = (serialized or {}).get("name", "")
+                label = next((v for k, v in self._AGENT_LABELS.items() if k.lower() in name.lower()), f"🤖 {name}" if name else "🤖 LLM call")
+                _set_step(label)
+
+        tracker = _StepTracker()
+
+        # Dùng analyst slot làm primary provider để backward compat
+        analyst_cfg    = multi_provider.get("analyst",    {})
+        researcher_cfg = multi_provider.get("researcher", {})
+        manager_cfg    = multi_provider.get("manager",    {})
+
+        primary_provider = analyst_cfg.get("provider", "deepseek")
+        primary_quick    = analyst_cfg.get("model", "deepseek-v4-flash")
+        primary_deep     = manager_cfg.get("model", primary_quick)
 
         config = DEFAULT_CONFIG.copy()
         config.update({
-            "llm_provider": provider,
-            "deep_think_llm": deep_model,
-            "quick_think_llm": quick_model,
+            "llm_provider":   primary_provider,
+            "quick_think_llm": primary_quick,
+            "deep_think_llm":  primary_deep,
             "max_debate_rounds": 1,
             "max_risk_discuss_rounds": 1,
+            # Multi-provider slots — mỗi slot là 1 chain fallback
+            # Thứ tự: provider được chọn trước, sau đó tự fallback sang provider kia
+            "multi_provider": {
+                "analyst": {
+                    "chain": [
+                        {"provider": analyst_cfg["provider"],    "model": analyst_cfg["model"]},
+                        {"provider": researcher_cfg["provider"], "model": researcher_cfg["model"]},
+                        {"provider": manager_cfg["provider"],    "model": manager_cfg["model"]},
+                    ]
+                },
+                "researcher": {
+                    "chain": [
+                        {"provider": researcher_cfg["provider"], "model": researcher_cfg["model"]},
+                        {"provider": manager_cfg["provider"],    "model": manager_cfg["model"]},
+                        {"provider": analyst_cfg["provider"],    "model": analyst_cfg["model"]},
+                    ]
+                },
+                "manager": {
+                    "chain": [
+                        {"provider": manager_cfg["provider"],    "model": manager_cfg["model"]},
+                        {"provider": analyst_cfg["provider"],    "model": analyst_cfg["model"]},
+                        {"provider": researcher_cfg["provider"], "model": researcher_cfg["model"]},
+                    ]
+                },
+            },
         })
 
         ta = TradingAgentsGraph(
             selected_analysts=analysts,
             debug=False,
             config=config,
+            callbacks=[tracker],
         )
 
         _set_step(f"Đang phân tích {ticker} ({', '.join(analysts)})...")
@@ -4036,14 +4219,26 @@ def api_ta_analyze():
     data = request.get_json() or {}
     ticker   = data.get("ticker", "BTC-USD").strip().upper()
     date     = data.get("date", "") or __import__("datetime").date.today().isoformat()
-    provider = data.get("provider", "groq").strip()
-    deep_model  = data.get("deep_model",  "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
-    quick_model = data.get("quick_model", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
     analysts = data.get("analysts", ["market", "news", "social"])
     if not isinstance(analysts, list) or not analysts:
         analysts = ["market", "news", "social"]
     valid_analysts = {"market", "news", "social", "fundamentals"}
     analysts = [a for a in analysts if a in valid_analysts] or ["market", "news"]
+
+    # Multi-provider slots — fallback về defaults nếu không truyền
+    raw_mp = data.get("multi_provider") or {}
+    _default_slots = {
+        "analyst":    {"provider": "google", "model": "gemini-3.6-flash"},
+        "researcher": {"provider": "google", "model": "gemini-3.6-flash"},
+        "manager":    {"provider": "google", "model": "gemini-3.6-flash"},
+    }
+    multi_provider = {}
+    for slot, default in _default_slots.items():
+        slot_data = raw_mp.get(slot) or {}
+        multi_provider[slot] = {
+            "provider": (slot_data.get("provider") or default["provider"]).strip(),
+            "model":    (slot_data.get("model")    or default["model"]).strip(),
+        }
 
     with _ta_lock:
         if _ta_state["running"]:
@@ -4052,10 +4247,11 @@ def api_ta_analyze():
         _ta_state["step"] = "Đang khởi động..."
         _ta_state["elapsed_sec"] = 0
         _ta_state["start_ts"] = _time.time()
+        _ta_state["agent_log"] = []
 
     t = _threading.Thread(
         target=_ta_run_analysis,
-        args=(ticker, date, provider, deep_model, quick_model, analysts),
+        args=(ticker, date, analysts, multi_provider),
         daemon=True,
     )
     t.start()
@@ -4072,4 +4268,5 @@ def api_ta_status():
             "step":        _ta_state["step"],
             "elapsed_sec": _ta_state["elapsed_sec"],
             "last_result": _ta_state["last_result"],
+            "agent_log":   _ta_state["agent_log"][-8:],  # 8 bước gần nhất
         })

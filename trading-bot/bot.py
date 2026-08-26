@@ -1610,13 +1610,11 @@ def position_reversal_monitor(exchange, notifier):
                 if not getattr(config, "BREAKEVEN_EXIT_ENABLED", True):
                     pass
                 elif held_secs < min_hold:
-                    pass  # chưa đủ thời gian
-                elif mfe_pct < peak_pct:
-                    pass  # chưa đủ peak profit
+                    pass  # chưa đủ thời gian hold — chưa kích hoạt
                 else:
-                    # Đủ điều kiện: đã hold đủ thời gian + từng lời >= peak_pct
-                    # → chốt ngay khi pnl còn lại <= pnl_floor (không cần confirm reversal)
-                    # Logic cũ dùng rev_count confirm liên tiếp → dễ miss vì reset liên tục
+                    # Đã hold đủ min_hold → trailing kích hoạt
+                    # Theo dõi: khi lời giảm về <= pnl_floor thì cắt (bảo vệ lời)
+                    # Không cần peak_pct — pump nhẹ thường không đạt 3%
                     if pnl_pct <= pnl_floor:
                         with lock:
                             state.pop(mfe_key, None)
@@ -1627,13 +1625,15 @@ def position_reversal_monitor(exchange, notifier):
                             exchange.place_market_order(symbol, close_side, qty)
                             exchange.cancel_all_orders(symbol)
                             notifier.telegram.send(
-                                f"🔄 <b>📈 PEAK PROFIT EXIT (Pump)</b>: {symbol} {side}\n"
-                                f"Peak lời {mfe_pct:.1f}% → còn {pnl_pct:.1f}% ≤ floor {pnl_floor:.1f}% → đóng\n"
+                                f"🔄 <b>⏱ HOLD EXIT (Pump)</b>: {symbol} {side}\n"
+                                f"Hold {held_secs:.0f}s · lời rút về {pnl_pct:.1f}% ≤ floor {pnl_floor:.1f}% → chốt\n"
+                                f"Peak đạt: {mfe_pct:.1f}%\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
-                            continue  # đã đóng → skip MFE check bên dưới
+                            logger.info(f"[ReversalMon] HOLD EXIT {symbol}: held={held_secs:.0f}s pnl={pnl_pct:.1f}% <= floor={pnl_floor:.1f}%")
+                            continue
                         except Exception as e:
-                            logger.error(f"[ReversalMon] BE close {symbol}: {e}")
+                            logger.error(f"[ReversalMon] HOLD EXIT close {symbol}: {e}")
 
                 # ── MFE retracement >= 40% → đóng giữ lời ──
                 if mfe_pct >= 3.0:
@@ -3709,9 +3709,10 @@ def pump_scan_engine(exchange, notifier):
                                 f"min_profit={min_profit}% floor={floor_pct}%"
                             )
 
-                            # Cắt khi: từng lời >= min_profit VÀ hiện còn <= floor_pct
-                            # Bỏ điều kiện pump_pct/score — không cần thiết, chỉ làm block exit
-                            if prev_mfe >= min_profit and cur_pnl_pct <= floor_pct:
+                            # Cắt khi: lời hiện còn <= floor_pct
+                            # Không cần min_profit >= 3% — pump nhẹ thường không đạt peak cao
+                            # Chỉ cần hold đủ PUMP_REVERSAL_HOLD_SECONDS (60s) rồi lời rút về floor
+                            if cur_pnl_pct <= floor_pct:
                                 should_exit = True
                             else:
                                 should_exit = False
