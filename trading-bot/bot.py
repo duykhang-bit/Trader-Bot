@@ -2092,6 +2092,127 @@ def scan_position_protector(exchange, notifier):
 _spike_price_baseline: dict = {}   # {symbol: (price, timestamp)}
 
 # ============================================================
+# THREAD: Auto Profit Lock — chốt lời khi coin bay mạnh mà TP còn xa
+# ============================================================
+def auto_profit_lock(exchange, notifier):
+    """Chốt lời ngay khi coin bay mạnh + đang lời tốt — tránh để giá quay đầu mất lời."""
+    import time as _t
+    _t.sleep(20)
+
+    while state["running"]:
+        try:
+            if not getattr(config, "PROFIT_LOCK_ENABLED", True):
+                _t.sleep(10)
+                continue
+
+            min_pct   = getattr(config, "PROFIT_LOCK_MIN_PCT",      3.0)
+            high_pct  = getattr(config, "PROFIT_LOCK_HIGH_PCT",     5.0)
+            speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT",    0.5)
+            speed_10s = getattr(config, "PROFIT_LOCK_SPEED_10S_PCT",1.0)
+
+            with lock:
+                open_positions = list(state.get("open_positions", []))
+
+            for pos in open_positions:
+                sym  = pos.get("symbol","")
+                amt  = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+
+                entry      = float(pos.get("entryPrice", 0))
+                mark_price = pos.get("_mark", 0) or float(pos.get("markPrice", 0))
+                pnl_pct    = pos.get("_pct", 0)
+
+                if entry <= 0 or mark_price <= 0:
+                    continue
+
+                # Chưa lời đủ ngưỡng → skip
+                if pnl_pct < min_pct:
+                    continue
+
+                side = "SHORT" if amt < 0 else "LONG"
+
+                # Lấy klines 1m gần nhất để tính tốc độ bay
+                try:
+                    klines = exchange.get_klines(sym, "1m", limit=5)
+                    df = _klines_to_df(klines)
+                    if df is None or len(df) < 4:
+                        continue
+
+                    # Tốc độ giá trong 3 nến gần nhất
+                    close_now  = df["close"].iloc[-1]
+                    close_3ago = df["close"].iloc[-4]
+                    price_chg  = abs(close_now - close_3ago) / close_3ago * 100
+
+                    should_lock = False
+                    reason = ""
+
+                    # Lời cao + bất kỳ dấu hiệu đảo → chốt ngay
+                    if pnl_pct >= high_pct:
+                        should_lock = True
+                        reason = f"lời cao {pnl_pct:.1f}% ≥ {high_pct:.1f}%"
+
+                    # Lời >= min + coin bay mạnh trong 3s
+                    elif price_chg >= speed_pct and pnl_pct >= min_pct:
+                        # Bay theo chiều lệnh hay ngược lại?
+                        if side == "SHORT":
+                            # Giá đang tăng (hại cho SHORT) → chốt
+                            if close_now > close_3ago:
+                                should_lock = True
+                                reason = f"giá tăng {price_chg:.2f}% trong 3 nến, đang SHORT lời {pnl_pct:.1f}%"
+                        else:
+                            # Giá đang giảm (hại cho LONG) → chốt
+                            if close_now < close_3ago:
+                                should_lock = True
+                                reason = f"giá giảm {price_chg:.2f}% trong 3 nến, đang LONG lời {pnl_pct:.1f}%"
+
+                    if not should_lock:
+                        continue
+
+                    # Đóng lệnh
+                    qty        = abs(amt)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    cur_price  = exchange.get_ticker_price(sym)
+
+                    exchange.place_market_order(sym, close_side, qty)
+                    exchange.cancel_all_orders(sym)
+
+                    _t.sleep(0.5)
+                    pnl = _fetch_actual_pnl(exchange, sym, side, qty, entry, cur_price, 0)
+
+                    with lock:
+                        for t in reversed(state.get("trade_log", [])):
+                            if t.get("symbol") == sym and t.get("status") == "OPEN":
+                                t.update({
+                                    "status":   "CLOSED",
+                                    "close":    cur_price,
+                                    "pnl_usdt": round(pnl, 2),
+                                    "pnl_pct":  round(pnl_pct, 2),
+                                })
+                                break
+
+                    icon = "✅" if pnl >= 0 else "⚠️"
+                    notifier.telegram.send(
+                        f"🔒 <b>PROFIT LOCK — Chốt lời</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 {sym} {side}\n"
+                        f"📍 {reason}\n"
+                        f"💰 Entry: ${entry:.6g} → Close: ${cur_price:.6g}\n"
+                        f"{icon} PnL: <b>${pnl:+.2f}</b> ({pnl_pct:.1f}%)\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    logger.info(f"[ProfitLock] {sym} {side} closed: {reason} pnl=${pnl:+.2f}")
+
+                except Exception as e:
+                    logger.debug(f"[ProfitLock] {sym}: {e}")
+
+        except Exception as e:
+            logger.debug(f"[ProfitLock] loop error: {e}")
+
+        _t.sleep(getattr(config, "PROFIT_LOCK_INTERVAL", 5))
+
+
+# ============================================================
 # THREAD: Trailing Profit Lock — dời SL lên theo lợi nhuận
 # Khi lãi >= 3% → dời SL lên breakeven
 # Khi giá đi 50% tới TP → lock 40% lợi nhuận
@@ -5067,6 +5188,8 @@ if __name__ == "__main__":
     t11.start()
     t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
     t_trailing.start()
+    t_profit_lock = threading.Thread(target=auto_profit_lock, args=(exchange, notifier), daemon=True)
+    t_profit_lock.start()
     t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
     t_mfe_scan.start()
 
