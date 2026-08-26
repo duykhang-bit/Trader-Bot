@@ -3775,15 +3775,15 @@ def pump_scan_engine(exchange, notifier):
                             notifier.telegram.send(
                                 f"🔄 <b>PUMP REVERSAL EXIT — {profit_tag}</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━\n"
-                                f"🪙 {symbol} có dấu hiệu pump lên lại +{pump_pct:.1f}%\n"
-                                f"⚡ Đóng SHORT ngay trước khi bị squeeze\n"
+                                f"🪙 {symbol} lời rút về {cur_pnl_pct:.1f}% ≤ floor {floor_pct:.1f}% (peak={prev_mfe:.1f}%)\n"
+                                f"⚡ Đóng SHORT giữ lời\n"
                                 f"💰 Entry: ${entry:.6f} → Close: ${close_price:.6f}\n"
                                 f"{icon} PnL: <b>${pnl:+.2f}</b>\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
                             logger.info(
-                                f"[PumpEngine] REVERSAL EXIT: {symbol} "
-                                f"pump={pump_pct:.1f}% pnl=${pnl:+.2f}"
+                                f"[PumpRevExit] REVERSAL EXIT: {symbol} "
+                                f"mfe={prev_mfe:.1f}% cur={cur_pnl_pct:.1f}% floor={floor_pct:.1f}% pnl=${pnl:+.2f}"
                             )
                         except Exception as ex:
                             logger.error(f"[PumpEngine] Reversal exit {symbol}: {ex}")
