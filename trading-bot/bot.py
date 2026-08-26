@@ -2095,27 +2095,31 @@ _spike_price_baseline: dict = {}   # {symbol: (price, timestamp)}
 # THREAD: Auto Profit Lock — chốt lời khi coin bay mạnh mà TP còn xa
 # ============================================================
 def auto_profit_lock(exchange, notifier):
-    """Chốt lời ngay khi coin bay mạnh + đang lời tốt — tránh để giá quay đầu mất lời."""
+    """Chốt lời ngay khi coin dump/pump mạnh trong 1-2s + đang lời.
+    Dùng mark price WS realtime (_mark) — không dùng klines, không cần đợi nến đóng.
+    """
     import time as _t
     _t.sleep(20)
+
+    _prev_price: dict = {}   # {symbol: (price, timestamp)}
 
     while state["running"]:
         try:
             if not getattr(config, "PROFIT_LOCK_ENABLED", True):
-                _t.sleep(10)
+                _t.sleep(2)
                 continue
 
-            min_pct   = getattr(config, "PROFIT_LOCK_MIN_PCT",      3.0)
-            high_pct  = getattr(config, "PROFIT_LOCK_HIGH_PCT",     5.0)
-            speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT",    0.5)
-            speed_10s = getattr(config, "PROFIT_LOCK_SPEED_10S_PCT",1.0)
+            min_pct   = getattr(config, "PROFIT_LOCK_MIN_PCT",   1.0)
+            high_pct  = getattr(config, "PROFIT_LOCK_HIGH_PCT",  5.0)
+            speed_pct = getattr(config, "PROFIT_LOCK_SPEED_PCT", 1.0)
+            now = _t.time()
 
             with lock:
                 open_positions = list(state.get("open_positions", []))
 
             for pos in open_positions:
-                sym  = pos.get("symbol","")
-                amt  = float(pos.get("positionAmt", 0))
+                sym     = pos.get("symbol", "")
+                amt     = float(pos.get("positionAmt", 0))
                 if amt == 0:
                     continue
 
@@ -2124,55 +2128,48 @@ def auto_profit_lock(exchange, notifier):
                 pnl_pct    = pos.get("_pct", 0)
 
                 if entry <= 0 or mark_price <= 0:
-                    continue
-
-                # Chưa lời đủ ngưỡng → skip
-                if pnl_pct < min_pct:
+                    _prev_price[sym] = (mark_price, now)
                     continue
 
                 side = "SHORT" if amt < 0 else "LONG"
 
-                # Lấy klines 1m — dùng HIGH/LOW của nến vừa đóng để đo tốc độ
+                should_lock = False
+                reason = ""
+
+                # Lời cao → chốt ngay không cần check tốc độ
+                if pnl_pct >= high_pct:
+                    should_lock = True
+                    reason = f"lời cao {pnl_pct:.1f}% ≥ {high_pct:.1f}%"
+
+                elif pnl_pct >= min_pct:
+                    # Tính tốc độ giá thay đổi từ lần check trước (~1s)
+                    prev = _prev_price.get(sym)
+                    if prev:
+                        prev_price, prev_ts = prev
+                        elapsed = now - prev_ts
+                        if 0 < elapsed <= 5 and prev_price > 0:
+                            chg_pct = (mark_price - prev_price) / prev_price * 100
+                            # SHORT đang lời = giá đang giảm nhanh (chg âm)
+                            if side == "SHORT" and chg_pct <= -speed_pct:
+                                should_lock = True
+                                reason = f"SHORT: dump {abs(chg_pct):.2f}% trong {elapsed:.1f}s, lời {pnl_pct:.1f}%"
+                            # LONG đang lời = giá đang tăng nhanh (chg dương)
+                            elif side == "LONG" and chg_pct >= speed_pct:
+                                should_lock = True
+                                reason = f"LONG: pump {chg_pct:.2f}% trong {elapsed:.1f}s, lời {pnl_pct:.1f}%"
+
+                # Cập nhật price track mỗi vòng
+                _prev_price[sym] = (mark_price, now)
+
+                if not should_lock:
+                    continue
+
+                # Đóng lệnh
+                qty        = abs(amt)
+                close_side = "SELL" if side == "LONG" else "BUY"
+                cur_price  = mark_price  # dùng mark price WS luôn, nhanh hơn REST
+
                 try:
-                    klines = exchange.get_klines(sym, "1m", limit=3)
-                    df = _klines_to_df(klines)
-                    if df is None or len(df) < 2:
-                        continue
-
-                    # Nến 1m vừa đóng (iloc[-2]), nến đang chạy (iloc[-1])
-                    last  = df.iloc[-2]
-                    # Range của nến = (high-low)/low — đo độ mạnh của 1 nến
-                    candle_range = (last["high"] - last["low"]) / last["low"] * 100
-                    candle_bear  = last["close"] < last["open"]  # nến đỏ (dump)
-                    candle_bull  = last["close"] > last["open"]  # nến xanh (pump)
-
-                    should_lock = False
-                    reason = ""
-
-                    # Lời cao → chốt ngay không cần check tốc độ
-                    if pnl_pct >= high_pct:
-                        should_lock = True
-                        reason = f"lời cao {pnl_pct:.1f}% ≥ {high_pct:.1f}%"
-
-                    # Nến 1m mạnh (range >= speed_pct) theo chiều có lợi + đang lời >= min_pct
-                    # SHORT đang lời = nến đỏ mạnh → chốt trước khi hồi
-                    # LONG đang lời = nến xanh mạnh → chốt trước khi dump
-                    elif candle_range >= speed_pct and pnl_pct >= min_pct:
-                        if side == "SHORT" and candle_bear:
-                            should_lock = True
-                            reason = f"SHORT: nến đỏ {candle_range:.2f}% (1m), lời {pnl_pct:.1f}%"
-                        elif side == "LONG" and candle_bull:
-                            should_lock = True
-                            reason = f"LONG: nến xanh {candle_range:.2f}% (1m), lời {pnl_pct:.1f}%"
-
-                    if not should_lock:
-                        continue
-
-                    # Đóng lệnh
-                    qty        = abs(amt)
-                    close_side = "SELL" if side == "LONG" else "BUY"
-                    cur_price  = exchange.get_ticker_price(sym)
-
                     exchange.place_market_order(sym, close_side, qty)
                     exchange.cancel_all_orders(sym)
 
@@ -2201,14 +2198,16 @@ def auto_profit_lock(exchange, notifier):
                         f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                     )
                     logger.info(f"[ProfitLock] {sym} {side} closed: {reason} pnl=${pnl:+.2f}")
+                    # Xóa track để không trigger lại
+                    _prev_price.pop(sym, None)
 
                 except Exception as e:
-                    logger.debug(f"[ProfitLock] {sym}: {e}")
+                    logger.error(f"[ProfitLock] close {sym}: {e}")
 
         except Exception as e:
             logger.debug(f"[ProfitLock] loop error: {e}")
 
-        _t.sleep(getattr(config, "PROFIT_LOCK_INTERVAL", 5))
+        _t.sleep(1)  # check mỗi 1 giây — bắt dump trong 1-2s
 
 
 # ============================================================
