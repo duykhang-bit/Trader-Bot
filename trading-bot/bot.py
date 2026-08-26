@@ -2132,17 +2132,19 @@ def auto_profit_lock(exchange, notifier):
 
                 side = "SHORT" if amt < 0 else "LONG"
 
-                # Lấy klines 1m gần nhất để tính tốc độ bay
+                # Lấy klines 1m — dùng HIGH/LOW của nến vừa đóng để đo tốc độ
                 try:
-                    klines = exchange.get_klines(sym, "1m", limit=5)
+                    klines = exchange.get_klines(sym, "1m", limit=3)
                     df = _klines_to_df(klines)
-                    if df is None or len(df) < 4:
+                    if df is None or len(df) < 2:
                         continue
 
-                    # Tốc độ giá trong 3 nến gần nhất
-                    close_now  = df["close"].iloc[-1]
-                    close_3ago = df["close"].iloc[-4]
-                    price_chg  = abs(close_now - close_3ago) / close_3ago * 100
+                    # Nến 1m vừa đóng (iloc[-2]), nến đang chạy (iloc[-1])
+                    last  = df.iloc[-2]
+                    # Range của nến = (high-low)/low — đo độ mạnh của 1 nến
+                    candle_range = (last["high"] - last["low"]) / last["low"] * 100
+                    candle_bear  = last["close"] < last["open"]  # nến đỏ (dump)
+                    candle_bull  = last["close"] > last["open"]  # nến xanh (pump)
 
                     should_lock = False
                     reason = ""
@@ -2152,18 +2154,16 @@ def auto_profit_lock(exchange, notifier):
                         should_lock = True
                         reason = f"lời cao {pnl_pct:.1f}% ≥ {high_pct:.1f}%"
 
-                    # Coin bay nhanh theo chiều có lợi + đang lời >= min_pct → chốt giữ lời
-                    # SHORT đang lời = giá đang giảm nhanh → chốt trước khi hồi
-                    # LONG đang lời = giá đang tăng nhanh → chốt trước khi dump
-                    elif price_chg >= speed_pct and pnl_pct >= min_pct:
-                        if side == "SHORT" and close_now < close_3ago:
-                            # Giá đang giảm nhanh = SHORT đang ăn → chốt giữ lời
+                    # Nến 1m mạnh (range >= speed_pct) theo chiều có lợi + đang lời >= min_pct
+                    # SHORT đang lời = nến đỏ mạnh → chốt trước khi hồi
+                    # LONG đang lời = nến xanh mạnh → chốt trước khi dump
+                    elif candle_range >= speed_pct and pnl_pct >= min_pct:
+                        if side == "SHORT" and candle_bear:
                             should_lock = True
-                            reason = f"SHORT: giá dump {price_chg:.2f}% trong 3 nến, lời {pnl_pct:.1f}%"
-                        elif side == "LONG" and close_now > close_3ago:
-                            # Giá đang tăng nhanh = LONG đang ăn → chốt giữ lời
+                            reason = f"SHORT: nến đỏ {candle_range:.2f}% (1m), lời {pnl_pct:.1f}%"
+                        elif side == "LONG" and candle_bull:
                             should_lock = True
-                            reason = f"LONG: giá pump {price_chg:.2f}% trong 3 nến, lời {pnl_pct:.1f}%"
+                            reason = f"LONG: nến xanh {candle_range:.2f}% (1m), lời {pnl_pct:.1f}%"
 
                     if not should_lock:
                         continue
