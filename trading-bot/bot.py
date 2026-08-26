@@ -3709,10 +3709,9 @@ def pump_scan_engine(exchange, notifier):
                                 f"min_profit={min_profit}% floor={floor_pct}%"
                             )
 
-                            # Cắt khi: lời hiện còn <= floor_pct
-                            # Không cần min_profit >= 3% — pump nhẹ thường không đạt peak cao
-                            # Chỉ cần hold đủ PUMP_REVERSAL_HOLD_SECONDS (60s) rồi lời rút về floor
-                            if cur_pnl_pct <= floor_pct:
+                            # Cắt khi: từng lời rồi (prev_mfe > 0) VÀ lời rút về <= floor_pct
+                            # Nếu chưa từng lời (prev_mfe <= 0) → đang lỗ ngay từ đầu → để SL lo
+                            if prev_mfe > 0 and cur_pnl_pct <= floor_pct:
                                 should_exit = True
                             else:
                                 should_exit = False
