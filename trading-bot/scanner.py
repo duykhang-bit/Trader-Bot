@@ -654,11 +654,18 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
                 sl = atr_sl_long
 
             # TP: nearest swing resistance TRÊN entry_price
+            # Đảm bảo TP đủ xa để RR >= 1.5
             valid_highs = [h for h in swings["swing_highs"] if h > entry_price]
             tp_struct = min(valid_highs) if valid_highs else 0.0
             tp_atr    = entry_price + atr * 8
-            tp        = tp_struct if use_struct and tp_struct > entry_price else tp_atr
-            tp_reason = f"swing_res={tp_struct:.6f}" if tp == tp_struct else f"atr_tp ATR×8"
+            # Nếu swing quá gần (reward < 1.5 × risk) → dùng ATR×8
+            risk_tmp = abs(entry_price - sl)
+            if use_struct and tp_struct > entry_price and (tp_struct - entry_price) >= 1.5 * risk_tmp:
+                tp = tp_struct
+                tp_reason = f"swing_res={tp_struct:.6f}"
+            else:
+                tp = tp_atr
+                tp_reason = f"atr_tp ATR×8={tp_atr:.6f}"
 
         else:  # SHORT
             # Structure SL: swing high gần nhất TRÊN entry + ATR buffer
@@ -682,11 +689,17 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
                 sl = atr_sl_short
 
             # TP: nearest swing support DƯỚI entry_price
+            # Đảm bảo TP đủ xa để RR >= 1.5
             valid_lows = [l for l in swings["swing_lows"] if l < entry_price]
             tp_struct = max(valid_lows) if valid_lows else 0.0
             tp_atr    = entry_price - atr * 8
-            tp        = tp_struct if use_struct and tp_struct < entry_price else tp_atr
-            tp_reason = f"swing_sup={tp_struct:.6f}" if tp == tp_struct else f"atr_tp ATR×8"
+            risk_tmp  = abs(entry_price - sl)
+            if use_struct and tp_struct < entry_price and (entry_price - tp_struct) >= 1.5 * risk_tmp:
+                tp = tp_struct
+                tp_reason = f"swing_sup={tp_struct:.6f}"
+            else:
+                tp = tp_atr
+                tp_reason = f"atr_tp ATR×8={tp_atr:.6f}"
         sl = round(sl, 8)
         tp = round(tp, 8)
 
