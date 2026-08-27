@@ -3266,13 +3266,8 @@ def scan_engine(exchange, notifier):
                             mss_mgr.remove(mss_sym)
                             logger.info(f"[MSS] ✅ PROMOTED {mss_sym} {direction} tier={new_result.tier} "
                                         f"entry={entry_p:.6f} sl={sl_p:.6f} RR={rr:.2f}")
-                            notifier.telegram.send(
-                                f"🎯 <b>MSS {new_result.tier} ARMED</b>: {mss_sym} {direction}\n"
-                                f"💰 Entry: {entry_p:.6f} | SL: {sl_p:.6f} | TP: {tp_p:.6f}\n"
-                                f"📐 RR: 1:{rr:.1f} | Conf: {new_result.confidence:.0f}%\n"
-                                f"📝 {new_result.reason[:100]}\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
+                            # Không gửi telegram khi vào ARMED — tránh spam
+                            # notifier.telegram.send(...)
 
                         elif new_result.tier == "D":
                             # Structure invalidated → remove pending
@@ -4839,10 +4834,10 @@ def position_advisor(exchange, notifier):
                            if abs(float(p.get("positionAmt", 0))) > 0]
 
             if not open_pos:
-                time.sleep(1800)  # 30 phút
+                time.sleep(14400)  # 4 tiếng
                 continue
 
-            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (30 phút)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+            advice_lines = ["📊 <b>PHÂN TÍCH VỊ THẾ (4 tiếng)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
 
             for p in open_pos:
                 sym = p["symbol"]
@@ -4947,7 +4942,7 @@ def position_advisor(exchange, notifier):
         except Exception as e:
             logger.error(f"[PositionAdvisor] Error: {e}")
 
-        time.sleep(1800)  # 30 phút
+        time.sleep(14400)  # 4 tiếng
 
 
 # ============================================================
