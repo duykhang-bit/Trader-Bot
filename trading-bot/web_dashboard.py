@@ -1271,6 +1271,99 @@ function renderDashboard(d) {
     }
 
     html += `<div class="footer">Auto-refresh 1s</div>`;
+
+    // ── P0 SCAN SETTINGS ─────────────────────────────────────
+    html += `
+    <div class="section" id="p0-settings-section" style="margin-top:12px">
+      <h2 style="cursor:pointer" onclick="toggleP0Settings()">
+        &#x2699; Scan Engine P0 Settings
+        <span id="p0-arrow" style="font-size:11px;color:#8b949e">&#x25BC;</span>
+      </h2>
+      <div id="p0-settings-body" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+
+          <!-- BTC Filter -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#58a6ff;margin-bottom:8px;font-weight:600">📡 BTC Context Filter</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-btc-enabled" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Bật BTC Filter</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-btc-block" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Block cứng khi BTC strong ngược chiều</span>
+            </label>
+            <div style="font-size:11px;color:#484f58;margin-top:4px">Tắt nếu watchlist là coin dev/low cap</div>
+          </div>
+
+          <!-- Daily Kill Switch -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#f85149;margin-bottom:8px;font-weight:600">🛑 Daily Kill Switch</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-kill-enabled" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Bật Kill Switch</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Max loss/ngày:</span>
+              <input type="number" id="p0-max-daily-loss" min="0.5" max="10" step="0.5"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">% account</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Lỗ liên tiếp:</span>
+              <input type="number" id="p0-max-consec" min="2" max="10" step="1"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">lần → pause</span>
+            </div>
+          </div>
+
+          <!-- Position Sizing -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#3fb950;margin-bottom:8px;font-weight:600">📐 Position Sizing</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Risk/lệnh:</span>
+              <input type="number" id="p0-risk-pct" min="0.1" max="3" step="0.1"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">% balance</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Max order:</span>
+              <input type="number" id="p0-max-order" min="5" max="200" step="5"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">USDT notional</span>
+            </div>
+          </div>
+
+          <!-- Regime + RR -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#d29922;margin-bottom:8px;font-weight:600">📊 Regime + RR</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Min RR:</span>
+              <input type="number" id="p0-min-rr" min="1" max="5" step="0.1"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">reward:risk</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-sl-struct" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">SL theo structure (swing)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="p0-kill-chaos" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Skip CHAOS regime</span>
+            </label>
+          </div>
+
+        </div>
+
+        <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+          <button class="btn btn-green" onclick="saveP0Settings()" style="font-size:13px">
+            💾 Lưu Settings
+          </button>
+          <span id="p0-save-msg" style="font-size:12px;color:#3fb950"></span>
+        </div>
+      </div>
+    </div>`;
+
     return html;
 }
 
@@ -2285,6 +2378,60 @@ setInterval(updateClock,1000);
 setInterval(refresh, 3000);
 updateClock();
 refresh();
+
+// ── P0 SETTINGS ──────────────────────────────────────────────
+function toggleP0Settings() {
+    const body  = document.getElementById('p0-settings-body');
+    const arrow = document.getElementById('p0-arrow');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    if (arrow) arrow.innerHTML = hidden ? '&#x25B2;' : '&#x25BC;';
+    if (hidden) loadP0Settings();
+}
+
+async function loadP0Settings() {
+    try {
+        const r = await fetch('/api/p0/settings');
+        const d = await r.json();
+        if (!d.ok) return;
+        const s = d.settings;
+        const set = (id, val) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = !!val; else el.value = val; } };
+        set('p0-btc-enabled',    s.btc_filter_enabled);
+        set('p0-btc-block',      s.btc_strong_block);
+        set('p0-kill-enabled',   s.daily_kill_switch_enabled);
+        set('p0-max-daily-loss', (s.max_daily_loss_pct * 100).toFixed(1));
+        set('p0-max-consec',     s.max_consecutive_losses);
+        set('p0-risk-pct',       (s.risk_per_trade_pct * 100).toFixed(1));
+        set('p0-max-order',      s.risk_max_order_usdt);
+        set('p0-min-rr',         s.min_rr);
+        set('p0-sl-struct',      s.sl_structure_enabled);
+        set('p0-kill-chaos',     s.chaos_skip_enabled);
+    } catch(e) {}
+}
+
+async function saveP0Settings() {
+    const get = (id) => { const el = document.getElementById(id); return el ? (el.type === 'checkbox' ? el.checked : el.value) : null; };
+    const payload = {
+        btc_filter_enabled:       get('p0-btc-enabled'),
+        btc_strong_block:         get('p0-btc-block'),
+        daily_kill_switch_enabled:get('p0-kill-enabled'),
+        max_daily_loss_pct:       parseFloat(get('p0-max-daily-loss')) / 100,
+        max_consecutive_losses:   parseInt(get('p0-max-consec')),
+        risk_per_trade_pct:       parseFloat(get('p0-risk-pct')) / 100,
+        risk_max_order_usdt:      parseFloat(get('p0-max-order')),
+        min_rr:                   parseFloat(get('p0-min-rr')),
+        sl_structure_enabled:     get('p0-sl-struct'),
+        chaos_skip_enabled:       get('p0-kill-chaos'),
+    };
+    const r = await apiPost('/api/p0/settings', payload);
+    const msg = document.getElementById('p0-save-msg');
+    if (msg) {
+        msg.textContent = r.ok ? '✅ Đã lưu' : '❌ ' + (r.msg || 'Lỗi');
+        msg.style.color = r.ok ? '#3fb950' : '#f85149';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+    }
+}
 </script>
 </body>
 </html>"""
@@ -3534,6 +3681,63 @@ def api_pump_reversal_config():
     except Exception:
         pass
     return jsonify({"ok": True, "msg": f"Pump Reversal: Floor≤{getattr(_config,'PUMP_REVERSAL_FLOOR_PCT',0.3)}%"})
+
+
+@app.route("/api/p0/settings", methods=["GET"])
+def api_p0_settings_get():
+    """Trả về P0 scan settings hiện tại."""
+    try:
+        import config as _cfg
+        return jsonify({"ok": True, "settings": {
+            "btc_filter_enabled":        getattr(_cfg, "BTC_FILTER_ENABLED",        True),
+            "btc_strong_block":          getattr(_cfg, "BTC_STRONG_BLOCK",          True),
+            "daily_kill_switch_enabled": getattr(_cfg, "DAILY_KILL_SWITCH_ENABLED", True),
+            "max_daily_loss_pct":        getattr(_cfg, "MAX_DAILY_LOSS_PCT",        0.03),
+            "max_consecutive_losses":    getattr(_cfg, "MAX_CONSECUTIVE_LOSSES",    3),
+            "risk_per_trade_pct":        getattr(_cfg, "RISK_PER_TRADE_PCT",        0.01),
+            "risk_max_order_usdt":       getattr(_cfg, "RISK_MAX_ORDER_USDT",       50.0),
+            "min_rr":                    getattr(_cfg, "MIN_RR",                    1.5),
+            "sl_structure_enabled":      getattr(_cfg, "SL_STRUCTURE_ENABLED",      True),
+            "chaos_skip_enabled":        getattr(_cfg, "CHAOS_ATR_MULT",            2.5) > 0,
+        }})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
+@app.route("/api/p0/settings", methods=["POST"])
+@require_auth
+def api_p0_settings_save():
+    """Lưu P0 scan settings vào config runtime."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+
+        if "btc_filter_enabled" in data:
+            _cfg.BTC_FILTER_ENABLED        = bool(data["btc_filter_enabled"])
+        if "btc_strong_block" in data:
+            _cfg.BTC_STRONG_BLOCK          = bool(data["btc_strong_block"])
+        if "daily_kill_switch_enabled" in data:
+            _cfg.DAILY_KILL_SWITCH_ENABLED = bool(data["daily_kill_switch_enabled"])
+        if "max_daily_loss_pct" in data:
+            _cfg.MAX_DAILY_LOSS_PCT        = max(0.005, min(0.2, float(data["max_daily_loss_pct"])))
+        if "max_consecutive_losses" in data:
+            _cfg.MAX_CONSECUTIVE_LOSSES    = max(1, min(10, int(data["max_consecutive_losses"])))
+        if "risk_per_trade_pct" in data:
+            _cfg.RISK_PER_TRADE_PCT        = max(0.001, min(0.05, float(data["risk_per_trade_pct"])))
+        if "risk_max_order_usdt" in data:
+            _cfg.RISK_MAX_ORDER_USDT       = max(5.0, min(500.0, float(data["risk_max_order_usdt"])))
+        if "min_rr" in data:
+            _cfg.MIN_RR                    = max(1.0, min(5.0, float(data["min_rr"])))
+        if "sl_structure_enabled" in data:
+            _cfg.SL_STRUCTURE_ENABLED      = bool(data["sl_structure_enabled"])
+        if "chaos_skip_enabled" in data:
+            # Nếu tắt CHAOS skip → set mult rất cao (không bao giờ trigger)
+            _cfg.CHAOS_ATR_MULT = 2.5 if bool(data["chaos_skip_enabled"]) else 999.0
+
+        logger.info(f"[P0] Settings saved: {data}")
+        return jsonify({"ok": True, "msg": "✅ P0 settings đã lưu (runtime, restart sẽ reset)"})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
 
 
 
