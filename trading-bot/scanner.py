@@ -224,6 +224,488 @@ def get_active_universe(base_url: str = "https://testnet.binancefuture.com",
         return _active_universe if _active_universe else get_watchlist(base_url)[:top_n]
 
 
+# ============================================================
+# P0 HELPERS — Market Regime, BTC Context, 1H Location,
+#              Structure SL/TP, No-Chase
+# ============================================================
+
+def _calc_adx(high: "pd.Series", low: "pd.Series", close: "pd.Series",
+              period: int = 14) -> float:
+    """Tính ADX đơn giản để phân biệt TREND vs RANGE."""
+    try:
+        import numpy as np
+        h = high.values
+        l = low.values
+        c = close.values
+        n = len(c)
+        if n < period + 2:
+            return 25.0  # default — coi như TREND nếu không đủ data
+
+        plus_dm  = np.zeros(n)
+        minus_dm = np.zeros(n)
+        tr_arr   = np.zeros(n)
+        for i in range(1, n):
+            up   = h[i] - h[i-1]
+            down = l[i-1] - l[i]
+            plus_dm[i]  = up   if up > down and up > 0   else 0
+            minus_dm[i] = down if down > up and down > 0 else 0
+            tr_arr[i]   = max(h[i] - l[i], abs(h[i] - c[i-1]), abs(l[i] - c[i-1]))
+
+        # Wilder smoothing
+        def wilder(arr, p):
+            out = np.zeros(n)
+            out[p] = arr[1:p+1].sum()
+            for i in range(p+1, n):
+                out[i] = out[i-1] - out[i-1]/p + arr[i]
+            return out
+
+        atr_w   = wilder(tr_arr, period)
+        pdm_w   = wilder(plus_dm, period)
+        mdm_w   = wilder(minus_dm, period)
+
+        pdi = 100 * pdm_w / np.where(atr_w > 0, atr_w, 1)
+        mdi = 100 * mdm_w / np.where(atr_w > 0, atr_w, 1)
+        dx  = 100 * np.abs(pdi - mdi) / np.where((pdi + mdi) > 0, pdi + mdi, 1)
+
+        adx_arr = wilder(dx, period)
+        return float(adx_arr[-1])
+    except Exception:
+        return 25.0  # fallback — coi như đang TREND
+
+
+def detect_regime(df_4h: "pd.DataFrame", cfg=None) -> dict:
+    """
+    Phát hiện Market Regime từ 4H data.
+
+    Returns:
+        {
+            "regime":  "TREND_UP" | "TREND_DOWN" | "RANGE" | "CHAOS",
+            "bias":    "LONG" | "SHORT" | "NEUTRAL",
+            "slope":   float,   # EMA50 slope % normalized
+            "adx":     float,
+            "reason":  str,
+        }
+    """
+    result = {"regime": "RANGE", "bias": "NEUTRAL",
+              "slope": 0.0, "adx": 0.0, "reason": "default"}
+    try:
+        from indicators import calculate_ema, calculate_atr
+        close = df_4h["close"]
+        high  = df_4h["high"]
+        low   = df_4h["low"]
+
+        if len(close) < 55:
+            result["reason"] = "không đủ data 4H"
+            return result
+
+        ema9  = calculate_ema(close, 9)
+        ema21 = calculate_ema(close, 21)
+        ema50 = calculate_ema(close, 50)
+
+        price    = float(close.iloc[-1])
+        e9       = float(ema9.iloc[-1])
+        e21      = float(ema21.iloc[-1])
+        e50      = float(ema50.iloc[-1])
+        e50_prev = float(ema50.iloc[-5])  # 5 nến trước
+
+        # EMA50 slope normalize (%)
+        slope = (e50 - e50_prev) / e50_prev * 100 if e50_prev > 0 else 0.0
+
+        # ADX
+        adx = _calc_adx(high, low, close)
+
+        # CHAOS: ATR spike bất thường
+        slope_threshold = getattr(cfg, "REGIME_SLOPE_THRESHOLD", 0.05) if cfg else 0.05
+        chaos_mult      = getattr(cfg, "CHAOS_ATR_MULT", 2.5)          if cfg else 2.5
+        adx_range       = getattr(cfg, "ADX_RANGE_THRESHOLD", 25)       if cfg else 25
+
+        atr_now  = float(calculate_atr(high, low, close).iloc[-1])
+        atr_avg  = float(calculate_atr(high, low, close).rolling(20).mean().iloc[-1])
+        is_chaos = atr_now > chaos_mult * atr_avg if atr_avg > 0 else False
+
+        result["slope"] = round(slope, 4)
+        result["adx"]   = round(adx, 1)
+
+        if is_chaos:
+            result["regime"] = "CHAOS"
+            result["bias"]   = "NEUTRAL"
+            result["reason"] = f"CHAOS: ATR={atr_now:.5f} > {chaos_mult}×avg={atr_avg:.5f}"
+            return result
+
+        # RANGE: ADX thấp VÀ slope gần 0
+        if adx < adx_range and abs(slope) < slope_threshold:
+            result["regime"] = "RANGE"
+            result["bias"]   = "NEUTRAL"
+            result["reason"] = f"RANGE: ADX={adx:.1f}<{adx_range} slope={slope:.3f}%"
+            return result
+
+        # TREND: cần slope đủ mạnh + EMA alignment
+        if (slope > slope_threshold
+                and e9 > e21
+                and price > e50):
+            result["regime"] = "TREND_UP"
+            result["bias"]   = "LONG"
+            result["reason"] = f"TREND_UP: slope={slope:.3f}% EMA9>21 price>EMA50"
+        elif (slope < -slope_threshold
+              and e9 < e21
+              and price < e50):
+            result["regime"] = "TREND_DOWN"
+            result["bias"]   = "SHORT"
+            result["reason"] = f"TREND_DOWN: slope={slope:.3f}% EMA9<21 price<EMA50"
+        else:
+            # Slope có nhưng EMA chưa align đủ → RANGE/WEAK
+            result["regime"] = "RANGE"
+            result["bias"]   = "NEUTRAL"
+            result["reason"] = f"WEAK: slope={slope:.3f}% ADX={adx:.1f} EMA not aligned"
+
+    except Exception as e:
+        result["reason"] = f"detect_regime error: {e}"
+
+    return result
+
+
+# Cache BTC context — tránh fetch 3 lần/coin khi scan nhiều coin
+_btc_context_cache: dict = {}
+_btc_context_ts:    float = 0.0
+_BTC_CONTEXT_TTL:   float = 60.0  # giây
+
+
+def get_btc_context(exchange, cfg=None) -> dict:
+    """
+    Lấy BTC market context từ 3 timeframe (4H + 1H + 15M).
+    Cache 60s để không fetch lại cho từng coin.
+
+    Returns:
+        {
+            "state_4h":  "STRONG_BULL"|"BULL"|"NEUTRAL"|"BEAR"|"STRONG_BEAR",
+            "state_1h":  tương tự,
+            "state_15m": tương tự,
+            "score_adj": float,   # điểm cộng/trừ vào candidate score
+            "block_long":  bool,  # block LONG alt
+            "block_short": bool,  # block SHORT alt
+            "reason":    str,
+        }
+    """
+    global _btc_context_cache, _btc_context_ts
+    import time as _time
+
+    result = {
+        "state_4h": "NEUTRAL", "state_1h": "NEUTRAL", "state_15m": "NEUTRAL",
+        "score_adj_long": 0.0, "score_adj_short": 0.0,
+        "block_long": False, "block_short": False,
+        "reason": "BTC context disabled",
+    }
+
+    if cfg and not getattr(cfg, "BTC_FILTER_ENABLED", True):
+        return result
+
+    if _time.time() - _btc_context_ts < _BTC_CONTEXT_TTL and _btc_context_cache:
+        return _btc_context_cache
+
+    try:
+        from indicators import calculate_ema
+
+        def _classify_btc(df) -> str:
+            """STRONG_BULL / BULL / NEUTRAL / BEAR / STRONG_BEAR"""
+            if df is None or len(df) < 55:
+                return "NEUTRAL"
+            close = df["close"]
+            e9  = calculate_ema(close, 9)
+            e21 = calculate_ema(close, 21)
+            e50 = calculate_ema(close, 50)
+            p   = float(close.iloc[-1])
+            v9  = float(e9.iloc[-1]);  v21 = float(e21.iloc[-1]); v50 = float(e50.iloc[-1])
+            # Slope EMA50
+            e50_prev = float(e50.iloc[-5])
+            slope = (v50 - e50_prev) / e50_prev * 100 if e50_prev > 0 else 0.0
+
+            bull = (v9 > v21 and p > v50)
+            bear = (v9 < v21 and p < v50)
+
+            if bull and slope > 0.08:  return "STRONG_BULL"
+            if bull:                   return "BULL"
+            if bear and slope < -0.08: return "STRONG_BEAR"
+            if bear:                   return "BEAR"
+            return "NEUTRAL"
+
+        from scanner import _klines_to_df
+        kl_4h  = exchange.get_klines("BTCUSDT", "4h",  limit=60)
+        kl_1h  = exchange.get_klines("BTCUSDT", "1h",  limit=60)
+        kl_15m = exchange.get_klines("BTCUSDT", "15m", limit=60)
+        df_4h  = _klines_to_df(kl_4h)
+        df_1h  = _klines_to_df(kl_1h)
+        df_15m = _klines_to_df(kl_15m)
+
+        s4h  = _classify_btc(df_4h)
+        s1h  = _classify_btc(df_1h)
+        s15m = _classify_btc(df_15m)
+
+        # Score adjustment cho LONG alt
+        same_bonus    = getattr(cfg, "BTC_SAME_DIR_BONUS",    7) if cfg else 7
+        same_1h_bonus = getattr(cfg, "BTC_SAME_DIR_1H_BONUS", 4) if cfg else 4
+        opp_penalty   = getattr(cfg, "BTC_OPPOSE_PENALTY",    8) if cfg else 8
+        opp_1h_penalty= getattr(cfg, "BTC_OPPOSE_1H_PENALTY", 5) if cfg else 5
+
+        adj_long = adj_short = 0.0
+        reasons  = []
+
+        # 4H
+        if s4h in ("BULL", "STRONG_BULL"):
+            adj_long  += same_bonus;  adj_short -= opp_penalty
+            reasons.append(f"BTC4H={s4h}")
+        elif s4h in ("BEAR", "STRONG_BEAR"):
+            adj_long  -= opp_penalty; adj_short += same_bonus
+            reasons.append(f"BTC4H={s4h}")
+
+        # 1H
+        if s1h in ("BULL", "STRONG_BULL"):
+            adj_long  += same_1h_bonus; adj_short -= opp_1h_penalty
+            reasons.append(f"BTC1H={s1h}")
+        elif s1h in ("BEAR", "STRONG_BEAR"):
+            adj_long  -= opp_1h_penalty; adj_short += same_1h_bonus
+            reasons.append(f"BTC1H={s1h}")
+
+        # 15M — chỉ penalty khi strong ngược chiều (tránh noise)
+        if s15m == "STRONG_BEAR":
+            adj_long  -= 5; reasons.append("BTC15M=STRONG_BEAR")
+        elif s15m == "STRONG_BULL":
+            adj_short -= 5; reasons.append("BTC15M=STRONG_BULL")
+
+        # Block hoàn toàn khi BTC strong ngược trên cả 3TF
+        strong_block = getattr(cfg, "BTC_STRONG_BLOCK", True) if cfg else True
+        block_long  = (strong_block
+                       and s4h == "STRONG_BEAR"
+                       and s1h in ("BEAR", "STRONG_BEAR")
+                       and s15m in ("BEAR", "STRONG_BEAR"))
+        block_short = (strong_block
+                       and s4h == "STRONG_BULL"
+                       and s1h in ("BULL", "STRONG_BULL")
+                       and s15m in ("BULL", "STRONG_BULL"))
+
+        result = {
+            "state_4h":       s4h,
+            "state_1h":       s1h,
+            "state_15m":      s15m,
+            "score_adj_long":  round(adj_long, 1),
+            "score_adj_short": round(adj_short, 1),
+            "block_long":      block_long,
+            "block_short":     block_short,
+            "reason":          " | ".join(reasons) if reasons else "BTC NEUTRAL",
+        }
+
+        _btc_context_cache = result
+        _btc_context_ts    = _time.time()
+        logger.debug(f"[BTC] {result['reason']} adj_long={adj_long:+.0f} adj_short={adj_short:+.0f} "
+                     f"block_long={block_long} block_short={block_short}")
+
+    except Exception as e:
+        logger.debug(f"[BTC] get_btc_context error: {e}")
+
+    return result
+
+
+def find_swing_highs_lows(high: "pd.Series", low: "pd.Series",
+                          lookback: int = 20) -> dict:
+    """
+    Tìm swing high/low thực sự (local peaks/troughs) trong lookback nến gần nhất.
+    Swing high: high[i] > high[i-1] AND high[i] > high[i+1]
+    Swing low:  low[i]  < low[i-1]  AND low[i]  < low[i+1]
+
+    Returns:
+        {
+            "swing_highs": [float, ...],  # sorted descending
+            "swing_lows":  [float, ...],  # sorted ascending
+            "nearest_resistance": float,
+            "nearest_support":    float,
+        }
+    """
+    try:
+        n = min(lookback, len(high) - 2)
+        h_vals = high.values
+        l_vals = low.values
+
+        swing_highs = []
+        swing_lows  = []
+        for i in range(1, n):
+            idx = len(h_vals) - n + i  # index trong series
+            if idx <= 0 or idx >= len(h_vals) - 1:
+                continue
+            if h_vals[idx] > h_vals[idx-1] and h_vals[idx] > h_vals[idx+1]:
+                swing_highs.append(float(h_vals[idx]))
+            if l_vals[idx] < l_vals[idx-1] and l_vals[idx] < l_vals[idx+1]:
+                swing_lows.append(float(l_vals[idx]))
+
+        swing_highs.sort(reverse=True)
+        swing_lows.sort()
+
+        cur_price = float(high.iloc[-1])
+        # Nearest resistance: swing high ngay trên giá hiện tại
+        nearest_res = next((h for h in swing_highs if h > cur_price), swing_highs[0] if swing_highs else cur_price * 1.05)
+        # Nearest support: swing low ngay dưới giá hiện tại
+        cur_low     = float(low.iloc[-1])
+        nearest_sup = next((l for l in reversed(swing_lows) if l < cur_low), swing_lows[-1] if swing_lows else cur_price * 0.95)
+
+        return {
+            "swing_highs":        swing_highs,
+            "swing_lows":         swing_lows,
+            "nearest_resistance": nearest_res,
+            "nearest_support":    nearest_sup,
+        }
+    except Exception:
+        cur = float(high.iloc[-1]) if len(high) > 0 else 1.0
+        return {
+            "swing_highs": [cur * 1.05],
+            "swing_lows":  [cur * 0.95],
+            "nearest_resistance": cur * 1.05,
+            "nearest_support":    cur * 0.95,
+        }
+
+
+def check_1h_location(df_1h: "pd.DataFrame", signal: str,
+                      entry_price: float, atr_1h: float,
+                      cfg=None) -> dict:
+    """
+    Kiểm tra vị trí giá trên 1H so với swing S/R thực sự.
+
+    Returns:
+        {
+            "ok":       bool,
+            "room_atr": float,   # room tính bằng ATR 1H
+            "nearest":  float,   # mức S/R gần nhất theo hướng TP
+            "reason":   str,
+        }
+    """
+    min_room = getattr(cfg, "LOCATION_MIN_ROOM_ATR", 1.5) if cfg else 1.5
+    lookback = getattr(cfg, "LOCATION_SWING_LOOKBACK", 20) if cfg else 20
+
+    try:
+        swings  = find_swing_highs_lows(df_1h["high"], df_1h["low"], lookback)
+        if signal == "LONG":
+            nearest = swings["nearest_resistance"]
+            room    = (nearest - entry_price) / atr_1h if atr_1h > 0 else 99.0
+            ok      = room >= min_room
+            reason  = (f"LONG location: resistance={nearest:.6f} room={room:.1f}×ATR"
+                       f" {'✅' if ok else '❌ < ' + str(min_room) + 'xATR'}")
+        else:  # SHORT
+            nearest = swings["nearest_support"]
+            room    = (entry_price - nearest) / atr_1h if atr_1h > 0 else 99.0
+            ok      = room >= min_room
+            reason  = (f"SHORT location: support={nearest:.6f} room={room:.1f}×ATR"
+                       f" {'✅' if ok else '❌ < ' + str(min_room) + 'xATR'}")
+
+        return {"ok": ok, "room_atr": round(room, 2), "nearest": nearest, "reason": reason}
+
+    except Exception as e:
+        return {"ok": True, "room_atr": 99.0, "nearest": 0.0, "reason": f"location check error: {e}"}
+
+
+def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
+                         entry_price: float, cfg=None) -> dict:
+    """
+    Tính SL dựa trên structure (swing low/high) + ATR buffer.
+    Tính TP tại nearest swing resistance/support trên 15m.
+
+    Returns:
+        {
+            "sl":         float,
+            "tp":         float,
+            "sl_pct":     float,   # % SL cách entry
+            "tp_pct":     float,
+            "rr":         float,
+            "sl_reason":  str,
+            "tp_reason":  str,
+        }
+    """
+    from indicators import calculate_atr
+    try:
+        atr     = float(calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1])
+        swings  = find_swing_highs_lows(df_15m["high"], df_15m["low"], lookback=20)
+
+        atr_buf   = getattr(cfg, "SL_ATR_BUFFER_MULT", 0.5) if cfg else 0.5
+        sl_min    = getattr(cfg, "SL_MIN_PCT", 0.008)        if cfg else 0.008
+        sl_max    = getattr(cfg, "SL_MAX_PCT", 0.06)         if cfg else 0.06
+        use_struct= getattr(cfg, "SL_STRUCTURE_ENABLED", True) if cfg else True
+
+        if signal == "LONG":
+            # SL: dưới nearest swing low - ATR buffer
+            struct_sl = swings["nearest_support"] - atr * atr_buf
+            atr_sl    = entry_price - max(atr * 2.0, entry_price * sl_min)
+            sl        = struct_sl if use_struct else atr_sl
+            # Clamp SL vào khoảng [min%, max%] cách entry
+            sl = max(sl, entry_price * (1 - sl_max))   # không quá rộng
+            sl = min(sl, entry_price * (1 - sl_min))   # không quá chặt
+            # TP: nearest swing resistance trên 15m
+            tp_struct = swings["nearest_resistance"]
+            tp_atr    = entry_price + atr * 8
+            tp        = tp_struct if use_struct and tp_struct > entry_price else tp_atr
+            sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
+            tp_reason = f"swing_res={tp_struct:.6f}"
+
+        else:  # SHORT
+            struct_sl = swings["nearest_resistance"] + atr * atr_buf
+            atr_sl    = entry_price + max(atr * 2.0, entry_price * sl_min)
+            sl        = struct_sl if use_struct else atr_sl
+            sl = min(sl, entry_price * (1 + sl_max))
+            sl = max(sl, entry_price * (1 + sl_min))
+            tp_struct = swings["nearest_support"]
+            tp_atr    = entry_price - atr * 8
+            tp        = tp_struct if use_struct and tp_struct < entry_price else tp_atr
+            sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
+            tp_reason = f"swing_sup={tp_struct:.6f}"
+
+        sl = round(sl, 8)
+        tp = round(tp, 8)
+
+        risk   = abs(entry_price - sl)
+        reward = abs(tp - entry_price)
+        rr     = reward / risk if risk > 0 else 0.0
+        sl_pct = risk / entry_price * 100
+        tp_pct = reward / entry_price * 100
+
+        return {
+            "sl": sl, "tp": tp,
+            "sl_pct": round(sl_pct, 3), "tp_pct": round(tp_pct, 3),
+            "rr": round(rr, 2),
+            "sl_reason": sl_reason, "tp_reason": tp_reason,
+        }
+
+    except Exception as e:
+        # Fallback ATR-based
+        from indicators import calculate_atr
+        atr = float(calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1])
+        if signal == "LONG":
+            sl = round(entry_price - max(atr * 2.0, entry_price * 0.02), 8)
+            tp = round(entry_price + atr * 8, 8)
+        else:
+            sl = round(entry_price + max(atr * 2.0, entry_price * 0.02), 8)
+            tp = round(entry_price - atr * 8, 8)
+        risk   = abs(entry_price - sl)
+        reward = abs(tp - entry_price)
+        rr     = reward / risk if risk > 0 else 0.0
+        return {
+            "sl": sl, "tp": tp,
+            "sl_pct": round(risk/entry_price*100, 3),
+            "tp_pct": round(reward/entry_price*100, 3),
+            "rr": round(rr, 2),
+            "sl_reason": f"fallback ATR×2 ({e})",
+            "tp_reason":  "fallback ATR×8",
+        }
+
+
+def check_no_chase(current_price: float, planned_entry: float,
+                   atr: float, signal: str, cfg=None) -> bool:
+    """
+    Trả về True nếu giá đã chạy quá xa planned entry → KHÔNG CHASE.
+    LONG:  current_price > planned_entry + mult×ATR → chase
+    SHORT: current_price < planned_entry - mult×ATR → chase
+    """
+    mult = getattr(cfg, "NO_CHASE_ATR_MULT", 0.5) if cfg else 0.5
+    if signal == "LONG":
+        return current_price > planned_entry + mult * atr
+    else:
+        return current_price < planned_entry - mult * atr
+
+
 @dataclass
 class CoinScore:
     symbol: str
@@ -373,18 +855,32 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
 
 def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Optional[CoinScore]:
     """
-    Quét coin theo thứ tự đúng:
-    1. Xác định xu hướng từ khung LỚN (4h → 1h) TRƯỚC
-    2. Tìm entry trên 15m THEO CHIỀU xu hướng
-    3. compute_signal_score check WR
+    Quét coin theo thứ tự P0:
+    1. Market Regime (4H) — CHAOS/RANGE → skip
+    2. BTC Context (4H+1H+15M) — block/adjust score
+    3. 4H+1H bias xác định hướng
+    4. 1H Location — không entry sát S/R
+    5. 15M setup + score
+    6. compute_signal_score (WR check)
+    7. Rank candidates → chọn best theo score+RR composite
     """
     base_url = getattr(config, "LIVE_BASE_URL", "https://demo-fapi.binance.com")
 
     active = get_active_universe(base_url, top_n=10)
-    logger.info(f"🔍 Scanning {len(active)} coins (trend-first)...")
+    logger.info(f"🔍 Scanning {len(active)} coins (P0 regime+BTC+location)...")
     candidates = []
 
-    # ── Cleanup expired pending entries ──────────────────────────────
+    # ── Lấy BTC context 1 lần cho toàn bộ vòng scan ────────────────
+    btc_ctx = {}
+    try:
+        btc_ctx = get_btc_context(exchange, config)
+        logger.debug(f"[BTC] {btc_ctx.get('reason','')} "
+                     f"adj_long={btc_ctx.get('score_adj_long',0):+.0f} "
+                     f"adj_short={btc_ctx.get('score_adj_short',0):+.0f}")
+    except Exception as _e:
+        logger.debug(f"[BTC] context error: {_e}")
+
+    # ── Cleanup expired pending ──────────────────────────────────────
     now_ts = time.time()
     expired = [s for s, v in _pending_watch.items() if now_ts - v["ts"] > _PENDING_TTL]
     for s in expired:
@@ -445,15 +941,32 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             except Exception as _e:
                 logger.debug(f"  ⚠️  pending retry {p_sym}: {_e}")
 
-    # ── MAIN SCAN: Trend-First ───────────────────────────────────────
+    # ── MAIN SCAN: P0 Pipeline ───────────────────────────────────────
     for symbol in active:
         try:
-            # ═══ BƯỚC 1: Xác định xu hướng từ 4h + 1h TRƯỚC ═══
+            # ═══ BƯỚC 1: Fetch 4H + 1H data ═══
             klines_4h = exchange.get_klines(symbol, "4h", limit=100)
             klines_1h = exchange.get_klines(symbol, "1h", limit=100)
             df_4h = _klines_to_df(klines_4h)
             df_1h = _klines_to_df(klines_1h)
 
+            # ═══ BƯỚC 2: Market Regime — CHAOS/RANGE → skip ═══
+            regime_info = detect_regime(df_4h, config)
+            regime = regime_info["regime"]
+
+            if regime == "CHAOS":
+                logger.info(f"  ⛔ {symbol}: CHAOS → skip | {regime_info['reason']}")
+                continue
+            if regime == "RANGE":
+                logger.debug(f"  ⏭  {symbol}: RANGE → skip trend-following | {regime_info['reason']}")
+                continue
+
+            # ═══ BƯỚC 3: BTC Filter (chỉ áp dụng cho ALT, không cho BTC/ETH) ═══
+            is_btc_eth = symbol in ("BTCUSDT", "ETHUSDT")
+            btc_block_long  = btc_ctx.get("block_long",  False) and not is_btc_eth
+            btc_block_short = btc_ctx.get("block_short", False) and not is_btc_eth
+
+            # ═══ BƯỚC 4: 4H+1H bias ═══
             close_4h = df_4h["close"]
             ema9_4h  = calculate_ema(close_4h, 9).iloc[-1]
             ema21_4h = calculate_ema(close_4h, 21).iloc[-1]
@@ -476,27 +989,30 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             elif ema9_1h < ema21_1h:
                 trend_1h = "SHORT"
 
-            # Bias chung
             if trend_4h == trend_1h and trend_4h != "NEUTRAL":
-                bias = trend_4h
-                strength = "STRONG"
+                bias = trend_4h; strength = "STRONG"
             elif trend_4h != "NEUTRAL":
-                bias = trend_4h
-                strength = "MEDIUM"
+                bias = trend_4h; strength = "MEDIUM"
             elif trend_1h != "NEUTRAL":
-                bias = trend_1h
-                strength = "MEDIUM"
+                bias = trend_1h; strength = "MEDIUM"
             else:
                 logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
                 continue
 
-            # ═══ BƯỚC 2: Tìm entry 15m THEO CHIỀU bias ═══
+            # Block nếu BTC ngược chiều mạnh
+            if bias == "LONG" and btc_block_long:
+                logger.info(f"  🚫 {symbol}: LONG blocked by BTC strong bearish")
+                continue
+            if bias == "SHORT" and btc_block_short:
+                logger.info(f"  🚫 {symbol}: SHORT blocked by BTC strong bullish")
+                continue
+
+            # ═══ BƯỚC 5: 15m setup ═══
             klines_15m = exchange.get_klines(symbol, "15m", limit=100)
             df_15m = _klines_to_df(klines_15m)
 
             scored = score_coin(symbol, df_15m, config)
 
-            # Nếu score_coin không trả signal đúng chiều → thử pullback
             if not scored or scored.signal != bias:
                 volatile = is_volatile_coin(df_1h, threshold_pct=4.0)
                 if volatile:
@@ -515,11 +1031,30 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
                     continue
 
-            # Bonus MTF strength
+            # ═══ BƯỚC 6: 1H Location — không entry sát S/R ═══
+            cur_price = float(df_15m["close"].iloc[-1])
+            atr_1h    = float(calculate_atr(df_1h["high"], df_1h["low"], df_1h["close"]).iloc[-1])
+            loc_check = check_1h_location(df_1h, bias, cur_price, atr_1h, config)
+            if not loc_check["ok"]:
+                logger.info(f"  📍 {symbol}: {loc_check['reason']} → PENDING location")
+                _pending_watch[symbol] = {
+                    "signal": bias, "score": scored.score, "bias": bias,
+                    "win_rate": 0, "ts": time.time(), "retry": 0, "css": {},
+                    "skip_reason": "location",
+                }
+                continue
+
+            # ═══ BƯỚC 7: MTF bonus + BTC score adjustment ═══
             bonus = 15 if strength == "STRONG" else 8
             final_score = min(scored.score + bonus, 100)
 
-            # ═══ BƯỚC 3: compute_signal_score — WR check ═══
+            # BTC score adjustment (không áp dụng cho BTC/ETH)
+            if not is_btc_eth:
+                adj = btc_ctx.get("score_adj_long", 0) if bias == "LONG" \
+                      else btc_ctx.get("score_adj_short", 0)
+                final_score = max(0, min(100, final_score + adj))
+
+            # ═══ BƯỚC 8: compute_signal_score (WR check) ═══
             try:
                 css = compute_signal_score(df_15m, df_1h, df_4h)
             except Exception:
@@ -551,29 +1086,39 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             _pending_watch.pop(symbol, None)
             wr_bonus    = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
             final_score = min(final_score + wr_bonus, 100)
-            mtf_tag = "MTF✅" if strength == "STRONG" else "MTF⚡"
+            mtf_tag  = "MTF✅" if strength == "STRONG" else "MTF⚡"
+            reg_tag  = regime_info["regime"]
+            btc_tag  = btc_ctx.get("reason", "")[:30]
 
             final = CoinScore(
                 symbol=symbol, signal=bias, score=final_score,
                 rsi=scored.rsi, trend=scored.trend, atr_pct=scored.atr_pct,
-                reason=f"4h={trend_4h} 1h={trend_1h} | {mtf_tag} WR={win_rate:.0f}% | {scored.reason}"
+                reason=(f"{reg_tag} | 4h={trend_4h} 1h={trend_1h} | {mtf_tag} "
+                        f"WR={win_rate:.0f}% | {scored.reason} | {btc_tag}")
             )
 
             if final.score >= min_score:
                 candidates.append(final)
-                logger.info(f"  ✅ {symbol}: {bias} score={final.score} WR={win_rate:.0f}% | {final.reason[:100]}")
+                logger.info(f"  ✅ {symbol}: {bias} score={final.score} "
+                            f"WR={win_rate:.0f}% loc_room={loc_check['room_atr']:.1f}×ATR "
+                            f"| {final.reason[:120]}")
 
         except Exception as e:
             logger.debug(f"  ⚠️  {symbol} skip: {e}")
 
-    # Lưu lại để dashboard hiển thị
-    scan_market._last_candidates = sorted(candidates, key=lambda x: x.score, reverse=True)
+    # ═══ RANK candidates theo composite score (score + RR bonus) ═══
+    # Không dùng raw score đơn thuần — tính composite có RR component
+    def _candidate_quality(c: CoinScore) -> float:
+        return c.score  # RR check được làm trong bot.py (sau khi có entry zone)
 
-    if not candidates:
+    candidates_sorted = sorted(candidates, key=_candidate_quality, reverse=True)
+    scan_market._last_candidates = candidates_sorted
+
+    if not candidates_sorted:
         logger.info("  No strong signals found.")
         return None
 
-    best = max(candidates, key=lambda x: x.score)
+    best = candidates_sorted[0]
     logger.info(f"🏆 Best: {best.symbol} | {best.signal} | Score={best.score}")
     return best
 

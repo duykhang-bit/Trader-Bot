@@ -1391,11 +1391,99 @@ def price_updater(exchange):
 # ============================================================
 # THREAD 2: Trade engine mỗi 60 giây
 # ============================================================
-def calc_qty(balance, entry, sl, symbol="", exchange=None):
-    # Dùng MAX_ORDER_USDT cố định từ config — đơn giản, nhất quán
-    qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry if entry > 0 else 1.0
 
-    # Lấy stepSize + maxQty + min_notional từ Binance API
+def _get_daily_pnl() -> float:
+    """Tính PnL trong ngày hôm nay từ trade_log."""
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    with lock:
+        logs = list(state.get("trade_log", []))
+    daily = sum(
+        t.get("pnl_usdt", 0)
+        for t in logs
+        if t.get("status") == "CLOSED"
+        and t.get("time", "").startswith(today)
+    )
+    return float(daily)
+
+
+def _get_consecutive_losses() -> int:
+    """Đếm số lần thua liên tiếp gần nhất từ trade_log."""
+    with lock:
+        logs = list(state.get("trade_log", []))
+    closed = [t for t in logs if t.get("status") == "CLOSED"]
+    closed.sort(key=lambda t: t.get("time", ""), reverse=True)
+    count = 0
+    for t in closed:
+        if (t.get("pnl_usdt", 0) or 0) < 0:
+            count += 1
+        else:
+            break
+    return count
+
+
+def check_daily_kill_switch(balance: float) -> dict:
+    """
+    Kiểm tra Daily Kill Switch trước khi vào lệnh mới.
+
+    Returns:
+        {"ok": bool, "reason": str}
+    """
+    if not getattr(config, "DAILY_KILL_SWITCH_ENABLED", True):
+        return {"ok": True, "reason": "kill switch disabled"}
+
+    max_loss_pct   = getattr(config, "MAX_DAILY_LOSS_PCT",        0.03)
+    max_consec     = getattr(config, "MAX_CONSECUTIVE_LOSSES",    3)
+    pause_secs     = getattr(config, "CONSECUTIVE_LOSS_PAUSE_SECS", 1800)
+
+    # Check daily loss %
+    daily_pnl = _get_daily_pnl()
+    max_loss_usdt = balance * max_loss_pct
+    if daily_pnl <= -max_loss_usdt:
+        return {
+            "ok": False,
+            "reason": f"Daily loss ${daily_pnl:.2f} >= limit ${max_loss_usdt:.2f} ({max_loss_pct*100:.0f}%)",
+        }
+
+    # Check consecutive losses → pause
+    consec = _get_consecutive_losses()
+    if consec >= max_consec:
+        last_loss_ts = state.get("last_loss_time", 0)
+        elapsed = time.time() - last_loss_ts
+        if elapsed < pause_secs:
+            remaining = int(pause_secs - elapsed)
+            return {
+                "ok": False,
+                "reason": f"{consec} lỗ liên tiếp → pause còn {remaining//60}m{remaining%60:02d}s",
+            }
+
+    return {"ok": True, "reason": f"daily={daily_pnl:+.2f} consec={consec}"}
+
+
+def calc_qty(balance, entry, sl, symbol="", exchange=None):
+    """
+    Tính qty theo Risk% / SL distance (P0 position sizing).
+    Fallback về MAX_ORDER_USDT nếu SL không hợp lệ.
+    """
+    import math as _math
+
+    # ── P0: Risk-based sizing ─────────────────────────────────
+    risk_pct     = getattr(config, "RISK_PER_TRADE_PCT",  0.01)   # 1%
+    max_notional = getattr(config, "RISK_MAX_ORDER_USDT", 50.0)   # hard cap
+
+    if entry > 0 and sl > 0 and abs(entry - sl) > 0:
+        sl_dist_pct = abs(entry - sl) / entry          # e.g. 0.02 = 2%
+        risk_usdt   = balance * risk_pct               # e.g. $100 × 1% = $1
+        # notional = risk / sl_dist
+        notional    = risk_usdt / sl_dist_pct          # e.g. $1 / 2% = $50
+        notional    = min(notional, max_notional)      # hard cap
+        qty         = notional / entry
+    else:
+        # Fallback: dùng MAX_ORDER_USDT cố định
+        notional    = min(config.MAX_ORDER_USDT, max_notional)
+        qty         = (notional * config.LEVERAGE) / entry if entry > 0 else 1.0
+
+    # ── Lấy stepSize + maxQty + min_notional từ Binance API ──
     step         = 1.0
     max_qty      = None
     decimals     = 0
@@ -1406,7 +1494,6 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
         except Exception:
             pass
 
-    # Fallback cap nếu không lấy được từ API
     if max_qty is None:
         if entry >= 10000:  max_qty = 100
         elif entry >= 1000: max_qty = 1000
@@ -1419,9 +1506,9 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
 
     qty = min(qty, max_qty)
 
-    # Hard cap: margin không vượt MAX_ORDER_USDT × LEVERAGE
-    max_margin_qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry
-    qty = min(qty, max_margin_qty)
+    # Hard cap notional
+    max_notional_qty = max_notional / entry if entry > 0 else qty
+    qty = min(qty, max_notional_qty)
 
     # Round theo stepSize
     if step >= 1:
@@ -1430,7 +1517,6 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
         qty = round(int(qty / step) * step, decimals)
 
     # Đảm bảo notional >= min_notional (tránh lỗi 400)
-    import math as _math
     min_qty_notional = min_notional / entry if entry > 0 else step
     if step >= 1:
         min_qty_notional = max(step, int(_math.ceil(min_qty_notional / step)) * int(step))
@@ -3150,8 +3236,14 @@ def scan_engine(exchange, notifier):
                 order_type_used = "SKIP"
                 skip_reason = None
 
+                # ═══ BƯỚC 0: Daily Kill Switch ═══
+                kill = check_daily_kill_switch(bal)
+                if not kill["ok"]:
+                    skip_reason = f"KillSwitch: {kill['reason']}"
+                    logger.info(f"[KillSwitch] ⛔ {skip_reason}")
+
                 # ═══ BƯỚC 4: Score >= 70 ═══
-                if best.score < 70:
+                if not skip_reason and best.score < 70:
                     skip_reason = f"Score {best.score} < 70"
 
                 # ═══ BƯỚC 5: Correlation — không vào 2 coin cùng nhóm ═══
@@ -3202,25 +3294,32 @@ def scan_engine(exchange, notifier):
                     else:
                         skip_reason = "Không tìm được entry zone (tất cả quá gần/xa)"
 
-                # ═══ BƯỚC 7: Tính SL / TP + RR ═══
+                # ═══ BƯỚC 7: Tính SL / TP từ structure + RR check + No-Chase ═══
                 if not skip_reason:
-                    atr_15m = calculate_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1]
-                    if best.signal == "LONG":
-                        # SL: dưới entry ATR×2 (tối thiểu 2%)
-                        sl_dist = max(atr_15m * 2.0, entry_price * 0.02)
-                        sl = round(entry_price - sl_dist, 8)
-                        tp = round(entry_price + atr_15m * 8, 8)
-                    else:  # SHORT
-                        sl_dist = max(atr_15m * 2.0, entry_price * 0.02)
-                        sl = round(entry_price + sl_dist, 8)
-                        tp = round(entry_price - atr_15m * 8, 8)
+                    from scanner import calc_structure_sl_tp, check_no_chase
+                    sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                    sl   = sltp["sl"]
+                    tp   = sltp["tp"]
+                    rr   = sltp["rr"]
 
-                    # RR check (sau phí + slippage ~0.1%)
-                    risk   = abs(entry_price - sl)
-                    reward = abs(tp - entry_price)
-                    rr = reward / risk if risk > 0 else 0
-                    if rr < 1.5:
-                        skip_reason = f"RR={rr:.1f} < 1.5 (SL={sl:.6f} TP={tp:.6f})"
+                    logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
+                                f"entry={entry_price:.6f} sl={sl:.6f}({sltp['sl_pct']:.2f}%) "
+                                f"tp={tp:.6f} RR={rr:.2f} | {sltp['sl_reason']}")
+
+                    # No-chase: giá đã chạy xa khỏi planned entry?
+                    atr_15m = float(calculate_atr(
+                        df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]
+                    ).iloc[-1])
+                    cur_mark = exchange.get_ticker_price(best.symbol)
+                    if cur_mark > 0 and check_no_chase(cur_mark, entry_price, atr_15m, best.signal, config):
+                        skip_reason = (f"NoChase: mark={cur_mark:.6f} planned={entry_price:.6f} "
+                                       f"ATR={atr_15m:.6f}")
+
+                    # RR check
+                    if not skip_reason:
+                        min_rr = getattr(config, "MIN_RR", 1.5)
+                        if rr < min_rr:
+                            skip_reason = f"RR={rr:.2f} < {min_rr} (SL={sl:.6f} TP={tp:.6f})"
 
                 # ═══ BƯỚC 8-9: Đặt LIMIT (max 2) hoặc lưu armed backup ═══
                 if not skip_reason:
