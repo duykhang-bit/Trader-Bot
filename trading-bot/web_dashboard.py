@@ -1599,7 +1599,10 @@ let _pumpRendered = false;  // track nếu đã render full lần đầu
 async function fetchPump() {
     try {
         const r = await fetch('/api/pump');
-        _pumpData = await r.json();
+        const data = await r.json();
+        // Nếu API trả lỗi (unauthorized, server error) → không render, giữ nguyên UI cũ
+        if (!data || data.ok === false) return;
+        _pumpData = data;
         if (!_pumpRendered) {
             renderPumpRadar(_pumpData);
             _pumpRendered = true;
@@ -1739,13 +1742,23 @@ async function addPumpCoin() {
     if (!sym) return;
     if (!sym.endsWith('USDT')) sym += 'USDT';
     const r = await apiPost('/api/pump/coins/add', {symbol: sym});
-    if (r.ok) { inp.value = ''; _pumpRendered = false; fetchPump(); }
+    toast(r.msg || (r.ok ? 'Đã thêm' : 'Lỗi'), r.ok);
+    if (r.ok) {
+        inp.value = '';
+        // Fetch lại với delay nhỏ để backend kịp cập nhật state
+        setTimeout(async () => {
+            _pumpRendered = false;
+            await fetchPump();
+        }, 300);
+    }
 }
 
 async function removePumpCoin(sym) {
     await apiPost('/api/pump/coins/remove', {symbol: sym});
-    _pumpRendered = false;
-    fetchPump();
+    setTimeout(async () => {
+        _pumpRendered = false;
+        await fetchPump();
+    }, 300);
 }
 
 async function pumpManualShort(sym) {
