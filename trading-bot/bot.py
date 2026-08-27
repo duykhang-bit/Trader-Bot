@@ -3292,10 +3292,14 @@ def scan_engine(exchange, notifier):
                                     f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                     else:
-                        # Fallback: không tìm được liq zone → dùng giá hiện tại
-                        # Thay vì skip, vẫn tạo ARMED tại mark price
-                        entry_price = round(cur_price, 8)
-                        logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback entry @ {entry_price:.6f}")
+                        # Fallback: không tìm được liq zone → dùng swing 15m
+                        # LONG: entry tại swing_low gần nhất (đáy hỗ trợ)
+                        # SHORT: entry tại swing_high gần nhất (đỉnh kháng cự)
+                        if best.signal == "LONG":
+                            entry_price = round(swing_low, 8)
+                        else:
+                            entry_price = round(swing_high, 8)
+                        logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback swing entry @ {entry_price:.6f}")
 
                 # ═══ BƯỚC 7: Tính SL / TP từ structure + RR check + No-Chase ═══
                 if not skip_reason:
