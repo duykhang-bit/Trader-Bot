@@ -3782,9 +3782,10 @@ def pump_scan_engine(exchange, notifier):
                     pump_shorts = set()
 
                 for symbol in pump_shorts:
-                    # Đợi tối thiểu PUMP_REVERSAL_HOLD_SECONDS trước khi check reversal
+                    # Tính thời gian đã giữ lệnh
                     _min_hold_pump = getattr(config, "PUMP_REVERSAL_HOLD_SECONDS", 60)
                     _entry_time_pump = None
+                    _held = 0
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
                             if t.get("symbol") == symbol and t.get("status") == "OPEN":
@@ -3793,23 +3794,19 @@ def pump_scan_engine(exchange, notifier):
                     if _entry_time_pump:
                         try:
                             _held = (datetime.now() - datetime.strptime(_entry_time_pump, "%Y-%m-%d %H:%M:%S")).total_seconds()
-                            if _held < _min_hold_pump:
-                                continue
                         except Exception:
-                            pass
-                    # Không còn skip khi không tìm được entry_time — coi như đã hold đủ
-                    # (tránh bug: lệnh không ghi log → không bao giờ check)
+                            _held = 0
 
-                    # Điều kiện đóng SHORT sớm:
-                    # Cần từng lời >= PUMP_REVERSAL_MIN_PROFIT_PCT rồi quay về <= PUMP_REVERSAL_FLOOR_PCT
+                    # Điều kiện đóng SHORT — Hướng A:
+                    # - Nếu cur_pnl >= floor_pct → activate ngay dù chưa đủ 60s (bảo vệ lời)
+                    # - Nếu chưa đủ 60s VÀ chưa lời >= floor_pct → bỏ qua, để SL lo
                     try:
                         cur_price = exchange.get_ticker_price(symbol)
                         pos_entry = next(
                             (float(p.get("entryPrice", 0)) for p in open_positions
                              if p["symbol"] == symbol), 0
                         )
-                        min_profit = getattr(config, "PUMP_REVERSAL_MIN_PROFIT_PCT", 3.0)
-                        floor_pct  = getattr(config, "PUMP_REVERSAL_FLOOR_PCT", 1.5)
+                        floor_pct = getattr(config, "PUMP_REVERSAL_FLOOR_PCT", 1.0)
 
                         if pos_entry > 0:
                             cur_pnl_pct = (pos_entry - cur_price) / pos_entry * 100  # SHORT
@@ -3823,15 +3820,22 @@ def pump_scan_engine(exchange, notifier):
                                     prev_mfe = cur_pnl_pct
 
                             logger.debug(
-                                f"[PumpRevExit] {symbol}: held={_held if _entry_time_pump else 'n/a'}s "
-                                f"mfe={prev_mfe:.2f}% cur={cur_pnl_pct:.2f}% "
-                                f"min_profit={min_profit}% floor={floor_pct}%"
+                                f"[PumpRevExit] {symbol}: held={_held:.0f}s "
+                                f"mfe={prev_mfe:.2f}% cur={cur_pnl_pct:.2f}% floor={floor_pct}%"
                             )
 
-                            # Cắt khi: từng lời >= min_profit (3%) VÀ lời rút về <= floor_pct
-                            # Nếu chưa đạt min_profit → không activate, để SL lo
-                            if prev_mfe >= min_profit and cur_pnl_pct <= floor_pct:
+                            # Hướng A:
+                            # Nếu prev_mfe >= floor_pct → đã từng lời đủ → theo dõi bất kể thời gian
+                            # Nếu prev_mfe < floor_pct VÀ chưa đủ 60s → bỏ qua (noise đầu lệnh)
+                            already_profitable = prev_mfe >= floor_pct
+                            held_enough        = _held >= _min_hold_pump
+
+                            if already_profitable and cur_pnl_pct <= floor_pct:
+                                # Đã từng lời >= 1%, giờ rút về <= 1% → đóng
                                 should_exit = True
+                            elif not already_profitable and not held_enough:
+                                # Chưa lời đủ 1% VÀ chưa đủ 60s → bỏ qua
+                                should_exit = False
                             else:
                                 should_exit = False
                         else:
