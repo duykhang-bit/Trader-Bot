@@ -3278,9 +3278,9 @@ def scan_engine(exchange, notifier):
 
                     if liq_entry:
                         entry_price = round(liq_entry["price"], 8)
-                        raw_entry   = entry_price  # giá gốc trước offset
-                        dist_pct = liq_entry["dist_pct"]
-                        # ── Entry Offset: dịch entry để bắt giá tốt hơn ──
+                        raw_entry   = entry_price
+                        dist_pct    = liq_entry["dist_pct"]
+                        # ── Entry Offset ──
                         if getattr(config, "ENTRY_OFFSET_ENABLED", False):
                             offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
                             if best.signal == "LONG":
@@ -3292,7 +3292,10 @@ def scan_engine(exchange, notifier):
                                     f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                     else:
-                        skip_reason = "Không tìm được entry zone (tất cả quá gần/xa)"
+                        # Fallback: không tìm được liq zone → dùng giá hiện tại
+                        # Thay vì skip, vẫn tạo ARMED tại mark price
+                        entry_price = round(cur_price, 8)
+                        logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback entry @ {entry_price:.6f}")
 
                 # ═══ BƯỚC 7: Tính SL / TP từ structure + RR check + No-Chase ═══
                 if not skip_reason:
