@@ -3360,7 +3360,7 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # ═══ BƯỚC 6: Liquidity Zones — xác định vùng entry ═══
+                # ═══ BƯỚC 6: Xác định entry_price (MSS → Liq Engine → Swing fallback) ═══
                 if not skip_reason:
                     from liquidity_engine import get_best_entry
 
@@ -3378,61 +3378,96 @@ def scan_engine(exchange, notifier):
                     if (mss_res is not None
                             and mss_res.tier in ("A", "B")
                             and mss_res.entry_price > 0):
-                        entry_price = round(mss_res.entry_price, 8)
-                        logger.info(f"[MSS] {best.symbol} dùng MSS entry={entry_price:.6f} "
+                        raw_entry = round(mss_res.entry_price, 8)
+                        logger.info(f"[MSS] {best.symbol} dùng MSS entry={raw_entry:.6f} "
                                     f"tier={mss_res.tier} conf={mss_res.confidence:.0f}%")
                     else:
-                        # Fallback: Liquidity Engine như cũ
+                        # Fallback: Liquidity Engine
                         liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
-
                         if liq_entry:
-                            entry_price = round(liq_entry["price"], 8)
-                            raw_entry   = entry_price
-                            dist_pct    = liq_entry["dist_pct"]
-                            # ── Entry Offset ──
-                            if getattr(config, "ENTRY_OFFSET_ENABLED", False):
-                                offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                                if best.signal == "LONG":
-                                    entry_price = round(raw_entry * (1 - offset_pct), 8)
-                                else:
-                                    entry_price = round(raw_entry * (1 + offset_pct), 8)
-                                logger.info(f"[EntryOffset] {best.symbol} {best.signal}: {raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                            raw_entry = round(liq_entry["price"], 8)
                             logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
-                                        f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
+                                        f"entry=${raw_entry:.6f} dist={liq_entry['dist_pct']:.1f}% "
                                         f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                         else:
-                            # Fallback: không tìm được liq zone → dùng swing 15m
-                            if best.signal == "LONG":
-                                entry_price = round(swing_low, 8)
-                            else:
-                                entry_price = round(swing_high, 8)
-                            logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback swing entry @ {entry_price:.6f}")
+                            # Fallback swing 15m
+                            raw_entry = round(swing_low if best.signal == "LONG" else swing_high, 8)
+                            logger.info(f"[LiqEngine] {best.symbol}: no liq zone → swing fallback @ {raw_entry:.6f}")
 
-                # ═══ BƯỚC 7: Tính SL / TP từ structure + RR check + No-Chase ═══
+                    # ── Apply Entry Offset (áp dụng cho mọi trường hợp) ──────────
+                    if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                        if best.signal == "LONG":
+                            # LONG: entry thấp hơn để bắt đáy
+                            entry_price = round(raw_entry * (1 - offset_pct), 8)
+                        else:
+                            # SHORT: entry cao hơn để bắt đỉnh
+                            entry_price = round(raw_entry * (1 + offset_pct), 8)
+                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
+                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                    else:
+                        entry_price = raw_entry
+
+                # ═══ BƯỚC 7: Tính SL / TP theo entry_price cuối + RR + No-Chase ═══
                 if not skip_reason:
                     from scanner import calc_structure_sl_tp, check_no_chase
 
-                    # Nếu MSS tier A/B đã có sl_price → dùng luôn
+                    # Tính SL/TP từ structure dựa trên entry_price đã apply offset
                     mss_res = getattr(best, "mss_result", None)
                     if (mss_res is not None
                             and mss_res.tier in ("A", "B")
                             and mss_res.sl_price > 0):
-                        sl = mss_res.sl_price
-                        # TP vẫn tính từ structure (MSS không tính TP)
-                        sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                        tp   = sltp["tp"]
-                        risk   = abs(entry_price - sl)
-                        reward = abs(tp - entry_price)
-                        rr     = reward / risk if risk > 0 else 0.0
-                        logger.info(f"[SL/TP] {best.symbol} MSS SL={sl:.6f} TP={tp:.6f} RR={rr:.2f}")
+                        # MSS có sl_price riêng (dưới/trên sweep point)
+                        # Nhưng vẫn cần validate sl ở đúng phía entry sau offset
+                        sl_raw = mss_res.sl_price
+                        if best.signal == "LONG" and sl_raw < entry_price:
+                            sl = sl_raw
+                        elif best.signal == "SHORT" and sl_raw > entry_price:
+                            sl = sl_raw
+                        else:
+                            # MSS SL sai phía → fallback structure
+                            sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                            sl   = sltp["sl"]
+                        # TP từ structure tính theo entry_price mới
+                        sltp_tp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                        tp      = sltp_tp["tp"]
+                        risk    = abs(entry_price - sl)
+                        reward  = abs(tp - entry_price)
+                        rr      = reward / risk if risk > 0 else 0.0
+                        sl_pct  = risk / entry_price * 100 if entry_price > 0 else 0
+                        logger.info(f"[SL/TP] {best.symbol} MSS+offset: "
+                                    f"entry={entry_price:.6f} sl={sl:.6f}({sl_pct:.2f}%) "
+                                    f"tp={tp:.6f} RR={rr:.2f}")
                     else:
-                        sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                        sl   = sltp["sl"]
-                        tp   = sltp["tp"]
-                        rr   = sltp["rr"]
+                        # Structure SL/TP tính theo entry_price đã offset
+                        sltp    = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                        sl      = sltp["sl"]
+                        tp      = sltp["tp"]
+                        rr      = sltp["rr"]
                         logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
                                     f"entry={entry_price:.6f} sl={sl:.6f}({sltp['sl_pct']:.2f}%) "
                                     f"tp={tp:.6f} RR={rr:.2f} | {sltp['sl_reason']}")
+
+                    # Validate SL/TP đúng phía
+                    if best.signal == "LONG":
+                        if sl >= entry_price:
+                            sl = round(entry_price * (1 - getattr(config, "SL_MIN_PCT", 0.008)), 8)
+                        if tp <= entry_price:
+                            from indicators import calculate_atr as _calc_atr
+                            _atr = float(_calc_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1])
+                            tp = round(entry_price + _atr * 8, 8)
+                    else:  # SHORT
+                        if sl <= entry_price:
+                            sl = round(entry_price * (1 + getattr(config, "SL_MIN_PCT", 0.008)), 8)
+                        if tp >= entry_price:
+                            from indicators import calculate_atr as _calc_atr
+                            _atr = float(_calc_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1])
+                            tp = round(entry_price - _atr * 8, 8)
+
+                    # Tính lại RR sau validate
+                    risk   = abs(entry_price - sl)
+                    reward = abs(tp - entry_price)
+                    rr     = reward / risk if risk > 0 else 0.0
 
                     # No-chase: giá đã chạy xa khỏi planned entry?
                     atr_15m = float(calculate_atr(
@@ -3441,7 +3476,7 @@ def scan_engine(exchange, notifier):
                     cur_mark = exchange.get_ticker_price(best.symbol)
                     if cur_mark > 0 and check_no_chase(cur_mark, entry_price, atr_15m, best.signal, config):
                         skip_reason = (f"NoChase: mark={cur_mark:.6f} planned={entry_price:.6f} "
-                                       f"ATR={atr_15m:.6f}")
+                                       f"({abs(cur_mark-entry_price)/entry_price*100:.1f}% away)")
 
                     # RR check
                     if not skip_reason:
