@@ -628,26 +628,45 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
 
         if signal == "LONG":
             # SL: dưới nearest swing low - ATR buffer
-            struct_sl = swings["nearest_support"] - atr * atr_buf
+            # Chỉ dùng swing low nằm DƯỚI entry_price
+            valid_lows = [l for l in swings["swing_lows"] if l < entry_price]
+            if valid_lows:
+                struct_sl = max(valid_lows) - atr * atr_buf   # swing low gần entry nhất từ dưới
+            else:
+                struct_sl = entry_price - max(atr * 2.0, entry_price * sl_min)
             atr_sl    = entry_price - max(atr * 2.0, entry_price * sl_min)
-            sl        = struct_sl if use_struct else atr_sl
-            # Clamp SL vào khoảng [min%, max%] cách entry
+            sl        = struct_sl if use_struct and struct_sl < entry_price else atr_sl
+            # Clamp SL: phải dưới entry, trong khoảng [min%, max%]
             sl = max(sl, entry_price * (1 - sl_max))   # không quá rộng
             sl = min(sl, entry_price * (1 - sl_min))   # không quá chặt
-            # TP: nearest swing resistance trên 15m
-            tp_struct = swings["nearest_resistance"]
+            # Đảm bảo SL luôn dưới entry
+            if sl >= entry_price:
+                sl = entry_price * (1 - sl_min)
+            # TP: nearest swing resistance TRÊN entry_price trên 15m
+            valid_highs = [h for h in swings["swing_highs"] if h > entry_price]
+            tp_struct = min(valid_highs) if valid_highs else 0.0
             tp_atr    = entry_price + atr * 8
             tp        = tp_struct if use_struct and tp_struct > entry_price else tp_atr
             sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
             tp_reason = f"swing_res={tp_struct:.6f}"
 
         else:  # SHORT
-            struct_sl = swings["nearest_resistance"] + atr * atr_buf
+            # Chỉ dùng swing high nằm TRÊN entry_price
+            valid_highs = [h for h in swings["swing_highs"] if h > entry_price]
+            if valid_highs:
+                struct_sl = min(valid_highs) + atr * atr_buf  # swing high gần entry nhất từ trên
+            else:
+                struct_sl = entry_price + max(atr * 2.0, entry_price * sl_min)
             atr_sl    = entry_price + max(atr * 2.0, entry_price * sl_min)
-            sl        = struct_sl if use_struct else atr_sl
+            sl        = struct_sl if use_struct and struct_sl > entry_price else atr_sl
             sl = min(sl, entry_price * (1 + sl_max))
             sl = max(sl, entry_price * (1 + sl_min))
-            tp_struct = swings["nearest_support"]
+            # Đảm bảo SL luôn trên entry
+            if sl <= entry_price:
+                sl = entry_price * (1 + sl_min)
+            # TP: nearest swing support DƯỚI entry_price
+            valid_lows = [l for l in swings["swing_lows"] if l < entry_price]
+            tp_struct = max(valid_lows) if valid_lows else 0.0
             tp_atr    = entry_price - atr * 8
             tp        = tp_struct if use_struct and tp_struct < entry_price else tp_atr
             sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
@@ -696,14 +715,23 @@ def check_no_chase(current_price: float, planned_entry: float,
                    atr: float, signal: str, cfg=None) -> bool:
     """
     Trả về True nếu giá đã chạy quá xa planned entry → KHÔNG CHASE.
-    LONG:  current_price > planned_entry + mult×ATR → chase
-    SHORT: current_price < planned_entry - mult×ATR → chase
+    Dùng % cách entry thay vì ATR×mult để tránh bị quá chặt với coin giá cao.
+    LONG:  current_price > planned_entry × (1 + max_pct) → chase
+    SHORT: current_price < planned_entry × (1 - max_pct) → chase
+    max_pct = max(NO_CHASE_ATR_MULT × atr/entry, 0.03) — tối thiểu 3%
     """
-    mult = getattr(cfg, "NO_CHASE_ATR_MULT", 0.5) if cfg else 0.5
-    if signal == "LONG":
-        return current_price > planned_entry + mult * atr
+    mult    = getattr(cfg, "NO_CHASE_ATR_MULT", 0.5) if cfg else 0.5
+    # Tính % tương đương, tối thiểu 3% để không bị quá chặt
+    if planned_entry > 0 and atr > 0:
+        atr_pct = atr / planned_entry
+        max_pct = max(mult * atr_pct, 0.03)   # tối thiểu 3%
     else:
-        return current_price < planned_entry - mult * atr
+        max_pct = 0.03
+
+    if signal == "LONG":
+        return current_price > planned_entry * (1 + max_pct)
+    else:
+        return current_price < planned_entry * (1 - max_pct)
 
 
 @dataclass
