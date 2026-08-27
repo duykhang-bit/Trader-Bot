@@ -3427,6 +3427,19 @@ def pump_scan_engine(exchange, notifier):
                     df_1m      = _to_df(klines_1m)
                     df_15m     = _to_df(klines_15m)
 
+                    # ── Patch nến 1m cuối với giá realtime từ WebSocket ──
+                    # Nến đang hình thành chưa đóng → cập nhật close/high với giá hiện tại
+                    # Giúp detector nhận ra đỉnh pump sớm hơn ~30-60s so với đợi nến đóng
+                    with lock:
+                        ws_price = state.get("prices", {}).get(symbol, 0)
+                    if ws_price > 0 and len(df_1m) > 0:
+                        last_close = float(df_1m.iloc[-1]["close"])
+                        last_high  = float(df_1m.iloc[-1]["high"])
+                        # Cập nhật close và high với giá WS mới nhất
+                        df_1m.iloc[-1, df_1m.columns.get_loc("close")] = ws_price
+                        if ws_price > last_high:
+                            df_1m.iloc[-1, df_1m.columns.get_loc("high")] = ws_price
+
                     sig = detector.analyze(symbol, df_1m, df_15m, ob_tracker=ob_tracker)
 
                     # ── Tự clear signal cũ nếu coin không còn pump ───────
