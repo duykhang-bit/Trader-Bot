@@ -90,7 +90,7 @@ state = {
     "candidates":     [],
     "trade_log":      [],
     "open_positions": [],
-    "running":        True,
+    "running":        False,   # mặc định tắt — bật thủ công trên dashboard
     "_watchlist":     list(WATCHLIST),  # sync với scanner WATCHLIST
     # --- Liquidation strategy state ---
     "split_positions": {},
