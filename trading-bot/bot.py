@@ -3828,9 +3828,9 @@ def pump_scan_engine(exchange, notifier):
                                 f"min_profit={min_profit}% floor={floor_pct}%"
                             )
 
-                            # Cắt khi: từng lời rồi (prev_mfe > 0) VÀ lời rút về <= floor_pct
-                            # Nếu chưa từng lời (prev_mfe <= 0) → đang lỗ ngay từ đầu → để SL lo
-                            if prev_mfe > 0 and cur_pnl_pct <= floor_pct:
+                            # Cắt khi: từng lời >= min_profit (3%) VÀ lời rút về <= floor_pct
+                            # Nếu chưa đạt min_profit → không activate, để SL lo
+                            if prev_mfe >= min_profit and cur_pnl_pct <= floor_pct:
                                 should_exit = True
                             else:
                                 should_exit = False
