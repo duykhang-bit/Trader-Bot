@@ -3187,6 +3187,106 @@ def scan_engine(exchange, notifier):
             # ── Fast path: đã được thay bằng ScanPriceMonitor ở cuối vòng lặp ──
             # (wake up sớm qua ws_signal ở dưới)
 
+            # ── MSS PENDING FAST-CHECK — xem setup nào đã confirm MSS ──────────
+            # Chạy mỗi vòng scan_engine (~60s), check tất cả MSS pending
+            # Nếu tier C → tier A/B đã upgrade → promote lên candidate
+            try:
+                from mss_engine import get_mss_pending, analyze_mss
+                from scanner import _klines_to_df
+                mss_mgr = get_mss_pending()
+                mss_mgr.expire_old(max_age_minutes=getattr(config, "MSS_MAX_SETUP_AGE_MIN", 30))
+
+                for mss_sym, mss_info in list(mss_mgr.all_pending().items()):
+                    try:
+                        direction = mss_info["direction"]
+                        # Check không có open position
+                        with lock:
+                            open_syms_mss = {p["symbol"] for p in state.get("open_positions", [])
+                                            if abs(float(p.get("positionAmt", 0))) > 0}
+                        if mss_sym in open_syms_mss:
+                            mss_mgr.remove(mss_sym)
+                            continue
+
+                        # Re-analyze với data mới nhất
+                        kl_15m = exchange.get_klines(mss_sym, "15m", limit=100)
+                        df_15m = _klines_to_df(kl_15m)
+                        df_5m  = None
+                        if getattr(config, "MSS_USE_5M_CONFIRM", True):
+                            try:
+                                kl_5m = exchange.get_klines(mss_sym, "5m", limit=20)
+                                df_5m = _klines_to_df(kl_5m)
+                            except Exception:
+                                pass
+
+                        new_result = analyze_mss(df_15m, df_5m, direction, config)
+
+                        if new_result.tier in ("A", "B"):
+                            # MSS đã confirm → tạo armed entry ngay
+                            entry_p = new_result.entry_price
+                            sl_p    = new_result.sl_price
+                            cur_p   = exchange.get_ticker_price(mss_sym)
+
+                            if entry_p <= 0 or sl_p <= 0:
+                                continue
+
+                            # Tính TP từ structure
+                            from scanner import calc_structure_sl_tp
+                            sltp = calc_structure_sl_tp(df_15m, direction, entry_p, config)
+                            tp_p = sltp["tp"]
+                            rr   = sltp["rr"]
+
+                            min_rr = getattr(config, "MIN_RR", 1.5)
+                            if rr < min_rr:
+                                logger.info(f"[MSS] {mss_sym} tier={new_result.tier} RR={rr:.2f} < {min_rr} → skip")
+                                mss_mgr.remove(mss_sym)
+                                continue
+
+                            side       = "BUY"  if direction == "LONG" else "SELL"
+                            close_side = "SELL" if direction == "LONG" else "BUY"
+
+                            with lock:
+                                n_open = len(state.get("open_positions", []))
+                            if n_open >= config.MAX_OPEN_POSITIONS:
+                                continue
+
+                            with lock:
+                                armed_mss = state.setdefault("armed_entries", {})
+                                armed_mss[mss_sym] = {
+                                    "signal":      direction,
+                                    "entry_price": entry_p,
+                                    "sl":          sl_p,
+                                    "tp":          tp_p,
+                                    "rr":          rr,
+                                    "score":       80 if new_result.tier == "A" else 70,
+                                    "side":        side,
+                                    "close_side":  close_side,
+                                    "ts":          time.time(),
+                                    "note":        f"mss_{new_result.tier}",
+                                }
+                            mss_mgr.remove(mss_sym)
+                            logger.info(f"[MSS] ✅ PROMOTED {mss_sym} {direction} tier={new_result.tier} "
+                                        f"entry={entry_p:.6f} sl={sl_p:.6f} RR={rr:.2f}")
+                            notifier.telegram.send(
+                                f"🎯 <b>MSS {new_result.tier} ARMED</b>: {mss_sym} {direction}\n"
+                                f"💰 Entry: {entry_p:.6f} | SL: {sl_p:.6f} | TP: {tp_p:.6f}\n"
+                                f"📐 RR: 1:{rr:.1f} | Conf: {new_result.confidence:.0f}%\n"
+                                f"📝 {new_result.reason[:100]}\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+
+                        elif new_result.tier == "D":
+                            # Structure invalidated → remove pending
+                            mss_mgr.remove(mss_sym)
+                            logger.info(f"[MSS] ❌ INVALIDATED {mss_sym} → remove pending")
+
+                        # tier C → giữ nguyên, check lại lần sau
+
+                    except Exception as _mss_e:
+                        logger.debug(f"[MSS] fast-check {mss_sym}: {_mss_e}")
+
+            except Exception as _mss_outer:
+                logger.debug(f"[MSS] fast-check outer: {_mss_outer}")
+
             best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
@@ -3269,49 +3369,70 @@ def scan_engine(exchange, notifier):
                     # Swing 15m
                     klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
                     df_15m_entry = _klines_to_df(klines_15m_entry)
-                    swing_low = df_15m_entry["low"].iloc[-20:].min()
+                    swing_low  = df_15m_entry["low"].iloc[-20:].min()
                     swing_high = df_15m_entry["high"].iloc[-20:].max()
                     swing_price = swing_low if best.signal == "LONG" else swing_high
 
-                    # Liquidity Engine — kết hợp OB walls + volume + OI + swing
-                    liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
-
-                    if liq_entry:
-                        entry_price = round(liq_entry["price"], 8)
-                        raw_entry   = entry_price
-                        dist_pct    = liq_entry["dist_pct"]
-                        # ── Entry Offset ──
-                        if getattr(config, "ENTRY_OFFSET_ENABLED", False):
-                            offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                            if best.signal == "LONG":
-                                entry_price = round(raw_entry * (1 - offset_pct), 8)
-                            else:
-                                entry_price = round(raw_entry * (1 + offset_pct), 8)
-                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: {raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
-                        logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
-                                    f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
-                                    f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
+                    # ── Ưu tiên MSS entry_price nếu tier A hoặc B ──────────────
+                    mss_res = getattr(best, "mss_result", None)
+                    if (mss_res is not None
+                            and mss_res.tier in ("A", "B")
+                            and mss_res.entry_price > 0):
+                        entry_price = round(mss_res.entry_price, 8)
+                        logger.info(f"[MSS] {best.symbol} dùng MSS entry={entry_price:.6f} "
+                                    f"tier={mss_res.tier} conf={mss_res.confidence:.0f}%")
                     else:
-                        # Fallback: không tìm được liq zone → dùng swing 15m
-                        # LONG: entry tại swing_low gần nhất (đáy hỗ trợ)
-                        # SHORT: entry tại swing_high gần nhất (đỉnh kháng cự)
-                        if best.signal == "LONG":
-                            entry_price = round(swing_low, 8)
+                        # Fallback: Liquidity Engine như cũ
+                        liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
+
+                        if liq_entry:
+                            entry_price = round(liq_entry["price"], 8)
+                            raw_entry   = entry_price
+                            dist_pct    = liq_entry["dist_pct"]
+                            # ── Entry Offset ──
+                            if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                                offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                                if best.signal == "LONG":
+                                    entry_price = round(raw_entry * (1 - offset_pct), 8)
+                                else:
+                                    entry_price = round(raw_entry * (1 + offset_pct), 8)
+                                logger.info(f"[EntryOffset] {best.symbol} {best.signal}: {raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                            logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
+                                        f"entry=${entry_price:.6f} dist={dist_pct:.1f}% "
+                                        f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                         else:
-                            entry_price = round(swing_high, 8)
-                        logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback swing entry @ {entry_price:.6f}")
+                            # Fallback: không tìm được liq zone → dùng swing 15m
+                            if best.signal == "LONG":
+                                entry_price = round(swing_low, 8)
+                            else:
+                                entry_price = round(swing_high, 8)
+                            logger.info(f"[LiqEngine] {best.symbol}: no liq zone → fallback swing entry @ {entry_price:.6f}")
 
                 # ═══ BƯỚC 7: Tính SL / TP từ structure + RR check + No-Chase ═══
                 if not skip_reason:
                     from scanner import calc_structure_sl_tp, check_no_chase
-                    sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                    sl   = sltp["sl"]
-                    tp   = sltp["tp"]
-                    rr   = sltp["rr"]
 
-                    logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
-                                f"entry={entry_price:.6f} sl={sl:.6f}({sltp['sl_pct']:.2f}%) "
-                                f"tp={tp:.6f} RR={rr:.2f} | {sltp['sl_reason']}")
+                    # Nếu MSS tier A/B đã có sl_price → dùng luôn
+                    mss_res = getattr(best, "mss_result", None)
+                    if (mss_res is not None
+                            and mss_res.tier in ("A", "B")
+                            and mss_res.sl_price > 0):
+                        sl = mss_res.sl_price
+                        # TP vẫn tính từ structure (MSS không tính TP)
+                        sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                        tp   = sltp["tp"]
+                        risk   = abs(entry_price - sl)
+                        reward = abs(tp - entry_price)
+                        rr     = reward / risk if risk > 0 else 0.0
+                        logger.info(f"[SL/TP] {best.symbol} MSS SL={sl:.6f} TP={tp:.6f} RR={rr:.2f}")
+                    else:
+                        sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
+                        sl   = sltp["sl"]
+                        tp   = sltp["tp"]
+                        rr   = sltp["rr"]
+                        logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
+                                    f"entry={entry_price:.6f} sl={sl:.6f}({sltp['sl_pct']:.2f}%) "
+                                    f"tp={tp:.6f} RR={rr:.2f} | {sltp['sl_reason']}")
 
                     # No-chase: giá đã chạy xa khỏi planned entry?
                     atr_15m = float(calculate_atr(

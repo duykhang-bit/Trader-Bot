@@ -1082,7 +1082,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 logger.info(f"  📊 LOW WR {symbol}: {bias} WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}%")
                 continue
 
-            # ═══ PASS — tạo candidate ═══
+            # ═══ PASS — tạo candidate với MSS analysis ═══
             _pending_watch.pop(symbol, None)
             wr_bonus    = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
             final_score = min(final_score + wr_bonus, 100)
@@ -1090,18 +1090,70 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             reg_tag  = regime_info["regime"]
             btc_tag  = btc_ctx.get("reason", "")[:30]
 
+            # ═══ BƯỚC 9: MSS / Liquidity Sweep Analysis ═══
+            mss_result  = None
+            mss_tag     = ""
+            mss_enabled = getattr(config, "MSS_ENGINE_ENABLED", True)
+
+            if mss_enabled:
+                try:
+                    from mss_engine import analyze_mss, get_mss_pending
+
+                    # Fetch 5m chỉ khi MSS engine cần (tiết kiệm API)
+                    df_5m = None
+                    if getattr(config, "MSS_USE_5M_CONFIRM", True):
+                        try:
+                            klines_5m = exchange.get_klines(symbol, "5m", limit=20)
+                            df_5m     = _klines_to_df(klines_5m)
+                        except Exception:
+                            pass
+
+                    mss_result = analyze_mss(df_15m, df_5m, bias, config)
+                    tier       = mss_result.tier
+
+                    if tier == "A":
+                        # Tier A: FULL confidence — bonus score cao nhất
+                        tier_bonus   = getattr(config, "MSS_TIER_A_BONUS", 20)
+                        final_score  = min(final_score + tier_bonus, 100)
+                        mss_tag      = f"MSS_A(conf={mss_result.confidence:.0f}%)"
+                        logger.info(f"  🎯 {symbol} MSS TIER A: {mss_result.reason[:80]}")
+
+                    elif tier == "B":
+                        # Tier B: HIGH confidence — bonus nhỏ hơn
+                        tier_bonus   = getattr(config, "MSS_TIER_B_BONUS", 10)
+                        final_score  = min(final_score + tier_bonus, 100)
+                        mss_tag      = f"MSS_B(conf={mss_result.confidence:.0f}%)"
+                        logger.info(f"  📊 {symbol} MSS TIER B: {mss_result.reason[:80]}")
+
+                    elif tier == "C":
+                        # Tier C: PENDING MSS — lưu lại chờ fast-check
+                        get_mss_pending().add(symbol, bias, mss_result)
+                        logger.info(f"  ⏳ {symbol} MSS TIER C PENDING: {mss_result.reason[:80]}")
+                        # Vẫn tạo candidate nhưng không có MSS bonus
+                        mss_tag = "MSS_C(pending)"
+
+                    else:
+                        # Tier D: không có sweep — không bonus nhưng vẫn pass
+                        mss_tag = "MSS_D(no_sweep)"
+
+                except Exception as _mss_e:
+                    logger.debug(f"  [MSS] {symbol} error: {_mss_e}")
+                    mss_tag = "MSS_err"
+
             final = CoinScore(
                 symbol=symbol, signal=bias, score=final_score,
                 rsi=scored.rsi, trend=scored.trend, atr_pct=scored.atr_pct,
                 reason=(f"{reg_tag} | 4h={trend_4h} 1h={trend_1h} | {mtf_tag} "
-                        f"WR={win_rate:.0f}% | {scored.reason} | {btc_tag}")
+                        f"WR={win_rate:.0f}% | {mss_tag} | {scored.reason} | {btc_tag}")
             )
+            # Đính kèm mss_result vào candidate để bot.py dùng entry_price
+            final.mss_result = mss_result  # type: ignore[attr-defined]
 
             if final.score >= min_score:
                 candidates.append(final)
                 logger.info(f"  ✅ {symbol}: {bias} score={final.score} "
                             f"WR={win_rate:.0f}% loc_room={loc_check['room_atr']:.1f}×ATR "
-                            f"| {final.reason[:120]}")
+                            f"| {final.reason[:140]}")
 
         except Exception as e:
             logger.debug(f"  ⚠️  {symbol} skip: {e}")
