@@ -626,52 +626,67 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
         sl_max    = getattr(cfg, "SL_MAX_PCT", 0.06)         if cfg else 0.06
         use_struct= getattr(cfg, "SL_STRUCTURE_ENABLED", True) if cfg else True
 
+        # ATR-based SL — tối thiểu 2% cách entry, scale theo volatility
+        # Đây là fallback an toàn khi structure không tìm được swing phù hợp
+        atr_sl_long  = entry_price - max(atr * 2.0, entry_price * 0.02)
+        atr_sl_short = entry_price + max(atr * 2.0, entry_price * 0.02)
+
         if signal == "LONG":
-            # SL: dưới nearest swing low - ATR buffer
-            # Chỉ dùng swing low nằm DƯỚI entry_price
+            # Structure SL: swing low gần nhất DƯỚI entry - ATR buffer
             valid_lows = [l for l in swings["swing_lows"] if l < entry_price]
-            if valid_lows:
-                struct_sl = max(valid_lows) - atr * atr_buf   # swing low gần entry nhất từ dưới
+            if valid_lows and use_struct:
+                struct_sl = max(valid_lows) - atr * atr_buf
+                # Chỉ dùng structure SL nếu nó thực sự dưới entry VÀ không quá xa
+                if struct_sl < entry_price and struct_sl >= entry_price * (1 - sl_max):
+                    sl = struct_sl
+                    sl_reason = f"struct_sl={struct_sl:.6f} (swing_low - {atr_buf}×ATR)"
+                else:
+                    sl = atr_sl_long
+                    sl_reason = f"atr_sl (struct out of range) ATR×2={atr*2:.6f}"
             else:
-                struct_sl = entry_price - max(atr * 2.0, entry_price * sl_min)
-            atr_sl    = entry_price - max(atr * 2.0, entry_price * sl_min)
-            sl        = struct_sl if use_struct and struct_sl < entry_price else atr_sl
-            # Clamp SL: phải dưới entry, trong khoảng [min%, max%]
-            sl = max(sl, entry_price * (1 - sl_max))   # không quá rộng
-            sl = min(sl, entry_price * (1 - sl_min))   # không quá chặt
-            # Đảm bảo SL luôn dưới entry
+                sl = atr_sl_long
+                sl_reason = f"atr_sl (no valid swing) ATR×2={atr*2:.6f}"
+
+            # Đảm bảo SL dưới entry, tối thiểu sl_min
+            sl = min(sl, entry_price * (1 - sl_min))   # không quá sát entry
+            sl = max(sl, entry_price * (1 - sl_max))   # không quá xa entry
             if sl >= entry_price:
-                sl = entry_price * (1 - sl_min)
-            # TP: nearest swing resistance TRÊN entry_price trên 15m
+                sl = atr_sl_long
+
+            # TP: nearest swing resistance TRÊN entry_price
             valid_highs = [h for h in swings["swing_highs"] if h > entry_price]
             tp_struct = min(valid_highs) if valid_highs else 0.0
             tp_atr    = entry_price + atr * 8
             tp        = tp_struct if use_struct and tp_struct > entry_price else tp_atr
-            sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
-            tp_reason = f"swing_res={tp_struct:.6f}"
+            tp_reason = f"swing_res={tp_struct:.6f}" if tp == tp_struct else f"atr_tp ATR×8"
 
         else:  # SHORT
-            # Chỉ dùng swing high nằm TRÊN entry_price
+            # Structure SL: swing high gần nhất TRÊN entry + ATR buffer
             valid_highs = [h for h in swings["swing_highs"] if h > entry_price]
-            if valid_highs:
-                struct_sl = min(valid_highs) + atr * atr_buf  # swing high gần entry nhất từ trên
+            if valid_highs and use_struct:
+                struct_sl = min(valid_highs) + atr * atr_buf
+                if struct_sl > entry_price and struct_sl <= entry_price * (1 + sl_max):
+                    sl = struct_sl
+                    sl_reason = f"struct_sl={struct_sl:.6f} (swing_high + {atr_buf}×ATR)"
+                else:
+                    sl = atr_sl_short
+                    sl_reason = f"atr_sl (struct out of range) ATR×2={atr*2:.6f}"
             else:
-                struct_sl = entry_price + max(atr * 2.0, entry_price * sl_min)
-            atr_sl    = entry_price + max(atr * 2.0, entry_price * sl_min)
-            sl        = struct_sl if use_struct and struct_sl > entry_price else atr_sl
-            sl = min(sl, entry_price * (1 + sl_max))
+                sl = atr_sl_short
+                sl_reason = f"atr_sl (no valid swing) ATR×2={atr*2:.6f}"
+
+            # Đảm bảo SL trên entry
             sl = max(sl, entry_price * (1 + sl_min))
-            # Đảm bảo SL luôn trên entry
+            sl = min(sl, entry_price * (1 + sl_max))
             if sl <= entry_price:
-                sl = entry_price * (1 + sl_min)
+                sl = atr_sl_short
+
             # TP: nearest swing support DƯỚI entry_price
             valid_lows = [l for l in swings["swing_lows"] if l < entry_price]
             tp_struct = max(valid_lows) if valid_lows else 0.0
             tp_atr    = entry_price - atr * 8
             tp        = tp_struct if use_struct and tp_struct < entry_price else tp_atr
-            sl_reason = f"struct_sl={struct_sl:.6f} buf={atr_buf}×ATR"
-            tp_reason = f"swing_sup={tp_struct:.6f}"
-
+            tp_reason = f"swing_sup={tp_struct:.6f}" if tp == tp_struct else f"atr_tp ATR×8"
         sl = round(sl, 8)
         tp = round(tp, 8)
 
