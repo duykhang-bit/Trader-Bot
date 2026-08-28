@@ -1469,7 +1469,10 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
 
     # ── P0: Risk-based sizing ─────────────────────────────────
     risk_pct     = getattr(config, "RISK_PER_TRADE_PCT",  0.01)   # 1%
-    max_notional = getattr(config, "RISK_MAX_ORDER_USDT", 50.0)   # hard cap
+    # Max notional = balance × 50% (tự scale theo balance)
+    # Có thể override bằng RISK_MAX_ORDER_USDT nếu set > 0
+    _cfg_max     = getattr(config, "RISK_MAX_ORDER_USDT", 0)
+    max_notional = _cfg_max if _cfg_max > 0 else balance * 0.5
 
     if entry > 0 and sl > 0 and abs(entry - sl) > 0:
         sl_dist_pct = abs(entry - sl) / entry          # e.g. 0.02 = 2%

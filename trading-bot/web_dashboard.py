@@ -2431,19 +2431,20 @@ function updateRiskNote() {
 
     const riskUsdt   = balance * riskPct / 100;
     const sl2pct     = riskUsdt / 0.02;   // notional nếu SL=2%
-    const sl1pct     = riskUsdt / 0.01;   // notional nếu SL=1%
-    const notional   = Math.min(sl2pct, maxOrder);
+    const autoMax    = balance * 0.5;     // max notional tự động = 50% balance
+    const maxCap     = maxOrder > 0 ? Math.min(maxOrder, autoMax) : autoMax;
+    const notional   = Math.min(sl2pct, maxCap);
     const lev        = parseInt(document.getElementById('set-leverage')?.value) || 5;
     const margin     = notional / lev;
 
     note.innerHTML =
         `💰 Balance: <b style="color:#e6edf3">$${balance.toFixed(2)}</b> &nbsp;|&nbsp; ` +
         `Risk ${riskPct}% = <b style="color:#f85149">$${riskUsdt.toFixed(2)}</b><br>` +
-        `📐 Notional (SL=2%): <b style="color:#58a6ff">$${sl2pct.toFixed(1)}</b> → cap tại Max $${maxOrder}<br>` +
+        `📐 Notional (SL=2%): <b style="color:#58a6ff">$${sl2pct.toFixed(1)}</b> → cap tại $${maxCap.toFixed(0)} (50% balance)<br>` +
         `🎯 Notional thực tế: <b style="color:#3fb950">$${notional.toFixed(1)}</b> &nbsp;|&nbsp; ` +
         `Margin (${lev}x): <b style="color:#3fb950">$${margin.toFixed(2)}</b><br>` +
-        `<span style="color:${notional>=maxOrder?'#d29922':'#484f58'}">` +
-        `${notional>=maxOrder?'⚠️ Đang bị cap bởi Max Order — tăng Max Order hoặc giảm Risk%':'✅ Không bị cap'}</span>`;
+        `<span style="color:${notional>=maxCap?'#d29922':'#484f58'}">` +
+        `${notional>=maxCap?'⚠️ Đang bị cap — tự scale theo balance':'✅ Không bị cap'}</span>`;
 }
 
 async function saveP0Settings() {
