@@ -664,7 +664,7 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
                 tp = tp_struct
                 tp_reason = f"swing_res={tp_struct:.6f}"
             else:
-                tp = tp_atr
+                tp = max(tp_atr, entry_price * 1.001)   # đảm bảo TP > entry, tối thiểu 0.1%
                 tp_reason = f"atr_tp ATR×8={tp_atr:.6f}"
 
         else:  # SHORT
@@ -698,7 +698,7 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
                 tp = tp_struct
                 tp_reason = f"swing_sup={tp_struct:.6f}"
             else:
-                tp = tp_atr
+                tp = min(tp_atr, entry_price * 0.999)   # đảm bảo TP < entry, tối thiểu 0.1%
                 tp_reason = f"atr_tp ATR×8={tp_atr:.6f}"
         sl = round(sl, 8)
         tp = round(tp, 8)

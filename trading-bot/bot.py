@@ -883,7 +883,7 @@ def _armed_execute(sym, info, trigger_price):
         except Exception:
             pass
 
-        bal = exc.get_account_balance()
+        bal = exc.get_total_equity()
         qty = calc_qty(bal, trigger_price, info["sl"], symbol=sym, exchange=exc)
         if qty * trigger_price < 5.0:
             qty = round(5.0 / trigger_price + 0.001, 3)
@@ -941,7 +941,7 @@ def _armed_execute(sym, info, trigger_price):
             state["trade_log"].append({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": sym, "side": info["signal"],
-                "entry": trigger_price, "sl": info["sl"], "tp": info["tp"],
+                "entry": trigger_price, "sl": actual_sl, "tp": info["tp"],
                 "qty": qty, "status": "OPEN", "note": "armed_ws_trigger"
             })
 
@@ -1073,20 +1073,6 @@ def price_ws_streamer():
                         # 2. Confirmed top detector — detect đỉnh đã xác nhận
                         try:
                             from confirmed_top_detector import get_ctd
-                            from orderbook_detector import get_ob_tracker
-                            _ctd = get_ctd(config)
-                            _ob  = get_ob_tracker(
-                                "wss://fstream.binance.com" if not config.USE_TESTNET
-                                else "wss://stream.binancefuture.com"
-                            )
-                            _ct_sig = _ctd.on_price_tick(sym, mark, exc, _ob)
-                            if _ct_sig:
-                                import threading as _th
-                                _th.Thread(
-                                    target=_handle_confirmed_top,
-                                    args=(_ct_sig, exc, noti),
-                                    daemon=True
-                                ).start()
                             from orderbook_detector import get_ob_tracker
                             _ctd = get_ctd(config)
                             _ob  = get_ob_tracker(
@@ -2535,18 +2521,21 @@ def trailing_profit_lock(exchange, notifier):
                         new_sl = round(mark * (1 - 0.03), 8)
                     else:
                         new_sl = round(mark * (1 + 0.03), 8)
+                    lock_pct = 0.70   # lock ~70% lợi nhuận
                 elif pnl_pct >= 6.0:
                     # SL về entry + 2%
                     if is_long:
                         new_sl = round(entry * 1.02, 8)
                     else:
                         new_sl = round(entry * 0.98, 8)
+                    lock_pct = 0.33   # lock ~33%
                 elif pnl_pct >= 3.0:
                     # SL về entry + buffer 0.3%
                     if is_long:
                         new_sl = round(entry * 1.003, 8)
                     else:
                         new_sl = round(entry * 0.997, 8)
+                    lock_pct = 0.10   # lock ~10%
                 else:
                     continue
 
@@ -3070,7 +3059,7 @@ def scan_engine(exchange, notifier):
                                         logger.info(f"[Armed] ❌ Remove {a_sym}: entry {entry_p:.6f} xa mark {cur_mark:.6f} ({ratio*100:.0f}%)")
                                         continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
-                                bal = exchange.get_account_balance()
+                                bal = exchange.get_total_equity()
                                 qty = calc_qty(bal, a_info["entry_price"], a_info["sl"], symbol=a_sym, exchange=exchange)
                                 if qty * a_info["entry_price"] < 5.0:
                                     qty = round(5.0 / a_info["entry_price"] + 0.001, 3)
@@ -3140,7 +3129,7 @@ def scan_engine(exchange, notifier):
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                             except Exception:
                                 pass
-                            bal = exchange.get_account_balance()
+                            bal = exchange.get_total_equity()
                             qty = calc_qty(bal, cur_p, a_info["sl"], symbol=a_sym, exchange=exchange)
                             if qty * cur_p < 5.0:
                                 qty = round(5.0 / cur_p + 0.001, 3)
@@ -3401,7 +3390,7 @@ def scan_engine(exchange, notifier):
                                      and mss_res_check.tier in ("A", "B")
                                      and mss_res_check.entry_price > 0)
                     is_liq_entry  = (not is_mss_entry and liq_entry is not None
-                                     if 'liq_entry' in dir() else False)
+                                     if 'liq_entry' in locals() else False)
 
                     if getattr(config, "ENTRY_OFFSET_ENABLED", False) and not is_liq_entry:
                         offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)

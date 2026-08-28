@@ -276,8 +276,9 @@ def detect_retest(df: pd.DataFrame, mss_level: float, mss_idx: int,
 
     for i in range(mss_idx + 1, n):
         if direction == "LONG":
-            # Giá pullback về zone (low chạm zone, nhưng close vẫn trên mss_level)
-            if lows[i] <= zone_upper and lows[i] >= zone_lower * 0.995:
+            # Giá pullback về zone — low phải chạm gần mss_level (không được cao hơn mss_level)
+            # zone_upper chỉ cho phép low cao hơn mss_level tối đa tolerance (0.5%)
+            if lows[i] <= mss_level * (1 + tolerance * 0.5) and lows[i] >= zone_lower * 0.99:
                 result["retested"]    = True
                 result["retest_price"] = float(lows[i])
                 result["retest_idx"]  = i
