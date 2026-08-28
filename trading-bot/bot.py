@@ -1689,10 +1689,10 @@ def position_reversal_monitor(exchange, notifier):
                     pass
                 elif held_secs < min_hold:
                     pass  # chưa đủ thời gian hold — chưa kích hoạt
+                elif mfe_pct < peak_pct:
+                    pass  # chưa đạt peak profit tối thiểu — chưa kích hoạt trailing
                 else:
-                    # Đã hold đủ min_hold → trailing kích hoạt
-                    # Theo dõi: khi lời giảm về <= pnl_floor thì cắt (bảo vệ lời)
-                    # Không cần peak_pct — pump nhẹ thường không đạt 3%
+                    # Đã hold đủ min_hold VÀ đạt peak_pct → trailing kích hoạt
                     if pnl_pct <= pnl_floor:
                         with lock:
                             state.pop(mfe_key, None)
