@@ -1443,6 +1443,88 @@ function renderDashboard(d) {
           <span id="ptp-save-msg" style="font-size:12px;color:#3fb950"></span>
         </div>
       </div>
+    </div>
+
+    <!-- PROFIT PROTECTION + TRAILING SL SECTION -->
+    <div class="section" style="margin-top:12px">
+      <h2 style="cursor:pointer" onclick="togglePP()">
+        🛡 Profit Protection + Trailing SL
+        <span id="pp-arrow" style="font-size:11px;color:#8b949e">▼</span>
+      </h2>
+      <div id="pp-body" style="display:none">
+        <div style="font-size:11px;color:#8b949e;margin-bottom:10px">
+          Flow: Initial SL → Protection SL (+0.6%) → Trailing SL (+1.0%) | SL chỉ dịch 1 chiều, không bao giờ lỗ khi đã có lợi nhuận
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+          <!-- Bật/tắt + Protection -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#58a6ff;margin-bottom:8px;font-weight:600">🛡 Profit Protection</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">
+              <input type="checkbox" id="pp-enabled" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Bật Profit Protection</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Trigger lời:</span>
+              <input type="number" id="pp-trigger-pct" min="0.1" max="5" step="0.1"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Timer xác nhận:</span>
+              <input type="number" id="pp-timer" min="5" max="60" step="5"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">giây</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Fee buffer:</span>
+              <input type="number" id="pp-fee-buf" min="0.05" max="0.5" step="0.05"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">% (phí+slip)</span>
+            </div>
+          </div>
+
+          <!-- Trailing -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#3fb950;margin-bottom:8px;font-weight:600">📈 Trailing SL</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Trigger lời:</span>
+              <input type="number" id="pp-trail-trigger" min="0.5" max="10" step="0.1"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Timer xác nhận:</span>
+              <input type="number" id="pp-trail-timer" min="3" max="30" step="1"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">giây</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Trailing distance:</span>
+              <input type="number" id="pp-trail-dist" min="0.1" max="3" step="0.1"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">%</span>
+            </div>
+            <div style="display:flex;gap:10px">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                <input type="checkbox" id="pp-apply-scan" style="width:14px;height:14px">
+                <span style="color:#c9d1d9">Scan</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                <input type="checkbox" id="pp-apply-pump" style="width:14px;height:14px">
+                <span style="color:#c9d1d9">Pump</span>
+              </label>
+            </div>
+          </div>
+
+        </div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+          <button class="btn btn-green" onclick="savePP()" style="font-size:13px">
+            💾 Lưu Profit Protection
+          </button>
+          <span id="pp-save-msg" style="font-size:12px;color:#3fb950"></span>
+        </div>
+      </div>
     </div>`;
 
     return html;
@@ -2469,6 +2551,57 @@ function toggleP0Settings() {
     body.style.display = hidden ? 'block' : 'none';
     if (arrow) arrow.innerHTML = hidden ? '&#x25B2;' : '&#x25BC;';
     if (hidden) loadP0Settings();
+}
+
+function togglePP() {
+    const body = document.getElementById('pp-body');
+    const arrow = document.getElementById('pp-arrow');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    if (arrow) arrow.textContent = hidden ? '▲' : '▼';
+    if (hidden) loadPP();
+}
+
+async function loadPP() {
+    try {
+        const r = await fetch('/api/pp/settings');
+        const d = await r.json();
+        if (!d.ok) return;
+        const s = d.settings;
+        const set = (id, val) => { const el = document.getElementById(id); if (el) { if (el.type==='checkbox') el.checked=!!val; else el.value=val; } };
+        set('pp-enabled',       s.enabled);
+        set('pp-trigger-pct',   s.trigger_pct);
+        set('pp-timer',         s.timer_secs);
+        set('pp-fee-buf',       s.fee_buffer_pct);
+        set('pp-trail-trigger', s.trailing_trigger_pct);
+        set('pp-trail-timer',   s.trailing_timer_secs);
+        set('pp-trail-dist',    s.trailing_distance_pct);
+        set('pp-apply-scan',    s.apply_scan);
+        set('pp-apply-pump',    s.apply_pump);
+    } catch(e) {}
+}
+
+async function savePP() {
+    const get = (id) => { const el = document.getElementById(id); return el ? (el.type==='checkbox' ? el.checked : el.value) : null; };
+    const payload = {
+        enabled:               get('pp-enabled'),
+        trigger_pct:           parseFloat(get('pp-trigger-pct')),
+        timer_secs:            parseInt(get('pp-timer')),
+        fee_buffer_pct:        parseFloat(get('pp-fee-buf')),
+        trailing_trigger_pct:  parseFloat(get('pp-trail-trigger')),
+        trailing_timer_secs:   parseInt(get('pp-trail-timer')),
+        trailing_distance_pct: parseFloat(get('pp-trail-dist')),
+        apply_scan:            get('pp-apply-scan'),
+        apply_pump:            get('pp-apply-pump'),
+    };
+    const r = await apiPost('/api/pp/settings', payload);
+    const msg = document.getElementById('pp-save-msg');
+    if (msg) {
+        msg.textContent = r.ok ? '✅ Đã lưu' : '❌ ' + (r.msg || 'Lỗi');
+        msg.style.color = r.ok ? '#3fb950' : '#f85149';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+    }
 }
 
 function togglePartialTP() {
@@ -4024,6 +4157,75 @@ def api_partial_tp_save():
 
         logger.info(f"[PartialTP] Settings saved: {data}")
         return jsonify({"ok": True, "msg": "✅ Partial TP đã lưu"})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
+@app.route("/api/pp/settings", methods=["GET"])
+def api_pp_settings_get():
+    """Lấy Profit Protection settings."""
+    try:
+        import config as _cfg
+        return jsonify({"ok": True, "settings": {
+            "enabled":               getattr(_cfg, "PROFIT_PROTECTION_ENABLED",  True),
+            "trigger_pct":           getattr(_cfg, "PP_TRIGGER_PCT",             0.6),
+            "timer_secs":            getattr(_cfg, "PP_TIMER_SECS",              15),
+            "fee_buffer_pct":        getattr(_cfg, "PP_FEE_BUFFER_PCT",          0.15),
+            "trailing_trigger_pct":  getattr(_cfg, "PP_TRAILING_TRIGGER_PCT",    1.0),
+            "trailing_timer_secs":   getattr(_cfg, "PP_TRAILING_TIMER_SECS",     7),
+            "trailing_distance_pct": getattr(_cfg, "PP_TRAILING_DISTANCE_PCT",   0.5),
+            "apply_scan":            getattr(_cfg, "PP_APPLY_SCAN",              True),
+            "apply_pump":            getattr(_cfg, "PP_APPLY_PUMP",              True),
+        }})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
+@app.route("/api/pp/settings", methods=["POST"])
+@require_auth
+def api_pp_settings_save():
+    """Lưu Profit Protection settings vào runtime + config.py."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+        if "enabled"               in data: _cfg.PROFIT_PROTECTION_ENABLED  = bool(data["enabled"])
+        if "trigger_pct"           in data: _cfg.PP_TRIGGER_PCT             = max(0.1, min(5.0,  float(data["trigger_pct"])))
+        if "timer_secs"            in data: _cfg.PP_TIMER_SECS              = max(5,   min(60,   int(data["timer_secs"])))
+        if "fee_buffer_pct"        in data: _cfg.PP_FEE_BUFFER_PCT          = max(0.05,min(0.5,  float(data["fee_buffer_pct"])))
+        if "trailing_trigger_pct"  in data: _cfg.PP_TRAILING_TRIGGER_PCT    = max(0.5, min(10.0, float(data["trailing_trigger_pct"])))
+        if "trailing_timer_secs"   in data: _cfg.PP_TRAILING_TIMER_SECS     = max(3,   min(30,   int(data["trailing_timer_secs"])))
+        if "trailing_distance_pct" in data: _cfg.PP_TRAILING_DISTANCE_PCT   = max(0.1, min(3.0,  float(data["trailing_distance_pct"])))
+        if "apply_scan"            in data: _cfg.PP_APPLY_SCAN              = bool(data["apply_scan"])
+        if "apply_pump"            in data: _cfg.PP_APPLY_PUMP              = bool(data["apply_pump"])
+
+        # Ghi persistent
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        pp_map = {
+            "PROFIT_PROTECTION_ENABLED":  str(_cfg.PROFIT_PROTECTION_ENABLED),
+            "PP_TRIGGER_PCT":             str(round(_cfg.PP_TRIGGER_PCT, 2)),
+            "PP_TIMER_SECS":              str(_cfg.PP_TIMER_SECS),
+            "PP_FEE_BUFFER_PCT":          str(round(_cfg.PP_FEE_BUFFER_PCT, 3)),
+            "PP_TRAILING_TRIGGER_PCT":    str(round(_cfg.PP_TRAILING_TRIGGER_PCT, 2)),
+            "PP_TRAILING_TIMER_SECS":     str(_cfg.PP_TRAILING_TIMER_SECS),
+            "PP_TRAILING_DISTANCE_PCT":   str(round(_cfg.PP_TRAILING_DISTANCE_PCT, 2)),
+            "PP_APPLY_SCAN":              str(_cfg.PP_APPLY_SCAN),
+            "PP_APPLY_PUMP":              str(_cfg.PP_APPLY_PUMP),
+        }
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for key, val in pp_map.items():
+                pattern = rf'^({key}\s*=\s*).*$'
+                new_content, n = _re.subn(pattern, f'{key:<32}= {val}', content, flags=_re.MULTILINE)
+                content = new_content if n > 0 else content + f'\n{key:<32}= {val}'
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as _e:
+            logger.warning(f"[PP] Config write failed: {_e}")
+
+        logger.info(f"[PP] Settings saved: {data}")
+        return jsonify({"ok": True, "msg": "✅ Profit Protection đã lưu"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 

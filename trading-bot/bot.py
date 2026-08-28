@@ -4838,6 +4838,234 @@ def limit_order_monitor(exchange, notifier):
 # ============================================================
 # THREAD 10b: Partial TP Monitor — chốt từng phần khi đạt % lời
 # ============================================================
+# ============================================================
+# PROFIT PROTECTION + TRAILING SL MONITOR
+# ============================================================
+# Flow 3 tầng SL:
+#   Tầng 1: Initial SL (đặt khi vào lệnh)
+#   Tầng 2: Protection SL (khi lời >= 0.6%) → SL về breakeven + fee
+#   Tầng 3: Trailing SL  (khi lời >= 1.0%) → trailing 0.5% theo peak
+#
+# Rule: SL chỉ được dịch theo hướng có lợi, KHÔNG BAO GIỜ nới rộng
+# Khi đã có lợi nhuận → không bao giờ để lỗ → chỉ lời ít hơn thôi
+# ============================================================
+def profit_protection_monitor(exchange, notifier):
+    """
+    Monitor mỗi 1s, check tất cả open positions.
+    Áp dụng 3 tầng SL tự động.
+    """
+    # Per-position state
+    # {symbol: {
+    #   "side": LONG/SHORT,
+    #   "entry": float,
+    #   "tier": 1/2/3,           # tầng SL hiện tại
+    #   "current_sl": float,     # SL đang đặt trên Binance
+    #   "protection_ts": float,  # timestamp khi lời đạt 0.6%
+    #   "trailing_ts": float,    # timestamp khi lời đạt 1.0%
+    #   "peak_price": float,     # peak price kể từ trailing ON
+    #   "trailing_sl": float,    # trailing SL hiện tại
+    # }}
+    _pp_state: dict = {}
+
+    time.sleep(20)  # đợi bot ổn định
+
+    while state["running"]:
+        try:
+            if not getattr(config, "PROFIT_PROTECTION_ENABLED", True):
+                time.sleep(5)
+                continue
+
+            pp_trigger    = getattr(config, "PP_TRIGGER_PCT",           0.6)
+            pp_timer      = getattr(config, "PP_TIMER_SECS",            15)
+            fee_buf       = getattr(config, "PP_FEE_BUFFER_PCT",        0.15)
+            trail_trigger = getattr(config, "PP_TRAILING_TRIGGER_PCT",  1.0)
+            trail_timer   = getattr(config, "PP_TRAILING_TIMER_SECS",   7)
+            trail_dist    = getattr(config, "PP_TRAILING_DISTANCE_PCT", 0.5) / 100
+            apply_scan    = getattr(config, "PP_APPLY_SCAN",            True)
+            apply_pump    = getattr(config, "PP_APPLY_PUMP",            True)
+
+            with lock:
+                open_pos   = [p for p in state.get("open_positions", [])
+                              if abs(float(p.get("positionAmt", 0))) > 0]
+                pump_syms  = set(state.get("pump_trade_symbols", set()))
+                prices_now = dict(state.get("prices", {}))
+
+            # Cleanup state cho position đã đóng
+            active_syms = {p["symbol"] for p in open_pos}
+            for sym in list(_pp_state.keys()):
+                if sym not in active_syms:
+                    _pp_state.pop(sym, None)
+
+            for pos in open_pos:
+                sym    = pos["symbol"]
+                amt    = float(pos.get("positionAmt", 0))
+                entry  = float(pos.get("entryPrice", 0))
+                if entry <= 0 or amt == 0:
+                    continue
+
+                is_long = amt > 0
+                side    = "LONG" if is_long else "SHORT"
+                is_pump = sym in pump_syms
+
+                # Check apply
+                if is_pump and not apply_pump:
+                    continue
+                if not is_pump and not apply_scan:
+                    continue
+
+                # Lấy mark price từ WS (realtime)
+                mark = prices_now.get(sym, 0)
+                if mark <= 0:
+                    continue
+
+                # Tính profit % hiện tại (chưa trừ phí)
+                if is_long:
+                    profit_pct = (mark - entry) / entry * 100
+                else:
+                    profit_pct = (entry - mark) / entry * 100
+
+                now = time.time()
+
+                # Khởi tạo state nếu chưa có
+                if sym not in _pp_state:
+                    # Lấy SL hiện tại từ Binance
+                    cur_sl = 0.0
+                    try:
+                        orders = exchange._get("/fapi/v1/openOrders",
+                                               {"symbol": sym}, signed=True)
+                        sl_orders = [o for o in orders
+                                     if o.get("type") in ("STOP_MARKET", "STOP")
+                                     and o.get("reduceOnly", False)]
+                        if sl_orders:
+                            cur_sl = float(sl_orders[0].get("stopPrice", 0))
+                    except Exception:
+                        pass
+                    _pp_state[sym] = {
+                        "side":          side,
+                        "entry":         entry,
+                        "tier":          1,
+                        "current_sl":    cur_sl,
+                        "protection_ts": 0.0,
+                        "trailing_ts":   0.0,
+                        "peak_price":    mark,
+                        "trailing_sl":   0.0,
+                    }
+                    continue  # skip vòng này, xử lý vòng sau
+
+                ps = _pp_state[sym]
+
+                # ── Cập nhật peak price ──────────────────────────────
+                if is_long:
+                    if mark > ps["peak_price"]:
+                        ps["peak_price"] = mark
+                else:
+                    if mark < ps["peak_price"] or ps["peak_price"] == 0:
+                        ps["peak_price"] = mark
+
+                # ── TẦNG 2: PROTECTION SL ───────────────────────────
+                if ps["tier"] < 2 and profit_pct >= pp_trigger:
+                    if ps["protection_ts"] == 0.0:
+                        ps["protection_ts"] = now
+                        logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {pp_trigger}% → timer start")
+                    elif now - ps["protection_ts"] >= pp_timer:
+                        # Timer đủ → đặt Protection SL
+                        # Protection SL = breakeven + fee buffer (NET PnL > 0)
+                        fee_total = fee_buf / 100  # 0.15% tổng phí
+                        if is_long:
+                            new_sl = round(entry * (1 + fee_total), 8)
+                            # Chỉ update nếu tốt hơn SL cũ
+                            if new_sl > ps["current_sl"]:
+                                if _update_sl(exchange, sym, side, new_sl, abs(amt)):
+                                    ps["tier"]       = 2
+                                    ps["current_sl"] = new_sl
+                                    logger.info(f"[PP] ✅ {sym} LONG tier2 Protection SL={new_sl:.6f} "
+                                                f"(breakeven+{fee_buf}%)")
+                                    notifier.telegram.send(
+                                        f"🛡 <b>PROTECTION SL</b>: {sym} {side}\n"
+                                        f"SL dời về breakeven ${new_sl:.6f}\n"
+                                        f"Lời {profit_pct:.2f}% → không bao giờ lỗ\n"
+                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                        else:  # SHORT
+                            new_sl = round(entry * (1 - fee_total), 8)
+                            if new_sl < ps["current_sl"] or ps["current_sl"] == 0:
+                                if _update_sl(exchange, sym, side, new_sl, abs(amt)):
+                                    ps["tier"]       = 2
+                                    ps["current_sl"] = new_sl
+                                    logger.info(f"[PP] ✅ {sym} SHORT tier2 Protection SL={new_sl:.6f}")
+                                    notifier.telegram.send(
+                                        f"🛡 <b>PROTECTION SL</b>: {sym} {side}\n"
+                                        f"SL dời về breakeven ${new_sl:.6f}\n"
+                                        f"Lời {profit_pct:.2f}% → không bao giờ lỗ\n"
+                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                elif profit_pct < pp_trigger * 0.7:
+                    # Reset timer nếu giá giảm rõ ràng
+                    ps["protection_ts"] = 0.0
+
+                # ── TẦNG 3: TRAILING SL ─────────────────────────────
+                if ps["tier"] >= 2 and profit_pct >= trail_trigger:
+                    if ps["trailing_ts"] == 0.0:
+                        ps["trailing_ts"] = now
+                        ps["peak_price"]  = mark  # reset peak từ đây
+                        logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {trail_trigger}% → trailing timer")
+                    elif now - ps["trailing_ts"] >= trail_timer:
+                        # Trailing ON — tính trailing SL từ peak
+                        peak = ps["peak_price"]
+                        if is_long:
+                            new_trail_sl = round(peak * (1 - trail_dist), 8)
+                            # Chỉ update nếu tốt hơn SL hiện tại
+                            if new_trail_sl > ps["current_sl"]:
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                    if ps["tier"] < 3:
+                                        ps["tier"] = 3
+                                        logger.info(f"[PP] ✅ {sym} LONG tier3 TRAILING ON "
+                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f}")
+                                    ps["current_sl"]  = new_trail_sl
+                                    ps["trailing_sl"] = new_trail_sl
+                        else:  # SHORT
+                            new_trail_sl = round(peak * (1 + trail_dist), 8)
+                            if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                    if ps["tier"] < 3:
+                                        ps["tier"] = 3
+                                        logger.info(f"[PP] ✅ {sym} SHORT tier3 TRAILING ON "
+                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f}")
+                                    ps["current_sl"]  = new_trail_sl
+                                    ps["trailing_sl"] = new_trail_sl
+
+        except Exception as e:
+            logger.debug(f"[PP] monitor error: {e}")
+
+        time.sleep(getattr(config, "PP_CHECK_INTERVAL_SECS", 1))
+
+
+def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> bool:
+    """
+    Update SL trên Binance — cancel SL cũ rồi đặt SL mới.
+    Returns True nếu thành công.
+    """
+    try:
+        close_side = "SELL" if side == "LONG" else "BUY"
+        # Cancel SL cũ
+        orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+        sl_orders = [o for o in orders
+                     if o.get("type") in ("STOP_MARKET", "STOP")
+                     and o.get("reduceOnly", False)]
+        for o in sl_orders:
+            try:
+                exchange._delete("/fapi/v1/order",
+                                 {"symbol": symbol, "orderId": o["orderId"]})
+            except Exception:
+                pass
+        # Đặt SL mới
+        exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
+        return True
+    except Exception as e:
+        logger.debug(f"[PP] _update_sl {symbol} failed: {e}")
+        return False
+
+
 def partial_tp_monitor(exchange, notifier):
     """
     Mỗi 5s kiểm tra tất cả positions:
@@ -5672,6 +5900,8 @@ if __name__ == "__main__":
     t_mfe_scan.start()
     t_partial_tp = threading.Thread(target=partial_tp_monitor, args=(exchange, notifier), daemon=True)
     t_partial_tp.start()
+    t_pp = threading.Thread(target=profit_protection_monitor, args=(exchange, notifier), daemon=True)
+    t_pp.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
