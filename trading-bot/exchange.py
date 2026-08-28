@@ -171,10 +171,13 @@ class BinanceFutures:
         return 0.0
 
     def get_total_equity(self) -> float:
-        """Lấy total equity = wallet balance + unrealized PnL"""
+        """Lấy total equity = wallet balance + unrealized PnL (cross margin)"""
         try:
             data = self._get("/fapi/v2/account", signed=True)
-            return float(data.get("totalMarginBalance", 0))
+            wallet   = float(data.get("totalWalletBalance", 0))
+            unrealized = float(data.get("totalUnrealizedProfit", 0))
+            equity   = wallet + unrealized
+            return equity if equity > 0 else self.get_account_balance()
         except Exception:
             return self.get_account_balance()
 
