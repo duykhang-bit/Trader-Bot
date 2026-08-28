@@ -1072,10 +1072,12 @@ def price_ws_streamer():
                 # Chỉ forward tick cho monitor, không chạy indicators ở đây
                 _scan_monitor.on_price_tick(sym, mark)
 
-                # ── PUMP SPIKE CHECK — chỉ coin trong pump_watch_coins ──
+                # ── PUMP SPIKE CHECK — coin trong pump_watch_coins VÀ pump_nhe_coins ──
                 with lock:
-                    pump_watch = set(state.get("pump_watch_coins", []))
-                if sym in pump_watch:
+                    pump_watch     = set(state.get("pump_watch_coins", []))
+                    pump_nhe_watch = set(state.get("pump_nhe_coins", []))
+                all_pump_coins = pump_watch | pump_nhe_watch
+                if sym in all_pump_coins:
                     exc  = _ws_exchange_ref[0]
                     noti = _ws_notifier_ref[0]
                     if exc and noti:
