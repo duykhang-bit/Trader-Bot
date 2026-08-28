@@ -171,12 +171,16 @@ class BinanceFutures:
         return 0.0
 
     def get_total_equity(self) -> float:
-        """Lấy total equity = wallet balance + unrealized PnL (cross margin)"""
+        """Lấy total equity từ Futures account = totalMarginBalance
+        Đây là số tiền thực tế available trong futures wallet bao gồm unrealized PnL"""
         try:
             data = self._get("/fapi/v2/account", signed=True)
-            wallet   = float(data.get("totalWalletBalance", 0))
-            unrealized = float(data.get("totalUnrealizedProfit", 0))
-            equity   = wallet + unrealized
+            # totalMarginBalance = walletBalance + unrealizedPnL (cross margin)
+            # Đây là số khớp với "Tổng tài sản" hiển thị trên Binance Futures
+            margin_bal = float(data.get("totalMarginBalance", 0))
+            wallet_bal = float(data.get("totalWalletBalance", 0))
+            # Dùng giá trị lớn hơn để tránh undersize khi đang lỗ unrealized
+            equity = max(margin_bal, wallet_bal)
             return equity if equity > 0 else self.get_account_balance()
         except Exception:
             return self.get_account_balance()
