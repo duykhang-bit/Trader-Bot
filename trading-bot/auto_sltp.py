@@ -136,8 +136,9 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
                     best_sl   = entry_price - atr_1h * 2.0
                     sl_method = "ATR×2.0"
 
-            # Hard floor: max 6% dưới entry
-            best_sl = max(best_sl, entry_price * 0.94)
+            # Hard floor: max 6% dưới entry, tối thiểu 1% dưới entry
+            best_sl = max(best_sl, entry_price * 0.94)   # không quá xa (max 6%)
+            best_sl = min(best_sl, entry_price * 0.99)   # không quá sát (min 1%)
             risk    = entry_price - best_sl
 
             # ── TP: vùng liq LONG lớn nhất phía trên ──────────
@@ -225,8 +226,9 @@ def suggest_sltp(exchange, symbol: str, side: str, entry_price: float,
                     best_sl   = entry_price + atr_1h * 2.0
                     sl_method = "ATR×2.0"
 
-            # Hard ceiling: max 6% trên entry
-            best_sl = min(best_sl, entry_price * 1.06)
+            # Hard ceiling: max 6% trên entry, tối thiểu 1% trên entry
+            best_sl = min(best_sl, entry_price * 1.06)   # không quá xa (max 6%)
+            best_sl = max(best_sl, entry_price * 1.01)   # không quá sát (min 1%)
             risk    = best_sl - entry_price
 
             # ── TP: vùng liq SHORT lớn nhất phía dưới ─────────
