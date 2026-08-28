@@ -3241,7 +3241,14 @@ def scan_engine(exchange, notifier):
 
                             with lock:
                                 n_open = len(state.get("open_positions", []))
+                                # Không tạo armed nếu coin đã có open position
+                                open_syms_mss = {p["symbol"] for p in state.get("open_positions", [])
+                                                 if abs(float(p.get("positionAmt", 0))) > 0}
                             if n_open >= config.MAX_OPEN_POSITIONS:
+                                continue
+                            if mss_sym in open_syms_mss:
+                                logger.info(f"[MSS] {mss_sym} đã có position → skip armed")
+                                mss_mgr.remove(mss_sym)
                                 continue
 
                             with lock:
