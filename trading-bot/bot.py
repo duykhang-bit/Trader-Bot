@@ -1010,11 +1010,18 @@ def price_ws_streamer():
                         _entry = float(_p.get("entryPrice", 0))
                         if _entry <= 0:
                             continue
+                        # Tính PnL realtime từ mark price WS — không dùng cached PnL
                         _pnl = (mark - _entry) * abs(_amt) if _amt > 0 else (_entry - mark) * abs(_amt)
                         if _pnl < -max_loss:
                             exc  = _ws_exchange_ref[0]
                             noti = _ws_notifier_ref[0]
                             if exc:
+                                # Check chưa bị đóng trước đó (tránh double close)
+                                _already_closing_key = f"_ml_closing_{sym}"
+                                with lock:
+                                    if state.get(_already_closing_key):
+                                        break
+                                    state[_already_closing_key] = True
                                 import threading as _th_ml
                                 def _do_max_loss_close(_sym, _close_side, _qty, _pnl_val):
                                     try:
@@ -1029,6 +1036,9 @@ def price_ws_streamer():
                                             )
                                     except Exception as _e:
                                         logger.error(f"[MAX LOSS WS] {_sym}: {_e}")
+                                    finally:
+                                        with lock:
+                                            state.pop(f"_ml_closing_{_sym}", None)
                                 _close_side = "SELL" if _amt > 0 else "BUY"
                                 _qty = abs(_amt)
                                 _th_ml.Thread(
@@ -3958,11 +3968,7 @@ def pump_scan_engine(exchange, notifier):
                                         if not cur_p_nhe or cur_p_nhe <= 0:
                                             cur_p_nhe = sig.entry_price
 
-                                        # Risk-based sizing cho pump nhẹ (dùng SL từ signal)
-                                        bal_nhe = exchange.get_total_equity()
-                                        sl_nhe  = sig.sl_price if sig.sl_price > 0 else cur_p_nhe * 1.05
-                                        qty_nhe = calc_qty(bal_nhe, cur_p_nhe, sl_nhe,
-                                                           symbol=symbol, exchange=exchange)
+                                        qty_nhe = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_p_nhe
                                         try:
                                             step, _, decimals, _ = exchange.get_qty_precision(symbol)
                                             qty_nhe = max(
@@ -4265,11 +4271,7 @@ def pump_scan_engine(exchange, notifier):
                         if not current_price or current_price <= 0:
                             current_price = sig.entry_price
 
-                        # Risk-based sizing cho pump mạnh (dùng SL từ signal)
-                        bal_pump = exchange.get_total_equity()
-                        sl_pump  = sig.sl_price if sig.sl_price > 0 else current_price * 1.05
-                        qty = calc_qty(bal_pump, current_price, sl_pump,
-                                       symbol=symbol, exchange=exchange)
+                        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / current_price
                         try:
                             step, max_qty, decimals, min_notional = exchange.get_qty_precision(symbol)
                             qty = max(round(int(qty / step) * step, decimals), step)
