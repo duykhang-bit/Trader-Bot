@@ -4807,8 +4807,26 @@ def limit_order_monitor(exchange, notifier):
                             continue
 
                         logger.info(f"[AutoSLTP] Detected unprotected: {sym} {pos['side']}")
+
+                        # ── Risk validation: SL không được xa hơn risk 1% cho phép ──
+                        # Nếu SL quá xa → điều chỉnh lại để risk <= 1% balance
+                        _bal_sltp = exchange.get_total_equity()
+                        _risk_max = _bal_sltp * getattr(config, "RISK_PER_TRADE_PCT", 0.01)
+                        _notional = abs(float(pos["qty"])) * float(pos["entry"])
+                        if _notional > 0:
+                            _max_sl_dist_pct = _risk_max / _notional
+                            # Cap: SL không xa hơn max_sl_dist từ entry
+                            _entry_v = float(pos["entry"])
+                            if pos["side"] == "LONG":
+                                _sl_floor = round(_entry_v * (1 - _max_sl_dist_pct), 8)
+                            else:
+                                _sl_floor = round(_entry_v * (1 + _max_sl_dist_pct), 8)
+                        else:
+                            _sl_floor = None
+
                         result = auto_set_sltp(exchange, sym, pos["side"],
-                                               pos["entry"], pos["qty"], liq_tracker)
+                                               pos["entry"], pos["qty"], liq_tracker,
+                                               sl_floor=_sl_floor)
                         _sltp_cooldown[sym] = now_ts  # Đánh dấu đã đặt
                         # Notify Telegram
                         try:

@@ -398,9 +398,10 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
 
 
 def auto_set_sltp(exchange, symbol: str, side: str, entry: float, qty: float,
-                  liq_tracker=None) -> Dict:
+                  liq_tracker=None, sl_floor=None) -> Dict:
     """
     Phân tích chart và tự đặt SL/TP trên Binance cho position.
+    sl_floor: SL không được xa hơn mức này (để giới hạn risk 1%)
     
     Returns:
         {"ok": True/False, "sl": float, "tp": float, "msg": str}
@@ -409,6 +410,16 @@ def auto_set_sltp(exchange, symbol: str, side: str, entry: float, qty: float,
 
     sl = suggestion["sl"]
     tp = suggestion["tp"]
+
+    # Enforce sl_floor — không để SL xa hơn mức risk cho phép
+    if sl_floor is not None:
+        if side == "LONG" and sl < sl_floor:
+            sl = sl_floor
+            logger.info(f"[AutoSLTP] {symbol} LONG SL capped: {suggestion['sl']:.6f} → {sl:.6f} (risk 1% limit)")
+        elif side == "SHORT" and sl > sl_floor:
+            sl = sl_floor
+            logger.info(f"[AutoSLTP] {symbol} SHORT SL capped: {suggestion['sl']:.6f} → {sl:.6f} (risk 1% limit)")
+
     close_side = "SELL" if side == "LONG" else "BUY"
 
     # Lấy giá hiện tại để validate SL/TP
