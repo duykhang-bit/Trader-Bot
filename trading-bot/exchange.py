@@ -170,6 +170,14 @@ class BinanceFutures:
                 return float(asset["availableBalance"])
         return 0.0
 
+    def get_total_equity(self) -> float:
+        """Lấy total equity = wallet balance + unrealized PnL"""
+        try:
+            data = self._get("/fapi/v2/account", signed=True)
+            return float(data.get("totalMarginBalance", 0))
+        except Exception:
+            return self.get_account_balance()
+
     def get_position(self, symbol: str) -> Optional[dict]:
         """Lấy thông tin position hiện tại"""
         data = self._get("/fapi/v2/positionRisk", {"symbol": symbol}, signed=True)

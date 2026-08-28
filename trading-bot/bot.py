@@ -3322,7 +3322,7 @@ def scan_engine(exchange, notifier):
                 df     = _klines_to_df(klines)
                 price  = df["close"].iloc[-1]
                 atr    = calculate_atr(df["high"], df["low"], df["close"]).iloc[-1]
-                bal    = exchange.get_account_balance()
+                bal    = exchange.get_total_equity()   # dùng equity gốc, không phải available
                 try: exchange.set_leverage(best.symbol, config.LEVERAGE)
                 except: pass
 
