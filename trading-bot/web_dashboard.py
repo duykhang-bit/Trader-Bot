@@ -3744,7 +3744,7 @@ def api_p0_settings_get():
 @app.route("/api/p0/settings", methods=["POST"])
 @require_auth
 def api_p0_settings_save():
-    """Lưu P0 scan settings vào config runtime."""
+    """Lưu P0 scan settings vào config runtime + ghi persistent vào config.py."""
     data = request.get_json() or {}
     try:
         import config as _cfg
@@ -3762,17 +3762,52 @@ def api_p0_settings_save():
         if "risk_per_trade_pct" in data:
             _cfg.RISK_PER_TRADE_PCT        = max(0.001, min(0.05, float(data["risk_per_trade_pct"])))
         if "risk_max_order_usdt" in data:
-            _cfg.RISK_MAX_ORDER_USDT       = max(5.0, min(500.0, float(data["risk_max_order_usdt"])))
+            _cfg.RISK_MAX_ORDER_USDT       = max(0.0, min(500.0, float(data["risk_max_order_usdt"])))
         if "min_rr" in data:
             _cfg.MIN_RR                    = max(1.0, min(5.0, float(data["min_rr"])))
         if "sl_structure_enabled" in data:
             _cfg.SL_STRUCTURE_ENABLED      = bool(data["sl_structure_enabled"])
         if "chaos_skip_enabled" in data:
-            # Nếu tắt CHAOS skip → set mult rất cao (không bao giờ trigger)
             _cfg.CHAOS_ATR_MULT = 2.5 if bool(data["chaos_skip_enabled"]) else 999.0
 
+        # ── Ghi persistent vào config.py ──────────────────────────────
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        p0_map = {
+            "BTC_FILTER_ENABLED":        str(_cfg.BTC_FILTER_ENABLED),
+            "BTC_STRONG_BLOCK":          str(_cfg.BTC_STRONG_BLOCK),
+            "DAILY_KILL_SWITCH_ENABLED": str(_cfg.DAILY_KILL_SWITCH_ENABLED),
+            "MAX_DAILY_LOSS_PCT":        str(round(_cfg.MAX_DAILY_LOSS_PCT, 4)),
+            "MAX_CONSECUTIVE_LOSSES":    str(_cfg.MAX_CONSECUTIVE_LOSSES),
+            "RISK_PER_TRADE_PCT":        str(round(_cfg.RISK_PER_TRADE_PCT, 4)),
+            "RISK_MAX_ORDER_USDT":       str(round(_cfg.RISK_MAX_ORDER_USDT, 1)),
+            "MIN_RR":                    str(round(_cfg.MIN_RR, 1)),
+            "SL_STRUCTURE_ENABLED":      str(_cfg.SL_STRUCTURE_ENABLED),
+            "CHAOS_ATR_MULT":            str(round(_cfg.CHAOS_ATR_MULT, 1)),
+        }
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for key, val in p0_map.items():
+                # Nếu key đã tồn tại → replace, không thì append
+                pattern = rf'^({key}\s*=\s*).*$'
+                replacement = f'{key:<28}= {val}'
+                new_content, n = _re.subn(pattern, replacement, content,
+                                          flags=_re.MULTILINE)
+                if n > 0:
+                    content = new_content
+                else:
+                    content += f'\n{replacement}'
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"[P0] Settings persistent saved to config.py")
+            msg = "✅ P0 settings đã lưu (runtime + config.py)"
+        except Exception as _e:
+            logger.warning(f"[P0] Config write failed: {_e}")
+            msg = f"✅ Runtime saved (config.py write failed: {_e})"
+
         logger.info(f"[P0] Settings saved: {data}")
-        return jsonify({"ok": True, "msg": "✅ P0 settings đã lưu (runtime, restart sẽ reset)"})
+        return jsonify({"ok": True, "msg": msg})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 
