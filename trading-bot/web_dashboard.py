@@ -3803,6 +3803,24 @@ def api_max_loss():
         _cfg.MAX_LOSS_ENABLED = bool(enabled)
         if value is not None:
             _cfg.MAX_LOSS_PER_POSITION = float(value)
+        # Ghi persistent vào config.py
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for key, val_str in [
+                ("MAX_LOSS_ENABLED",      str(_cfg.MAX_LOSS_ENABLED)),
+                ("MAX_LOSS_PER_POSITION", str(round(_cfg.MAX_LOSS_PER_POSITION, 1))),
+            ]:
+                pattern = rf'^({key}\s*=\s*).*$'
+                new_content, n = _re.subn(pattern, f'{key:<28}= {val_str}', content, flags=_re.MULTILINE)
+                if n > 0:
+                    content = new_content
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as _e:
+            logger.warning(f"[MaxLoss] Config write failed: {_e}")
     except Exception:
         pass
     val = getattr(_config, "MAX_LOSS_PER_POSITION", 20.0)
