@@ -3404,18 +3404,8 @@ def scan_engine(exchange, notifier):
                             raw_entry = round(swing_low if best.signal == "LONG" else swing_high, 8)
                             logger.info(f"[LiqEngine] {best.symbol}: no liq zone → swing fallback @ {raw_entry:.6f}")
 
-                    # ── Apply Entry Offset ──────────────────────────────────────
-                    # MSS entry và swing fallback: apply offset để bắt giá tốt hơn
-                    # Liq Engine zone: KHÔNG apply offset vì zone đã là giá tốt rồi
-                    #   (offset thêm sẽ làm entry càng xa thực tế hơn)
-                    mss_res_check = getattr(best, "mss_result", None)
-                    is_mss_entry  = (mss_res_check is not None
-                                     and mss_res_check.tier in ("A", "B")
-                                     and mss_res_check.entry_price > 0)
-                    is_liq_entry  = (not is_mss_entry and liq_entry is not None
-                                     if 'liq_entry' in locals() else False)
-
-                    if getattr(config, "ENTRY_OFFSET_ENABLED", False) and not is_liq_entry:
+                    # ── Apply Entry Offset (áp dụng cho TẤT CẢ entry) ──────────
+                    if getattr(config, "ENTRY_OFFSET_ENABLED", False):
                         offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
                         if best.signal == "LONG":
                             entry_price = round(raw_entry * (1 - offset_pct), 8)
@@ -3425,8 +3415,6 @@ def scan_engine(exchange, notifier):
                                     f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
                     else:
                         entry_price = raw_entry
-                        if is_liq_entry:
-                            logger.info(f"[EntryOffset] {best.symbol}: liq zone entry → no offset")
 
                 # ═══ BƯỚC 7: Tính SL / TP theo entry_price cuối + RR + No-Chase ═══
                 if not skip_reason:
