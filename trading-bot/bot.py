@@ -884,25 +884,18 @@ def _armed_execute(sym, info, trigger_price):
             pass
 
         bal = exc.get_total_equity()
-        qty = calc_qty(bal, trigger_price, info["sl"], symbol=sym, exchange=exc)
-        if qty * trigger_price < 5.0:
-            qty = round(5.0 / trigger_price + 0.001, 3)
 
-        exc.place_market_order(sym, info["side"], qty)
-        time.sleep(0.5)
-
-        # Tính lại SL từ trigger_price thực tế để tránh SL sai chiều
+        # Tính actual_sl trước để calc_qty dùng đúng SL distance
         actual_sl = info["sl"]
         try:
             from indicators import calculate_atr
             from scanner import _klines_to_df
             klines_15m = exc.get_klines(sym, "15m", limit=50)
             df_15m = _klines_to_df(klines_15m)
-            atr_val = calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1]
+            atr_val = float(calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1])
             sl_dist = max(atr_val * 2.0, trigger_price * 0.02)
             if info["signal"] == "LONG":
                 actual_sl = round(trigger_price - sl_dist, 8)
-                # Validate: SL phải thấp hơn trigger
                 if actual_sl >= trigger_price:
                     actual_sl = round(trigger_price * 0.98, 8)
             else:
@@ -911,6 +904,14 @@ def _armed_execute(sym, info, trigger_price):
                     actual_sl = round(trigger_price * 1.02, 8)
         except Exception:
             pass
+
+        # Dùng actual_sl để tính qty đúng risk 1%
+        qty = calc_qty(bal, trigger_price, actual_sl, symbol=sym, exchange=exc)
+        if qty * trigger_price < 5.0:
+            qty = round(5.0 / trigger_price + 0.001, 3)
+
+        exc.place_market_order(sym, info["side"], qty)
+        time.sleep(0.5)
 
         # SL retry 3x
         sl_ok = False
