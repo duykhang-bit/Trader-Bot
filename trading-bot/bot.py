@@ -3813,12 +3813,18 @@ def pump_scan_engine(exchange, notifier):
                             f"[PumpEngine] TOP: {symbol} score={sig.score} "
                             f"+{sig.pump_pct:.1f}%"
                         )
-                        # Telegram alert ngay — có nút SHORT tay
+                        # Telegram alert — chỉ gửi khi chưa có vị thế coin này
                         try:
-                            notifier.telegram.send(
-                                sig.to_telegram(),
-                                reply_markup=sig.to_telegram_markup()
-                            )
+                            with lock:
+                                _open_syms_pump = {
+                                    p["symbol"] for p in state.get("open_positions", [])
+                                    if abs(float(p.get("positionAmt", 0))) > 0
+                                }
+                            if symbol not in _open_syms_pump:
+                                notifier.telegram.send(
+                                    sig.to_telegram(),
+                                    reply_markup=sig.to_telegram_markup()
+                                )
                         except Exception as te:
                             logger.warning(f"[PumpEngine] Telegram failed: {te}")
 
@@ -3901,18 +3907,24 @@ def pump_scan_engine(exchange, notifier):
                                 f"[PumpNhe] TOP: {symbol} score={sig.score} "
                                 f"+{sig.pump_pct:.1f}% (ngưỡng {nhe_score})"
                             )
-                            # Telegram alert — có nút SHORT tay
+                            # Telegram alert — chỉ gửi khi chưa có vị thế coin này
                             try:
-                                nhe_msg = (
-                                    sig.to_telegram()
-                                    .replace("PUMP TOP — SHORT SIGNAL",
-                                             "PUMP NHẸ TOP — SHORT SIGNAL")
-                                    .replace("/100", f"/100 (ngưỡng {nhe_score})")
-                                )
-                                notifier.telegram.send(
-                                    nhe_msg,
-                                    reply_markup=sig.to_telegram_markup()
-                                )
+                                with lock:
+                                    _open_syms_alert = {
+                                        p["symbol"] for p in state.get("open_positions", [])
+                                        if abs(float(p.get("positionAmt", 0))) > 0
+                                    }
+                                if symbol not in _open_syms_alert:
+                                    nhe_msg = (
+                                        sig.to_telegram()
+                                        .replace("PUMP TOP — SHORT SIGNAL",
+                                                 "PUMP NHẸ TOP — SHORT SIGNAL")
+                                        .replace("/100", f"/100 (ngưỡng {nhe_score})")
+                                    )
+                                    notifier.telegram.send(
+                                        nhe_msg,
+                                        reply_markup=sig.to_telegram_markup()
+                                    )
                             except Exception as _te:
                                 logger.warning(f"[PumpNhe] Telegram failed: {_te}")
 
