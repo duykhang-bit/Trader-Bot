@@ -1368,6 +1368,81 @@ function renderDashboard(d) {
           <span id="p0-save-msg" style="font-size:12px;color:#3fb950"></span>
         </div>
       </div>
+    </div>
+
+    <!-- PARTIAL TP SECTION -->
+    <div class="section" id="partial-tp-section" style="margin-top:12px">
+      <h2 style="cursor:pointer" onclick="togglePartialTP()">
+        💰 Partial TP — Chốt từng phần
+        <span id="partial-tp-arrow" style="font-size:11px;color:#8b949e">▼</span>
+      </h2>
+      <div id="partial-tp-body" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+
+          <!-- TP1 -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#3fb950;margin-bottom:8px;font-weight:600">🎯 TP1 — Chốt lần đầu</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">
+              <input type="checkbox" id="ptp-enabled" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Bật Partial TP</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:120px">Kích hoạt khi lời:</span>
+              <input type="number" id="ptp-tp1-pct" min="0.5" max="20" step="0.5"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:120px">Đóng bao nhiêu:</span>
+              <input type="number" id="ptp-tp1-close" min="10" max="90" step="10"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">% vị thế</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="ptp-move-sl" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Dời SL về breakeven sau TP1</span>
+            </label>
+          </div>
+
+          <!-- TP2 -->
+          <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+            <div style="font-size:12px;color:#d29922;margin-bottom:8px;font-weight:600">🎯 TP2 — Chốt lần 2</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">
+              <input type="checkbox" id="ptp-tp2-enabled" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">Bật TP2</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:120px">Kích hoạt khi lời:</span>
+              <input type="number" id="ptp-tp2-pct" min="1" max="30" step="0.5"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:120px">Đóng bao nhiêu:</span>
+              <input type="number" id="ptp-tp2-close" min="10" max="90" step="10"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">% vị thế còn lại</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                <input type="checkbox" id="ptp-apply-scan" style="width:14px;height:14px">
+                <span style="color:#c9d1d9">Scan</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-left:10px">
+                <input type="checkbox" id="ptp-apply-pump" style="width:14px;height:14px">
+                <span style="color:#c9d1d9">Pump</span>
+              </label>
+            </div>
+          </div>
+
+        </div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+          <button class="btn btn-green" onclick="savePartialTP()" style="font-size:13px">
+            💾 Lưu Partial TP
+          </button>
+          <span id="ptp-save-msg" style="font-size:12px;color:#3fb950"></span>
+        </div>
+      </div>
     </div>`;
 
     return html;
@@ -2394,6 +2469,57 @@ function toggleP0Settings() {
     body.style.display = hidden ? 'block' : 'none';
     if (arrow) arrow.innerHTML = hidden ? '&#x25B2;' : '&#x25BC;';
     if (hidden) loadP0Settings();
+}
+
+function togglePartialTP() {
+    const body  = document.getElementById('partial-tp-body');
+    const arrow = document.getElementById('partial-tp-arrow');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    if (arrow) arrow.textContent = hidden ? '▲' : '▼';
+    if (hidden) loadPartialTP();
+}
+
+async function loadPartialTP() {
+    try {
+        const r = await fetch('/api/partial_tp/settings');
+        const d = await r.json();
+        if (!d.ok) return;
+        const s = d.settings;
+        const set = (id, val) => { const el = document.getElementById(id); if (el) { if (el.type==='checkbox') el.checked=!!val; else el.value=val; } };
+        set('ptp-enabled',    s.enabled);
+        set('ptp-tp1-pct',    s.tp1_pct);
+        set('ptp-tp1-close',  s.tp1_close_pct);
+        set('ptp-move-sl',    s.move_sl_be);
+        set('ptp-tp2-enabled',s.tp2_enabled);
+        set('ptp-tp2-pct',    s.tp2_pct);
+        set('ptp-tp2-close',  s.tp2_close_pct);
+        set('ptp-apply-scan', s.apply_scan);
+        set('ptp-apply-pump', s.apply_pump);
+    } catch(e) {}
+}
+
+async function savePartialTP() {
+    const get = (id) => { const el = document.getElementById(id); return el ? (el.type==='checkbox' ? el.checked : el.value) : null; };
+    const payload = {
+        enabled:       get('ptp-enabled'),
+        tp1_pct:       parseFloat(get('ptp-tp1-pct')),
+        tp1_close_pct: parseFloat(get('ptp-tp1-close')),
+        move_sl_be:    get('ptp-move-sl'),
+        tp2_enabled:   get('ptp-tp2-enabled'),
+        tp2_pct:       parseFloat(get('ptp-tp2-pct')),
+        tp2_close_pct: parseFloat(get('ptp-tp2-close')),
+        apply_scan:    get('ptp-apply-scan'),
+        apply_pump:    get('ptp-apply-pump'),
+    };
+    const r = await apiPost('/api/partial_tp/settings', payload);
+    const msg = document.getElementById('ptp-save-msg');
+    if (msg) {
+        msg.textContent = r.ok ? '✅ Đã lưu' : '❌ ' + (r.msg || 'Lỗi');
+        msg.style.color = r.ok ? '#3fb950' : '#f85149';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+    }
 }
 
 async function loadP0Settings() {
@@ -3808,6 +3934,78 @@ def api_p0_settings_save():
 
         logger.info(f"[P0] Settings saved: {data}")
         return jsonify({"ok": True, "msg": msg})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
+@app.route("/api/partial_tp/settings", methods=["GET"])
+def api_partial_tp_get():
+    """Lấy Partial TP settings hiện tại."""
+    try:
+        import config as _cfg
+        return jsonify({"ok": True, "settings": {
+            "enabled":       getattr(_cfg, "PARTIAL_TP_ENABLED",      True),
+            "tp1_pct":       getattr(_cfg, "PARTIAL_TP1_PCT",         2.0),
+            "tp1_close_pct": getattr(_cfg, "PARTIAL_TP1_CLOSE_PCT",   50.0),
+            "move_sl_be":    getattr(_cfg, "PARTIAL_TP_MOVE_SL_BE",   True),
+            "tp2_enabled":   getattr(_cfg, "PARTIAL_TP2_ENABLED",     True),
+            "tp2_pct":       getattr(_cfg, "PARTIAL_TP2_PCT",         4.0),
+            "tp2_close_pct": getattr(_cfg, "PARTIAL_TP2_CLOSE_PCT",   30.0),
+            "apply_scan":    getattr(_cfg, "PARTIAL_TP_APPLY_SCAN",   True),
+            "apply_pump":    getattr(_cfg, "PARTIAL_TP_APPLY_PUMP",   True),
+        }})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
+@app.route("/api/partial_tp/settings", methods=["POST"])
+@require_auth
+def api_partial_tp_save():
+    """Lưu Partial TP settings vào config runtime + config.py."""
+    data = request.get_json() or {}
+    try:
+        import config as _cfg
+        if "enabled"       in data: _cfg.PARTIAL_TP_ENABLED      = bool(data["enabled"])
+        if "tp1_pct"       in data: _cfg.PARTIAL_TP1_PCT         = max(0.5, min(20.0, float(data["tp1_pct"])))
+        if "tp1_close_pct" in data: _cfg.PARTIAL_TP1_CLOSE_PCT   = max(10.0, min(90.0, float(data["tp1_close_pct"])))
+        if "move_sl_be"    in data: _cfg.PARTIAL_TP_MOVE_SL_BE   = bool(data["move_sl_be"])
+        if "tp2_enabled"   in data: _cfg.PARTIAL_TP2_ENABLED     = bool(data["tp2_enabled"])
+        if "tp2_pct"       in data: _cfg.PARTIAL_TP2_PCT         = max(1.0, min(30.0, float(data["tp2_pct"])))
+        if "tp2_close_pct" in data: _cfg.PARTIAL_TP2_CLOSE_PCT   = max(10.0, min(90.0, float(data["tp2_close_pct"])))
+        if "apply_scan"    in data: _cfg.PARTIAL_TP_APPLY_SCAN   = bool(data["apply_scan"])
+        if "apply_pump"    in data: _cfg.PARTIAL_TP_APPLY_PUMP   = bool(data["apply_pump"])
+
+        # Ghi persistent vào config.py
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        ptp_map = {
+            "PARTIAL_TP_ENABLED":    str(_cfg.PARTIAL_TP_ENABLED),
+            "PARTIAL_TP1_PCT":       str(_cfg.PARTIAL_TP1_PCT),
+            "PARTIAL_TP1_CLOSE_PCT": str(_cfg.PARTIAL_TP1_CLOSE_PCT),
+            "PARTIAL_TP_MOVE_SL_BE": str(_cfg.PARTIAL_TP_MOVE_SL_BE),
+            "PARTIAL_TP2_ENABLED":   str(_cfg.PARTIAL_TP2_ENABLED),
+            "PARTIAL_TP2_PCT":       str(_cfg.PARTIAL_TP2_PCT),
+            "PARTIAL_TP2_CLOSE_PCT": str(_cfg.PARTIAL_TP2_CLOSE_PCT),
+            "PARTIAL_TP_APPLY_SCAN": str(_cfg.PARTIAL_TP_APPLY_SCAN),
+            "PARTIAL_TP_APPLY_PUMP": str(_cfg.PARTIAL_TP_APPLY_PUMP),
+        }
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for key, val in ptp_map.items():
+                pattern = rf'^({key}\s*=\s*).*$'
+                new_content, n = _re.subn(pattern, f'{key:<28}= {val}', content, flags=_re.MULTILINE)
+                if n > 0:
+                    content = new_content
+                else:
+                    content += f'\n{key:<28}= {val}'
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as _e:
+            logger.warning(f"[PartialTP] Config write failed: {_e}")
+
+        logger.info(f"[PartialTP] Settings saved: {data}")
+        return jsonify({"ok": True, "msg": "✅ Partial TP đã lưu"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 

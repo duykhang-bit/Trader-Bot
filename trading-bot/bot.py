@@ -4828,6 +4828,179 @@ def limit_order_monitor(exchange, notifier):
 
 
 # ============================================================
+# THREAD 10b: Partial TP Monitor — chốt từng phần khi đạt % lời
+# ============================================================
+def partial_tp_monitor(exchange, notifier):
+    """
+    Mỗi 5s kiểm tra tất cả positions:
+    - TP1: lời >= PARTIAL_TP1_PCT → đóng PARTIAL_TP1_CLOSE_PCT% vị thế
+    - TP2: lời >= PARTIAL_TP2_PCT → đóng thêm PARTIAL_TP2_CLOSE_PCT%
+    - Sau TP1: dời SL về breakeven (entry price)
+    """
+    # Track trạng thái partial TP cho từng position
+    # {symbol: {"tp1_done": bool, "tp2_done": bool}}
+    _partial_state: dict = {}
+
+    time.sleep(15)  # đợi bot ổn định
+
+    while state["running"]:
+        try:
+            if not getattr(config, "PARTIAL_TP_ENABLED", True):
+                time.sleep(10)
+                continue
+
+            tp1_pct       = getattr(config, "PARTIAL_TP1_PCT",       2.0)
+            tp1_close_pct = getattr(config, "PARTIAL_TP1_CLOSE_PCT", 50.0)
+            tp2_enabled   = getattr(config, "PARTIAL_TP2_ENABLED",   True)
+            tp2_pct       = getattr(config, "PARTIAL_TP2_PCT",       4.0)
+            tp2_close_pct = getattr(config, "PARTIAL_TP2_CLOSE_PCT", 30.0)
+            move_sl_be    = getattr(config, "PARTIAL_TP_MOVE_SL_BE", True)
+            apply_scan    = getattr(config, "PARTIAL_TP_APPLY_SCAN", True)
+            apply_pump    = getattr(config, "PARTIAL_TP_APPLY_PUMP", True)
+
+            with lock:
+                open_pos = [p for p in state.get("open_positions", [])
+                            if abs(float(p.get("positionAmt", 0))) > 0]
+                pump_syms = set(state.get("pump_trade_symbols", set()))
+
+            for pos in open_pos:
+                symbol = pos["symbol"]
+                amt    = float(pos.get("positionAmt", 0))
+                entry  = float(pos.get("entryPrice", 0))
+                if entry <= 0 or amt == 0:
+                    continue
+
+                is_long  = amt > 0
+                side_str = "LONG" if is_long else "SHORT"
+                is_pump  = symbol in pump_syms
+
+                # Check apply
+                if is_pump and not apply_pump:
+                    continue
+                if not is_pump and not apply_scan:
+                    continue
+
+                # Lấy giá mark
+                mark = state.get("prices", {}).get(symbol, 0)
+                if mark <= 0:
+                    try:
+                        mark = exchange.get_ticker_price(symbol)
+                    except Exception:
+                        continue
+
+                # Tính PnL %
+                if is_long:
+                    pnl_pct = (mark - entry) / entry * 100
+                else:
+                    pnl_pct = (entry - mark) / entry * 100
+
+                ps = _partial_state.setdefault(symbol, {"tp1_done": False, "tp2_done": False})
+
+                qty_total = abs(amt)
+                close_side = "SELL" if is_long else "BUY"
+
+                # ── TP1 ──────────────────────────────────────────
+                if not ps["tp1_done"] and pnl_pct >= tp1_pct:
+                    try:
+                        qty_close = round(qty_total * tp1_close_pct / 100, 8)
+                        # Lấy step size
+                        try:
+                            step, _, decimals, min_notional = exchange.get_qty_precision(symbol)
+                            if step >= 1:
+                                qty_close = int(qty_close // step) * int(step)
+                            else:
+                                qty_close = round(int(qty_close / step) * step, decimals)
+                        except Exception:
+                            pass
+
+                        if qty_close * mark < 5.0:
+                            logger.debug(f"[PartialTP] {symbol} TP1 qty too small, skip")
+                        else:
+                            exchange.place_market_order(symbol, close_side, qty_close)
+                            ps["tp1_done"] = True
+                            logger.info(f"[PartialTP] ✅ TP1 {symbol} {side_str}: "
+                                        f"đóng {tp1_close_pct:.0f}% ({qty_close}) @ lời {pnl_pct:.1f}%")
+
+                            # Dời SL về breakeven
+                            if move_sl_be:
+                                try:
+                                    # Cancel SL cũ
+                                    all_orders = exchange._get("/fapi/v1/openOrders",
+                                                              {"symbol": symbol}, signed=True)
+                                    sl_orders = [o for o in all_orders
+                                                 if o.get("type") in ("STOP_MARKET", "STOP")
+                                                 and o.get("reduceOnly", False)]
+                                    for o in sl_orders:
+                                        exchange._delete("/fapi/v1/order",
+                                                        {"symbol": symbol, "orderId": o["orderId"]})
+                                    # Đặt SL mới tại entry
+                                    be_sl = round(entry * (1.001 if is_long else 0.999), 8)
+                                    exchange.place_stop_loss_order(symbol, close_side,
+                                                                   round(qty_total - qty_close, 8),
+                                                                   be_sl)
+                                    logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
+                                except Exception as _e:
+                                    logger.debug(f"[PartialTP] Move SL BE {symbol}: {_e}")
+
+                            notifier.telegram.send(
+                                f"💰 <b>PARTIAL TP1</b>: {symbol} {side_str}\n"
+                                f"Chốt {tp1_close_pct:.0f}% vị thế @ lời {pnl_pct:.1f}%\n"
+                                f"SL dời về breakeven {entry:.6f}\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                    except Exception as e:
+                        logger.error(f"[PartialTP] TP1 {symbol}: {e}")
+
+                # ── TP2 ──────────────────────────────────────────
+                elif tp2_enabled and ps["tp1_done"] and not ps["tp2_done"] and pnl_pct >= tp2_pct:
+                    try:
+                        # Lấy lại qty hiện tại (đã giảm sau TP1)
+                        try:
+                            cur_pos = exchange._get("/fapi/v2/positionRisk",
+                                                   {"symbol": symbol}, signed=True)
+                            cur_amt = abs(float(next(
+                                (p["positionAmt"] for p in cur_pos
+                                 if p["symbol"] == symbol), 0
+                            )))
+                        except Exception:
+                            cur_amt = qty_total * (1 - tp1_close_pct / 100)
+
+                        qty_close2 = round(cur_amt * tp2_close_pct / 100, 8)
+                        try:
+                            step, _, decimals, _ = exchange.get_qty_precision(symbol)
+                            if step >= 1:
+                                qty_close2 = int(qty_close2 // step) * int(step)
+                            else:
+                                qty_close2 = round(int(qty_close2 / step) * step, decimals)
+                        except Exception:
+                            pass
+
+                        if qty_close2 * mark < 5.0:
+                            logger.debug(f"[PartialTP] {symbol} TP2 qty too small, skip")
+                        else:
+                            exchange.place_market_order(symbol, close_side, qty_close2)
+                            ps["tp2_done"] = True
+                            logger.info(f"[PartialTP] ✅ TP2 {symbol} {side_str}: "
+                                        f"đóng {tp2_close_pct:.0f}% @ lời {pnl_pct:.1f}%")
+                            notifier.telegram.send(
+                                f"💰 <b>PARTIAL TP2</b>: {symbol} {side_str}\n"
+                                f"Chốt thêm {tp2_close_pct:.0f}% @ lời {pnl_pct:.1f}%\n"
+                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                            )
+                    except Exception as e:
+                        logger.error(f"[PartialTP] TP2 {symbol}: {e}")
+
+                # Reset nếu position đã đóng hoàn toàn
+                if abs(amt) == 0:
+                    _partial_state.pop(symbol, None)
+
+        except Exception as e:
+            logger.debug(f"[PartialTP] monitor error: {e}")
+
+        time.sleep(5)
+
+
+# ============================================================
 # THREAD 10: Position Advisory — mỗi 30 phút phân tích vị thế đang mở
 # Gửi lời khuyên qua Telegram: giữ/đóng dựa trên xu hướng hiện tại
 # ============================================================
@@ -5489,6 +5662,8 @@ if __name__ == "__main__":
     t_profit_lock.start()
     t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
     t_mfe_scan.start()
+    t_partial_tp = threading.Thread(target=partial_tp_monitor, args=(exchange, notifier), daemon=True)
+    t_partial_tp.start()
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
