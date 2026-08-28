@@ -1323,14 +1323,20 @@ function renderDashboard(d) {
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
               <span style="font-size:12px;color:#8b949e;width:110px">Risk/lệnh:</span>
               <input type="number" id="p0-risk-pct" min="0.1" max="3" step="0.1"
-                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px"
+                     oninput="updateRiskNote()">
               <span style="font-size:11px;color:#484f58">% balance</span>
             </div>
-            <div style="display:flex;align-items:center;gap:6px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
               <span style="font-size:12px;color:#8b949e;width:110px">Max order:</span>
               <input type="number" id="p0-max-order" min="5" max="200" step="5"
-                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px"
+                     oninput="updateRiskNote()">
               <span style="font-size:11px;color:#484f58">USDT notional</span>
+            </div>
+            <!-- Risk note realtime -->
+            <div id="p0-risk-note" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:11px;color:#8b949e;line-height:1.6">
+              —
             </div>
           </div>
 
@@ -2407,7 +2413,37 @@ async function loadP0Settings() {
         set('p0-min-rr',         s.min_rr);
         set('p0-sl-struct',      s.sl_structure_enabled);
         set('p0-kill-chaos',     s.chaos_skip_enabled);
+        updateRiskNote();
     } catch(e) {}
+}
+
+function updateRiskNote() {
+    const note = document.getElementById('p0-risk-note');
+    if (!note) return;
+    const riskPct  = parseFloat(document.getElementById('p0-risk-pct')?.value) || 1.0;
+    const maxOrder = parseFloat(document.getElementById('p0-max-order')?.value) || 50;
+    // Lấy balance từ dashboard
+    const balEl = document.getElementById('stat-balance');
+    const balStr = balEl ? balEl.textContent.replace(/[^0-9.]/g,'') : '0';
+    const balance = parseFloat(balStr) || 0;
+
+    if (balance <= 0) { note.innerHTML = '— (chưa có balance)'; return; }
+
+    const riskUsdt   = balance * riskPct / 100;
+    const sl2pct     = riskUsdt / 0.02;   // notional nếu SL=2%
+    const sl1pct     = riskUsdt / 0.01;   // notional nếu SL=1%
+    const notional   = Math.min(sl2pct, maxOrder);
+    const lev        = parseInt(document.getElementById('set-leverage')?.value) || 5;
+    const margin     = notional / lev;
+
+    note.innerHTML =
+        `💰 Balance: <b style="color:#e6edf3">$${balance.toFixed(2)}</b> &nbsp;|&nbsp; ` +
+        `Risk ${riskPct}% = <b style="color:#f85149">$${riskUsdt.toFixed(2)}</b><br>` +
+        `📐 Notional (SL=2%): <b style="color:#58a6ff">$${sl2pct.toFixed(1)}</b> → cap tại Max $${maxOrder}<br>` +
+        `🎯 Notional thực tế: <b style="color:#3fb950">$${notional.toFixed(1)}</b> &nbsp;|&nbsp; ` +
+        `Margin (${lev}x): <b style="color:#3fb950">$${margin.toFixed(2)}</b><br>` +
+        `<span style="color:${notional>=maxOrder?'#d29922':'#484f58'}">` +
+        `${notional>=maxOrder?'⚠️ Đang bị cap bởi Max Order — tăng Max Order hoặc giảm Risk%':'✅ Không bị cap'}</span>`;
 }
 
 async function saveP0Settings() {
