@@ -1467,7 +1467,7 @@ def calc_qty(balance, entry, sl, symbol="", exchange=None):
         notional    = risk_usdt / sl_dist_pct          # e.g. $1 / 2% = $50
         notional    = min(notional, max_notional)      # hard cap
         qty         = notional / entry
-        logger.info(f"[SizeCalc] bal=${balance:.2f} risk={risk_pct*100:.1f}%=${risk_usdt:.3f} "
+        logger.debug(f"[SizeCalc] bal=${balance:.2f} risk={risk_pct*100:.1f}%=${risk_usdt:.3f} "
                     f"sl_dist={sl_dist_pct*100:.2f}% notional=${notional:.2f} "
                     f"max_notional=${max_notional:.2f} qty={qty:.4f}")
     else:
