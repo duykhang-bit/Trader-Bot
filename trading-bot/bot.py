@@ -3958,7 +3958,11 @@ def pump_scan_engine(exchange, notifier):
                                         if not cur_p_nhe or cur_p_nhe <= 0:
                                             cur_p_nhe = sig.entry_price
 
-                                        qty_nhe = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_p_nhe
+                                        # Risk-based sizing cho pump nhẹ (dùng SL từ signal)
+                                        bal_nhe = exchange.get_total_equity()
+                                        sl_nhe  = sig.sl_price if sig.sl_price > 0 else cur_p_nhe * 1.05
+                                        qty_nhe = calc_qty(bal_nhe, cur_p_nhe, sl_nhe,
+                                                           symbol=symbol, exchange=exchange)
                                         try:
                                             step, _, decimals, _ = exchange.get_qty_precision(symbol)
                                             qty_nhe = max(
@@ -4261,7 +4265,11 @@ def pump_scan_engine(exchange, notifier):
                         if not current_price or current_price <= 0:
                             current_price = sig.entry_price
 
-                        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / current_price
+                        # Risk-based sizing cho pump mạnh (dùng SL từ signal)
+                        bal_pump = exchange.get_total_equity()
+                        sl_pump  = sig.sl_price if sig.sl_price > 0 else current_price * 1.05
+                        qty = calc_qty(bal_pump, current_price, sl_pump,
+                                       symbol=symbol, exchange=exchange)
                         try:
                             step, max_qty, decimals, min_notional = exchange.get_qty_precision(symbol)
                             qty = max(round(int(qty / step) * step, decimals), step)
