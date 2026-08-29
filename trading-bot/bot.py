@@ -3079,9 +3079,10 @@ def scan_engine(exchange, notifier):
                                         continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                                 bal = exchange.get_total_equity()
-                                # Dùng entry_price đã có offset từ armed
                                 final_entry = a_info["entry_price"]
-                                qty = calc_qty(bal, final_entry, a_info["sl"], symbol=a_sym, exchange=exchange)
+                                final_sl    = a_info["sl"]
+                                final_tp    = a_info["tp"]
+                                qty = calc_qty(bal, final_entry, final_sl, symbol=a_sym, exchange=exchange)
                                 if qty * final_entry < 5.0:
                                     qty = round(5.0 / final_entry + 0.001, 3)
                                 exchange.place_limit_order(a_sym, a_info["side"], qty, final_entry)
@@ -3094,7 +3095,7 @@ def scan_engine(exchange, notifier):
                                                 psm[str(o["orderId"])] = {
                                                     "symbol": a_sym, "side": a_info["signal"],
                                                     "qty": float(o.get("origQty", qty)),
-                                                    "sl": a_info["sl"], "tp": a_info["tp"],
+                                                    "sl": final_sl, "tp": final_tp,
                                                     "ts": time.time(),
                                                 }
                                 except Exception:
@@ -3318,6 +3319,13 @@ def scan_engine(exchange, notifier):
                                  if abs(float(p.get("positionAmt", 0))) > 0}
                 if best.symbol in open_syms:
                     logger.info(f"Skip {best.symbol}: already has open position")
+                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
+                    continue
+                # Nếu coin đã có armed cùng chiều → skip, không tính lại entry
+                with lock:
+                    _existing_armed = state.get("armed_entries", {}).get(best.symbol)
+                if _existing_armed and _existing_armed.get("signal") == best.signal:
+                    logger.debug(f"[Scan] {best.symbol} đã có armed @ {_existing_armed['entry_price']:.6f} → skip recalc")
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
                 # Guard double entry: nếu đang xử lý symbol này → skip
@@ -3558,19 +3566,14 @@ def scan_engine(exchange, notifier):
                             logger.info(f"[Armed] LIMIT failed, armed backup: {best.symbol} {e}")
                     else:
                         # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
-                        # Chỉ lưu nếu chưa có armed cùng chiều — tránh overwrite offset
-                        if best.symbol not in armed or armed[best.symbol].get("signal") != best.signal:
-                            armed[best.symbol] = {
-                                "signal": best.signal, "entry_price": entry_price,
-                                "raw_entry": raw_entry if raw_entry > 0 else entry_price,
-                                "sl": sl, "tp": tp, "rr": rr, "score": best.score,
-                                "side": side, "close_side": close_side, "ts": time.time(),
-                            }
-                            order_type_used = "ARMED"
-                            logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} (2 LIMIT đầy, WS backup)")
-                        else:
-                            order_type_used = "ARMED"
-                            logger.debug(f"[Armed] {best.symbol} đã có armed @ {armed[best.symbol]['entry_price']:.6f} → giữ nguyên")
+                        armed[best.symbol] = {
+                            "signal": best.signal, "entry_price": entry_price,
+                            "raw_entry": raw_entry if raw_entry > 0 else entry_price,
+                            "sl": sl, "tp": tp, "rr": rr, "score": best.score,
+                            "side": side, "close_side": close_side, "ts": time.time(),
+                        }
+                        order_type_used = "ARMED"
+                        logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} sl={sl:.6f} (WS backup)")
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
