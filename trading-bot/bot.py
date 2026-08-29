@@ -926,14 +926,14 @@ def _armed_execute(sym, info, trigger_price):
             except Exception:
                 time.sleep(0.3)
         if not sl_ok:
-            logger.debug(f"[Armed] SL FAILED {sym} — keeping position, auto_sltp will retry")
+            logger.warning(f"[Armed] SL FAILED {sym} — vẫn đặt TP, auto_sltp sẽ retry SL")
             if noti:
                 noti.telegram.send(
                     f"⚠️ <b>SL FAILED</b>: {sym} {info['signal']}\n"
                     f"Không đặt được SL — giữ lệnh, auto SL/TP sẽ thử lại\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
-            return
+            # Không return — vẫn đặt TP và log trade
 
         # TP
         try:
@@ -3119,7 +3119,7 @@ def scan_engine(exchange, notifier):
                         if time.time() - a_info["ts"] > 3600:
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
-                            logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>15min)")
+                            logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>1h)")
                             continue
 
                         # Skip nếu đã có position
@@ -3420,7 +3420,19 @@ def scan_engine(exchange, notifier):
                             liq_source = liq_api
 
                     if not liq_source:
-                        skip_reason = "Không có liq data"
+                        # Fallback: dùng get_best_entry cũ (swing 15m + orderbook)
+                        from liquidity_engine import get_best_entry
+                        klines_15m_swing = exchange.get_klines(best.symbol, "15m", limit=20)
+                        df_15m_swing = _klines_to_df(klines_15m_swing)
+                        swing_low  = df_15m_swing["low"].iloc[-20:].min()
+                        swing_high = df_15m_swing["high"].iloc[-20:].max()
+                        swing_price = swing_low if best.signal == "LONG" else swing_high
+                        liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
+                        if liq_entry:
+                            raw_entry = round(liq_entry["price"], 8)
+                            logger.info(f"[LiqFallback] {best.symbol} {best.signal}: entry={raw_entry:.6f} (no liq source)")
+                        else:
+                            skip_reason = "Không có liq data và liq engine fail"
                     else:
                         # Tìm cluster liq — thử min_usd 30k trước, fallback 10k
                         cluster = liq_source.get_best_entry_cluster(
@@ -3446,8 +3458,10 @@ def scan_engine(exchange, notifier):
 
                             if best.signal == "LONG":
                                 price_moving_toward = price_now < price_3ago
+                                near_cluster = cluster["dist_pct"] <= 2.0
                             else:
                                 price_moving_toward = price_now > price_3ago
+                                near_cluster = cluster["dist_pct"] <= 2.0
 
                             sweep_check = (
                                 df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
@@ -3455,7 +3469,7 @@ def scan_engine(exchange, notifier):
                                 df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
                             )
 
-                            if not price_moving_toward and not sweep_check:
+                            if not price_moving_toward and not sweep_check and not near_cluster:
                                 skip_reason = (f"Giá đang hồi ngược cluster "
                                                f"({'↗' if price_now > price_3ago else '↘'} "
                                                f"dist={cluster['dist_pct']:.1f}%)")
