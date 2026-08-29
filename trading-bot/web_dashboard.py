@@ -969,7 +969,7 @@ function renderDashboard(d) {
                         style="${eo ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
                 <button class="btn btn-sm ${!eo ? 'btn-red' : ''}" onclick="toggleEntryOffset(false)"
                         style="${!eo ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
-                <input id="entry-offset-pct" type="number" min="0.1" max="2.0" step="0.1" value="${pct}"
+                <input id="entry-offset-pct" type="number" min="0.1" max="5.0" step="0.1" value="${pct}"
                        style="width:44px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center">
                 <span style="font-size:11px;color:#484f58">%</span>
                 <button class="btn btn-sm" onclick="setEntryOffset()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#d29922;border:1px solid #3a2a00">Set</button>
