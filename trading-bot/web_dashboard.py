@@ -350,7 +350,7 @@ async function apiPost(url, body={}) {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(8000)  // 8s timeout
+            signal: AbortSignal.timeout(15000)  // 15s timeout
         });
         const d = await r.json();
         if (d.ok) toast(d.msg || 'OK'); else toast(d.msg || 'Error', false);
@@ -1524,6 +1524,12 @@ function renderDashboard(d) {
           </button>
           <span id="pp-save-msg" style="font-size:12px;color:#3fb950"></span>
         </div>
+
+        <!-- PP Monitor realtime -->
+        <div id="pp-monitor" style="margin-top:14px">
+          <div style="font-size:11px;color:#58a6ff;font-weight:600;margin-bottom:6px">📡 Monitor realtime</div>
+          <div id="pp-monitor-table" style="font-size:11px;color:#8b949e">Chưa có position nào kích hoạt PP</div>
+        </div>
       </div>
     </div>`;
 
@@ -2478,6 +2484,9 @@ function _setHtml(id, val) {
 function _patchDashboard(d) {
     // Clock — đã update riêng bởi updateClock()
 
+    // PP Monitor realtime
+    updatePPMonitor(d);
+
     // Bot status dot
     const running = d.running;
     document.getElementById('bot-status').innerHTML = running
@@ -2586,6 +2595,71 @@ async function loadPP() {
         set('pp-apply-scan',    s.apply_scan);
         set('pp-apply-pump',    s.apply_pump);
     } catch(e) {}
+}
+
+function updatePPMonitor(d) {
+    const el = document.getElementById('pp-monitor-table');
+    if (!el) return;
+    const ppState = d.pp_state || {};
+    const positions = d.open_positions || [];
+    const prices = d.prices || {};
+
+    if (!positions.length || !Object.keys(ppState).length) {
+        el.innerHTML = '<span style="color:#484f58">Chưa có position nào kích hoạt PP</span>';
+        return;
+    }
+
+    let rows = '';
+    positions.forEach(p => {
+        const ps = ppState[p.symbol];
+        if (!ps) return;
+        const mark = prices[p.symbol] || p.mark || 0;
+        const entry = p.entry || 0;
+        const isLong = p.side === 'LONG';
+        const profit = entry > 0 ? ((isLong ? (mark - entry) : (entry - mark)) / entry * 100) : 0;
+
+        const tier = ps.tier || 1;
+        const tierBadge = tier === 3
+            ? '<span style="color:#3fb950;font-weight:700">T3🛡</span>'
+            : tier === 2
+            ? '<span style="color:#d29922;font-weight:700">T2🛡</span>'
+            : '<span style="color:#484f58">T1</span>';
+
+        const sl = ps.current_sl || 0;
+        const peak = ps.peak || 0;
+        const trailSL = ps.trailing_sl || 0;
+        const profitColor = profit >= 0 ? '#3fb950' : '#f85149';
+
+        const fmt = (v) => v >= 1 ? '$'+v.toFixed(4) : (v > 0 ? '$'+v.toFixed(6) : '-');
+
+        rows += `<tr>
+            <td><b>${p.symbol.replace('USDT','')}</b></td>
+            <td>${p.side === 'LONG' ? '<span style="color:#3fb950">LONG</span>' : '<span style="color:#f85149">SHORT</span>'}</td>
+            <td style="color:${profitColor}"><b>${profit.toFixed(2)}%</b></td>
+            <td>${tierBadge}</td>
+            <td style="color:#f85149">${fmt(sl)}</td>
+            <td style="color:#58a6ff">${fmt(peak)}</td>
+            <td style="color:#d29922">${trailSL > 0 ? fmt(trailSL) : '-'}</td>
+        </tr>`;
+    });
+
+    if (!rows) {
+        el.innerHTML = '<span style="color:#484f58">Chưa có position nào kích hoạt PP</span>';
+        return;
+    }
+
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse">
+        <tr style="color:#484f58;font-size:10px">
+            <th style="text-align:left;padding:2px 6px">Coin</th>
+            <th style="padding:2px 6px">Side</th>
+            <th style="padding:2px 6px">Lợi</th>
+            <th style="padding:2px 6px">Tier</th>
+            <th style="padding:2px 6px">SL hiện tại</th>
+            <th style="padding:2px 6px">Peak</th>
+            <th style="padding:2px 6px">Trailing SL</th>
+        </tr>
+        ${rows}
+    </table>`;
 }
 
 async function savePP() {
