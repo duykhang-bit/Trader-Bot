@@ -3560,12 +3560,17 @@ def scan_engine(exchange, notifier):
                             logger.info(f"[Armed] LIMIT failed, armed backup: {best.symbol} {e}")
                     else:
                         # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
-                        armed[best.symbol] = {
-                            "signal": best.signal, "entry_price": entry_price,
-                            "raw_entry": raw_entry if raw_entry > 0 else entry_price,
-                            "sl": sl, "tp": tp, "rr": rr, "score": best.score,
-                            "side": side, "close_side": close_side, "ts": time.time(),
-                        }
+                        # Nếu đã có armed với entry_price khác → giữ nguyên, không overwrite
+                        existing = armed.get(best.symbol)
+                        if existing and abs(existing["entry_price"] - entry_price) > entry_price * 0.001:
+                            logger.info(f"[Armed] {best.symbol} đã có armed @ {existing['entry_price']:.6f} → giữ nguyên, không overwrite @ {entry_price:.6f}")
+                        else:
+                            armed[best.symbol] = {
+                                "signal": best.signal, "entry_price": entry_price,
+                                "raw_entry": raw_entry if raw_entry > 0 else entry_price,
+                                "sl": sl, "tp": tp, "rr": rr, "score": best.score,
+                                "side": side, "close_side": close_side, "ts": time.time(),
+                            }
                         order_type_used = "ARMED"
                         logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} (2 LIMIT đầy, WS backup)")
 
