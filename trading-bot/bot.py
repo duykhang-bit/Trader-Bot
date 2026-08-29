@@ -3421,6 +3421,8 @@ def scan_engine(exchange, notifier):
                         else:
                             raw_entry = round(swing_low if best.signal == "LONG" else swing_high, 8)
                             logger.info(f"[LiqEngine] {best.symbol}: no liq zone → swing fallback @ {raw_entry:.6f}")
+                            # Code cũ: skip nếu không có liq zone
+                            skip_reason = "Không tìm được liq entry zone"
 
                     # ── Apply Entry Offset (áp dụng cho TẤT CẢ entry) ──────────
                     if getattr(config, "ENTRY_OFFSET_ENABLED", False):
