@@ -1023,17 +1023,18 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             btc_block_short = btc_ctx.get("block_short", False) and not is_btc_eth
 
             # ═══ BƯỚC 4: 4H+1H bias ═══
+            # Dùng regime bias từ detect_regime (đã có slope normalize)
+            # thay vì tính lại để tránh nhầm trend khi slope yếu
+            regime_bias_4h = regime_info["bias"]  # LONG / SHORT / NEUTRAL
+
             close_4h = df_4h["close"]
             ema9_4h  = calculate_ema(close_4h, 9).iloc[-1]
             ema21_4h = calculate_ema(close_4h, 21).iloc[-1]
             ema50_4h = calculate_ema(close_4h, 50).iloc[-1]
             price_4h = close_4h.iloc[-1]
 
-            trend_4h = "NEUTRAL"
-            if ema9_4h > ema21_4h and price_4h > ema50_4h:
-                trend_4h = "LONG"
-            elif ema9_4h < ema21_4h and price_4h < ema50_4h:
-                trend_4h = "SHORT"
+            # trend_4h từ regime (có slope check) — chính xác hơn chỉ check EMA position
+            trend_4h = regime_bias_4h  # "LONG" / "SHORT" / "NEUTRAL"
 
             close_1h = df_1h["close"]
             ema9_1h  = calculate_ema(close_1h, 9).iloc[-1]
@@ -1052,7 +1053,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             elif trend_1h != "NEUTRAL":
                 bias = trend_1h; strength = "MEDIUM"
             else:
-                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
+                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h}(regime) 1h={trend_1h} → NEUTRAL")
                 continue
 
             # Block nếu BTC ngược chiều mạnh
