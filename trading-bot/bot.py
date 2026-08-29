@@ -3402,8 +3402,6 @@ def scan_engine(exchange, notifier):
                         raw_entry = round(mss_res.entry_price, 8)
                         logger.info(f"[MSS] {best.symbol} dùng MSS entry={raw_entry:.6f} "
                                     f"tier={mss_res.tier} conf={mss_res.confidence:.0f}%")
-                        # MSS entry đã tính sẵn zone — KHÔNG apply offset thêm
-                        entry_price = raw_entry
                     else:
                         # Fallback: Liquidity Engine
                         liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
@@ -3413,21 +3411,20 @@ def scan_engine(exchange, notifier):
                                         f"entry=${raw_entry:.6f} dist={liq_entry['dist_pct']:.1f}% "
                                         f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                         else:
-                            # Fallback swing 15m
                             raw_entry = round(swing_low if best.signal == "LONG" else swing_high, 8)
                             logger.info(f"[LiqEngine] {best.symbol}: no liq zone → swing fallback @ {raw_entry:.6f}")
 
-                        # ── Apply Entry Offset chỉ cho Liq Engine / swing fallback ──
-                        if getattr(config, "ENTRY_OFFSET_ENABLED", False):
-                            offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                            if best.signal == "LONG":
-                                entry_price = round(raw_entry * (1 - offset_pct), 8)
-                            else:
-                                entry_price = round(raw_entry * (1 + offset_pct), 8)
-                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
-                                        f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                    # ── Apply Entry Offset (áp dụng cho TẤT CẢ entry) ──────────
+                    if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                        if best.signal == "LONG":
+                            entry_price = round(raw_entry * (1 - offset_pct), 8)
                         else:
-                            entry_price = raw_entry
+                            entry_price = round(raw_entry * (1 + offset_pct), 8)
+                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
+                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                    else:
+                        entry_price = raw_entry
 
                 # ═══ BƯỚC 7: Tính SL / TP theo entry_price cuối + RR + No-Chase ═══
                 if not skip_reason:
