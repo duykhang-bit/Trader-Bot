@@ -4886,6 +4886,7 @@ def profit_protection_monitor(exchange, notifier):
     _pp_state: dict = {}
 
     time.sleep(20)  # đợi bot ổn định
+    logger.info("[PP] profit_protection_monitor started")
 
     while state["running"]:
         try:
@@ -4907,6 +4908,8 @@ def profit_protection_monitor(exchange, notifier):
                               if abs(float(p.get("positionAmt", 0))) > 0]
                 pump_syms  = set(state.get("pump_trade_symbols", set()))
                 prices_now = dict(state.get("prices", {}))
+
+            logger.debug(f"[PP] tick: {len(open_pos)} positions, enabled={getattr(config,'PROFIT_PROTECTION_ENABLED',True)}")
 
             # Cleanup state cho position đã đóng
             active_syms = {p["symbol"] for p in open_pos}
