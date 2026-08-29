@@ -4949,6 +4949,7 @@ def profit_protection_monitor(exchange, notifier):
                     profit_pct = (entry - mark) / entry * 100
 
                 now = time.time()
+                logger.debug(f"[PP] {sym} {side} profit={profit_pct:.2f}% mark={mark:.6f} entry={entry:.6f}")
 
                 # Khởi tạo state nếu chưa có
                 if sym not in _pp_state:
@@ -4974,6 +4975,7 @@ def profit_protection_monitor(exchange, notifier):
                         "peak_price":    mark,
                         "trailing_sl":   0.0,
                     }
+                    logger.info(f"[PP] {sym} initialized tier=1 sl={cur_sl:.6f}")
                     continue  # skip vòng này, xử lý vòng sau
 
                 ps = _pp_state[sym]
