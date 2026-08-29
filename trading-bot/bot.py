@@ -3079,17 +3079,8 @@ def scan_engine(exchange, notifier):
                                         continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                                 bal = exchange.get_total_equity()
-                                # Apply offset tại đây khi Promote — dùng raw_entry đã lưu
-                                raw_ep = a_info.get("raw_entry", a_info["entry_price"])
-                                if getattr(config, "ENTRY_OFFSET_ENABLED", False) and raw_ep > 0:
-                                    off_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                                    if a_info["signal"] == "LONG":
-                                        final_entry = round(raw_ep * (1 - off_pct), 8)
-                                    else:
-                                        final_entry = round(raw_ep * (1 + off_pct), 8)
-                                    logger.info(f"[Promote] {a_sym} apply offset: {raw_ep:.6f} → {final_entry:.6f} ({off_pct*100:.1f}%)")
-                                else:
-                                    final_entry = a_info["entry_price"]
+                                # Dùng entry_price đã có offset từ armed
+                                final_entry = a_info["entry_price"]
                                 qty = calc_qty(bal, final_entry, a_info["sl"], symbol=a_sym, exchange=exchange)
                                 if qty * final_entry < 5.0:
                                     qty = round(5.0 / final_entry + 0.001, 3)
@@ -3570,14 +3561,19 @@ def scan_engine(exchange, notifier):
                             logger.info(f"[Armed] LIMIT failed, armed backup: {best.symbol} {e}")
                     else:
                         # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
-                        armed[best.symbol] = {
-                            "signal": best.signal, "entry_price": entry_price,
-                            "raw_entry": raw_entry if raw_entry > 0 else entry_price,
-                            "sl": sl, "tp": tp, "rr": rr, "score": best.score,
-                            "side": side, "close_side": close_side, "ts": time.time(),
-                        }
-                        order_type_used = "ARMED"
-                        logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} (2 LIMIT đầy, WS backup)")
+                        # Chỉ lưu nếu chưa có armed cùng chiều — tránh overwrite offset
+                        if best.symbol not in armed or armed[best.symbol].get("signal") != best.signal:
+                            armed[best.symbol] = {
+                                "signal": best.signal, "entry_price": entry_price,
+                                "raw_entry": raw_entry if raw_entry > 0 else entry_price,
+                                "sl": sl, "tp": tp, "rr": rr, "score": best.score,
+                                "side": side, "close_side": close_side, "ts": time.time(),
+                            }
+                            order_type_used = "ARMED"
+                            logger.info(f"[Armed] {best.symbol} {best.signal} entry={entry_price:.6f} (2 LIMIT đầy, WS backup)")
+                        else:
+                            order_type_used = "ARMED"
+                            logger.debug(f"[Armed] {best.symbol} đã có armed @ {armed[best.symbol]['entry_price']:.6f} → giữ nguyên")
 
                 if skip_reason or order_type_used == "SKIP":
                     logger.info(f"[Sweep] SKIP {best.symbol} {best.signal}: {skip_reason}")
