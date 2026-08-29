@@ -3242,6 +3242,19 @@ def scan_engine(exchange, notifier):
                             if entry_p <= 0 or sl_p <= 0:
                                 continue
 
+                            # Enforce SL floor 1% — MSS SL đôi khi quá gần
+                            sl_min_pct = getattr(config, "SL_MIN_PCT", 0.01)
+                            if direction == "LONG":
+                                sl_floor = round(entry_p * (1 - sl_min_pct), 8)
+                                if sl_p > sl_floor:
+                                    logger.info(f"[MSS] {mss_sym} SL {sl_p:.6f} quá gần → enforce floor {sl_floor:.6f} ({sl_min_pct*100:.1f}%)")
+                                    sl_p = sl_floor
+                            else:
+                                sl_floor = round(entry_p * (1 + sl_min_pct), 8)
+                                if sl_p < sl_floor:
+                                    logger.info(f"[MSS] {mss_sym} SL {sl_p:.6f} quá gần → enforce floor {sl_floor:.6f} ({sl_min_pct*100:.1f}%)")
+                                    sl_p = sl_floor
+
                             # Tính TP từ structure
                             from scanner import calc_structure_sl_tp
                             sltp = calc_structure_sl_tp(df_15m, direction, entry_p, config)
