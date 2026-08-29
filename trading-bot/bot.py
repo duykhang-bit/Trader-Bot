@@ -3376,12 +3376,17 @@ def scan_engine(exchange, notifier):
 
                     cur_price = exchange.get_ticker_price(best.symbol)
 
-                    # Swing 15m
+                    # Swing 1H (lookback 50 nến = ~2 ngày) thay vì 15m
+                    # để tránh entry gần swing ngắn hạn trong downtrend dài hạn
+                    klines_1h_swing = exchange.get_klines(best.symbol, "1h", limit=50)
+                    df_1h_swing = _klines_to_df(klines_1h_swing)
+                    swing_low  = df_1h_swing["low"].iloc[-50:].min()
+                    swing_high = df_1h_swing["high"].iloc[-50:].max()
+                    swing_price = swing_low if best.signal == "LONG" else swing_high
+
+                    # Fetch 15m chỉ để tính SL/TP structure
                     klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
                     df_15m_entry = _klines_to_df(klines_15m_entry)
-                    swing_low  = df_15m_entry["low"].iloc[-20:].min()
-                    swing_high = df_15m_entry["high"].iloc[-20:].max()
-                    swing_price = swing_low if best.signal == "LONG" else swing_high
 
                     # ── Ưu tiên MSS entry_price nếu tier A hoặc B ──────────────
                     mss_res = getattr(best, "mss_result", None)
