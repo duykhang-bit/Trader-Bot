@@ -165,10 +165,10 @@ def logout():
     session.clear()
     return redirect("/login")
 
-# Cache pending orders — chỉ fetch Binance mỗi 10 giây thay vì mỗi 2s
+# Cache pending orders — chỉ fetch Binance mỗi 30 giây thay vì mỗi 10s
 _pending_orders_cache = []
 _pending_orders_last_fetch = 0
-_PENDING_ORDERS_TTL = 10  # giây
+_PENDING_ORDERS_TTL = 30  # giây — tăng từ 10→30 giảm Binance API calls
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -2822,58 +2822,63 @@ def api_state():
 
     # Entry targets — vùng liq THẬT từ WS real-time (giống Coinglass)
     # Chỉ hiện khi liq tracker đã có đủ data thật, không fallback giá fake
-    entry_targets = {}
-    liq_tracker = _state.get("liq_tracker") if _state else None
-    for sym in watchlist:
-        p = prices.get(sym, 0)
-        if p <= 0:
-            continue
-        short_trigger = None
-        long_trigger  = None
-        has_real_data = False
+    # Entry targets — cache 10s để không tính lại mỗi request 3s
+    _et_cache = getattr(api_state, "_entry_targets_cache", {})
+    _et_ts    = getattr(api_state, "_entry_targets_ts", 0)
+    if time.time() - _et_ts > 10:
+        entry_targets = {}
+        liq_tracker = _state.get("liq_tracker") if _state else None
+        for sym in watchlist:
+            p = prices.get(sym, 0)
+            if p <= 0:
+                continue
+            short_trigger = None
+            long_trigger  = None
+            has_real_data = False
 
-        if liq_tracker and liq_tracker.total_liq_usd(sym) > 0:
-            try:
-                heatmap = liq_tracker.get_liq_heatmap(sym) or {}
-                if heatmap:
-                    # SHORT trigger: vùng liq LONG xa nhất phía trên (real data)
-                    above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 50_000]
-                    below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 50_000]
-                    if above:
-                        short_trigger = max(above, key=lambda x: x[0])[0]
-                    if below:
-                        long_trigger = min(below, key=lambda x: x[0])[0]
-                    has_real_data = True
-            except Exception:
-                pass
-
-        # Fallback: dùng liq_api_cache (REST API — có data ngay)
-        if not has_real_data:
-            liq_api = _state.get("liq_api_cache") if _state else None
-            if liq_api and liq_api.is_ready(sym):
+            if liq_tracker and liq_tracker.total_liq_usd(sym) > 0:
                 try:
-                    heatmap = liq_api.get_heatmap(sym) or {}
+                    heatmap = liq_tracker.get_liq_heatmap(sym) or {}
                     if heatmap:
-                        above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 10_000]
-                        below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 10_000]
+                        above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 50_000]
+                        below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 50_000]
                         if above:
-                            short_trigger = max(above, key=lambda x: x[1])[0]
+                            short_trigger = max(above, key=lambda x: x[0])[0]
                         if below:
-                            long_trigger = max(below, key=lambda x: x[1])[0]
+                            long_trigger = min(below, key=lambda x: x[0])[0]
                         has_real_data = True
                 except Exception:
                     pass
 
-        if not has_real_data:
-            # Chưa có data thật → dùng ±1% tạm thời, đánh dấu là estimate
-            short_trigger = round(p * 1.01, 2 if p >= 100 else 6)
-            long_trigger  = round(p * 0.99, 2 if p >= 100 else 6)
+            if not has_real_data:
+                liq_api = _state.get("liq_api_cache") if _state else None
+                if liq_api and liq_api.is_ready(sym):
+                    try:
+                        heatmap = liq_api.get_heatmap(sym) or {}
+                        if heatmap:
+                            above = [(pr, usd) for pr, usd in heatmap.items() if pr > p and usd >= 10_000]
+                            below = [(pr, usd) for pr, usd in heatmap.items() if pr < p and usd >= 10_000]
+                            if above:
+                                short_trigger = max(above, key=lambda x: x[1])[0]
+                            if below:
+                                long_trigger = max(below, key=lambda x: x[1])[0]
+                            has_real_data = True
+                    except Exception:
+                        pass
 
-        entry_targets[sym] = {
-            "short_entry": float(short_trigger) if short_trigger else 0,
-            "long_entry":  float(long_trigger)  if long_trigger  else 0,
-            "has_real_data": has_real_data
-        }
+            if not has_real_data:
+                short_trigger = round(p * 1.01, 2 if p >= 100 else 6)
+                long_trigger  = round(p * 0.99, 2 if p >= 100 else 6)
+
+            entry_targets[sym] = {
+                "short_entry": float(short_trigger) if short_trigger else 0,
+                "long_entry":  float(long_trigger)  if long_trigger  else 0,
+                "has_real_data": has_real_data,
+            }
+        api_state._entry_targets_cache = entry_targets
+        api_state._entry_targets_ts    = time.time()
+    else:
+        entry_targets = _et_cache
 
     resp = jsonify({
         "running": s.get("running", False),
