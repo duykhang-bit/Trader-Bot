@@ -3913,7 +3913,7 @@ def api_entry_offset():
         if "enabled" in data:
             _config.ENTRY_OFFSET_ENABLED = bool(data["enabled"])
         if "pct" in data:
-            _config.ENTRY_OFFSET_PCT = max(0.001, min(0.02, float(data["pct"])))
+            _config.ENTRY_OFFSET_PCT = max(0.001, min(0.05, float(data["pct"])))
         enabled = getattr(_config, "ENTRY_OFFSET_ENABLED", False)
         pct     = getattr(_config, "ENTRY_OFFSET_PCT", 0.003)
         status  = f"bật {pct*100:.1f}%" if enabled else "tắt"
