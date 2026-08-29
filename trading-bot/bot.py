@@ -4887,6 +4887,9 @@ def profit_protection_monitor(exchange, notifier):
 
     time.sleep(20)  # đợi bot ổn định
     logger.info("[PP] profit_protection_monitor started")
+    # Expose state cho web dashboard
+    with lock:
+        state["_pp_state"] = _pp_state
 
     while state["running"]:
         try:

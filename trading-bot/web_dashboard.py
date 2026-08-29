@@ -2512,7 +2512,13 @@ function _patchDashboard(d) {
         let rows = '';
         if (d.open_positions && d.open_positions.length > 0) {
             d.open_positions.forEach(p => {
-                rows += `<tr><td><b>${p.symbol.replace('USDT','')}</b></td><td>${sideHtml(p.side)}</td>
+                const ppInfo = d.pp_state && d.pp_state[p.symbol];
+                const tierBadge = ppInfo ? (
+                    ppInfo.tier === 3 ? '<span style="color:#3fb950;font-size:10px">🛡T3</span>' :
+                    ppInfo.tier === 2 ? '<span style="color:#d29922;font-size:10px">🛡T2</span>' :
+                    '<span style="color:#484f58;font-size:10px">T1</span>'
+                ) : '';
+                rows += `<tr><td><b>${p.symbol.replace('USDT','')}</b> ${tierBadge}</td><td>${sideHtml(p.side)}</td>
                     <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
                     <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
                     <td class="${pnlColor(p.pct)}">${fmt(p.pct,1)}%</td><td>${p.lev}x</td>
@@ -2883,6 +2889,9 @@ def api_state():
         "prices": prices,
         "liq_data": liq_data, "trades_history": trades_fmt,
         "watchlist": watchlist,
+        "pp_state": {k: {"tier": v.get("tier",1), "current_sl": v.get("current_sl",0),
+                         "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0)}
+                     for k, v in s.get("_pp_state", {}).items()},
         "settings": {
             "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
             "leverage": getattr(_config, "LEVERAGE", 10),
