@@ -3079,11 +3079,21 @@ def scan_engine(exchange, notifier):
                                         continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                                 bal = exchange.get_total_equity()
-                                qty = calc_qty(bal, a_info["entry_price"], a_info["sl"], symbol=a_sym, exchange=exchange)
-                                if qty * a_info["entry_price"] < 5.0:
-                                    qty = round(5.0 / a_info["entry_price"] + 0.001, 3)
-                                exchange.place_limit_order(a_sym, a_info["side"], qty, a_info["entry_price"])
-                                # Lưu pending_smart_orders
+                                # Apply offset tại đây khi Promote — dùng raw_entry đã lưu
+                                raw_ep = a_info.get("raw_entry", a_info["entry_price"])
+                                if getattr(config, "ENTRY_OFFSET_ENABLED", False) and raw_ep > 0:
+                                    off_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                                    if a_info["signal"] == "LONG":
+                                        final_entry = round(raw_ep * (1 - off_pct), 8)
+                                    else:
+                                        final_entry = round(raw_ep * (1 + off_pct), 8)
+                                    logger.info(f"[Promote] {a_sym} apply offset: {raw_ep:.6f} → {final_entry:.6f} ({off_pct*100:.1f}%)")
+                                else:
+                                    final_entry = a_info["entry_price"]
+                                qty = calc_qty(bal, final_entry, a_info["sl"], symbol=a_sym, exchange=exchange)
+                                if qty * final_entry < 5.0:
+                                    qty = round(5.0 / final_entry + 0.001, 3)
+                                exchange.place_limit_order(a_sym, a_info["side"], qty, final_entry)
                                 try:
                                     ords = exchange._get("/fapi/v1/openOrders", {"symbol": a_sym}, signed=True)
                                     for o in ords:
@@ -3101,7 +3111,7 @@ def scan_engine(exchange, notifier):
                                 with lock:
                                     state.get("armed_entries", {}).pop(a_sym, None)
                                 limit_count += 1
-                                logger.info(f"[Promote] Armed→LIMIT: {a_sym} {a_info['signal']} @ {a_info['entry_price']:.6f}")
+                                logger.info(f"[Promote] Armed→LIMIT: {a_sym} {a_info['signal']} @ {final_entry:.6f}")
                             except Exception as _e:
                                 logger.debug(f"[Promote] {a_sym} failed: {_e}")
                 except Exception:
@@ -3322,13 +3332,6 @@ def scan_engine(exchange, notifier):
                 # Guard double entry: nếu đang xử lý symbol này → skip
                 if best.symbol in _executing_symbols:
                     logger.info(f"Skip {best.symbol}: đang trong quá trình đặt lệnh")
-                    _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
-                    continue
-                # Nếu đã có armed với entry_price có offset → không tính lại
-                with lock:
-                    existing_armed = state.get("armed_entries", {}).get(best.symbol)
-                if existing_armed and existing_armed.get("signal") == best.signal:
-                    logger.debug(f"[Armed] {best.symbol} đã có armed @ {existing_armed['entry_price']:.6f} → skip recalc")
                     _scan_monitor.wait_for_signal(timeout=config.LOOP_INTERVAL_SECONDS)
                     continue
                 _executing_symbols.add(best.symbol)
