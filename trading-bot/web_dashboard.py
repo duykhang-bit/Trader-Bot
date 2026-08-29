@@ -457,7 +457,7 @@ async function toggleEntryOffset(enabled) {
 }
 async function setEntryOffset() {
     const pct = parseFloat(document.getElementById('entry-offset-pct')?.value || 0.3);
-    if (isNaN(pct) || pct < 0.1 || pct > 2.0) { toast('Offset phải 0.1-2.0%', false); return; }
+    if (isNaN(pct) || pct < 0.1 || pct > 5.0) { toast('Offset phải 0.1-5.0%', false); return; }
     const r = await apiPost('/api/entry_offset', {pct: pct / 100});
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
