@@ -2887,7 +2887,9 @@ def api_state():
         "ai_last_run": s.get("ai_last_run", ""),
         "open_positions": open_fmt, "pending_orders": pending_orders,
         "prices": prices,
-        "liq_data": liq_data, "trades_history": trades_fmt,
+        # Giảm liq_data: chỉ trả về top 10 coins có volume lớn nhất
+        "liq_data": dict(sorted(liq_data.items(), key=lambda x: x[1].get("total_vol", 0), reverse=True)[:10]) if liq_data else {},
+        "trades_history": trades_fmt,
         "watchlist": watchlist,
         "pp_state": {k: {"tier": v.get("tier",1), "current_sl": v.get("current_sl",0),
                          "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0)}
