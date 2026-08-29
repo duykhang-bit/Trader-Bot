@@ -1023,18 +1023,17 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             btc_block_short = btc_ctx.get("block_short", False) and not is_btc_eth
 
             # ═══ BƯỚC 4: 4H+1H bias ═══
-            # Dùng regime bias từ detect_regime (đã có slope normalize)
-            # thay vì tính lại để tránh nhầm trend khi slope yếu
-            regime_bias_4h = regime_info["bias"]  # LONG / SHORT / NEUTRAL
-
             close_4h = df_4h["close"]
             ema9_4h  = calculate_ema(close_4h, 9).iloc[-1]
             ema21_4h = calculate_ema(close_4h, 21).iloc[-1]
             ema50_4h = calculate_ema(close_4h, 50).iloc[-1]
             price_4h = close_4h.iloc[-1]
 
-            # trend_4h từ regime (có slope check) — chính xác hơn chỉ check EMA position
-            trend_4h = regime_bias_4h  # "LONG" / "SHORT" / "NEUTRAL"
+            trend_4h = "NEUTRAL"
+            if ema9_4h > ema21_4h and price_4h > ema50_4h:
+                trend_4h = "LONG"
+            elif ema9_4h < ema21_4h and price_4h < ema50_4h:
+                trend_4h = "SHORT"
 
             close_1h = df_1h["close"]
             ema9_1h  = calculate_ema(close_1h, 9).iloc[-1]
@@ -1053,7 +1052,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             elif trend_1h != "NEUTRAL":
                 bias = trend_1h; strength = "MEDIUM"
             else:
-                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h}(regime) 1h={trend_1h} → NEUTRAL")
+                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
                 continue
 
             # Block nếu BTC ngược chiều mạnh
@@ -1071,14 +1070,8 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             scored = score_coin(symbol, df_15m, config)
 
             if not scored or scored.signal != bias:
-                # PULLBACK chỉ cho phép khi regime TREND mạnh (không phải MEDIUM từ 1H)
-                # Tránh PULLBACK LONG trong coin đang downtrend 4H
-                allow_pullback = (
-                    volatile := is_volatile_coin(df_1h, threshold_pct=4.0),
-                    strength == "STRONG"  # chỉ cho PULLBACK khi 4H + 1H cùng chiều
-                )[1] if is_volatile_coin(df_1h, threshold_pct=4.0) else False
-
-                if allow_pullback:
+                volatile = is_volatile_coin(df_1h, threshold_pct=4.0)
+                if volatile:
                     pb_signal = get_pullback_signal(df_15m, config, bias)
                     if pb_signal == bias:
                         rsi_val = calculate_rsi(df_15m["close"], 14).iloc[-1]
