@@ -3478,28 +3478,38 @@ def _api_pump_state_inner():
         prices  = dict(_state.get("prices", {}))
         pump_alerts = dict(_state.get("pump_alerts", {}))  # {symbol: {...}}
 
-    # Lấy % thay đổi 24h cho tất cả pump coins (1 API call, cache 60s)
+    # Lấy % thay đổi 24h cho tất cả pump coins (1 API call, cache 120s)
+    # Chạy trong background thread — không block request handler
     _now = time.time()
     cache = getattr(_api_pump_state_inner, "_ticker_cache", {})
     cache_ts = getattr(_api_pump_state_inner, "_ticker_ts", 0)
-    if _now - cache_ts > 60:
-        try:
-            import requests as _req
-            base = getattr(_config, "LIVE_BASE_URL", "https://fapi.binance.com")
-            resp = _req.get(f"{base}/fapi/v1/ticker/24hr", timeout=5)
-            if resp.ok:
-                for t in resp.json():
-                    s = t.get("symbol", "")
-                    if s in watch:
-                        cache[s] = {
-                            "change_pct": float(t.get("priceChangePercent", 0)),
-                            "low":        float(t.get("lowPrice", 0)),
-                            "high":       float(t.get("highPrice", 0)),
-                        }
-                _api_pump_state_inner._ticker_cache = cache
-                _api_pump_state_inner._ticker_ts    = _now
-        except Exception:
-            pass
+    if _now - cache_ts > 120 and not getattr(_api_pump_state_inner, "_ticker_fetching", False):
+        _api_pump_state_inner._ticker_fetching = True
+        def _fetch_ticker():
+            try:
+                import requests as _req
+                base = getattr(_config, "LIVE_BASE_URL", "https://fapi.binance.com")
+                resp = _req.get(f"{base}/fapi/v1/ticker/24hr", timeout=5)
+                if resp.ok:
+                    new_cache = dict(getattr(_api_pump_state_inner, "_ticker_cache", {}))
+                    _w = set(getattr(_api_pump_state_inner, "_last_watch", []))
+                    for t in resp.json():
+                        s = t.get("symbol", "")
+                        if not _w or s in _w:
+                            new_cache[s] = {
+                                "change_pct": float(t.get("priceChangePercent", 0)),
+                                "low":        float(t.get("lowPrice", 0)),
+                                "high":       float(t.get("highPrice", 0)),
+                            }
+                    _api_pump_state_inner._ticker_cache = new_cache
+                    _api_pump_state_inner._ticker_ts    = time.time()
+            except Exception:
+                pass
+            finally:
+                _api_pump_state_inner._ticker_fetching = False
+        import threading as _th
+        _th.Thread(target=_fetch_ticker, daemon=True).start()
+    _api_pump_state_inner._last_watch = watch
     _api_pump_state_inner._ticker_cache = cache
     _api_pump_state_inner._ticker_ts    = cache_ts if _now - cache_ts <= 60 else _now
 
