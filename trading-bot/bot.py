@@ -3384,6 +3384,7 @@ def scan_engine(exchange, notifier):
                     from liquidity_engine import get_best_entry
 
                     cur_price = exchange.get_ticker_price(best.symbol)
+                    raw_entry = 0.0  # khởi tạo rõ ràng tránh dùng dir() check
 
                     # Swing 15m (20 nến cuối)
                     klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
@@ -3551,7 +3552,7 @@ def scan_engine(exchange, notifier):
                             # LIMIT fail → lưu armed backup
                             armed[best.symbol] = {
                                 "signal": best.signal, "entry_price": entry_price,
-                                "raw_entry": raw_entry if 'raw_entry' in dir() else entry_price,
+                                "raw_entry": raw_entry if raw_entry > 0 else entry_price,
                                 "sl": sl, "tp": tp, "rr": rr, "score": best.score,
                                 "side": side, "close_side": close_side, "ts": time.time(),
                             }
@@ -3561,7 +3562,7 @@ def scan_engine(exchange, notifier):
                         # Đã có 2 LIMIT → lưu armed (WS trigger khi giá tới)
                         armed[best.symbol] = {
                             "signal": best.signal, "entry_price": entry_price,
-                            "raw_entry": raw_entry if 'raw_entry' in dir() else entry_price,
+                            "raw_entry": raw_entry if raw_entry > 0 else entry_price,
                             "sl": sl, "tp": tp, "rr": rr, "score": best.score,
                             "side": side, "close_side": close_side, "ts": time.time(),
                         }
