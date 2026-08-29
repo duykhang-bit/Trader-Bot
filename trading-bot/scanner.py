@@ -1071,8 +1071,14 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             scored = score_coin(symbol, df_15m, config)
 
             if not scored or scored.signal != bias:
-                volatile = is_volatile_coin(df_1h, threshold_pct=4.0)
-                if volatile:
+                # PULLBACK chỉ cho phép khi regime TREND mạnh (không phải MEDIUM từ 1H)
+                # Tránh PULLBACK LONG trong coin đang downtrend 4H
+                allow_pullback = (
+                    volatile := is_volatile_coin(df_1h, threshold_pct=4.0),
+                    strength == "STRONG"  # chỉ cho PULLBACK khi 4H + 1H cùng chiều
+                )[1] if is_volatile_coin(df_1h, threshold_pct=4.0) else False
+
+                if allow_pullback:
                     pb_signal = get_pullback_signal(df_15m, config, bias)
                     if pb_signal == bias:
                         rsi_val = calculate_rsi(df_15m["close"], 14).iloc[-1]
