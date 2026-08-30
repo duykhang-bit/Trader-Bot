@@ -3164,12 +3164,15 @@ def api_toggle():
     """Pause/Resume bot trading."""
     with _lock:
         current = _state.get("running", True)
+        is_paused = _state.get("paused", False)
 
-    if not current:
+    if not current or is_paused:
         # Đang paused → gọi restart callback (đăng ký từ bot.py)
         restart_fn = _state.get("_restart_fn")
         if restart_fn:
             try:
+                with _lock:
+                    _state["paused"] = False
                 restart_fn()
                 return jsonify({"ok": True, "msg": "Bot restarted ✅", "running": True})
             except Exception as e:
