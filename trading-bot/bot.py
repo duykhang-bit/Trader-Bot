@@ -5953,6 +5953,14 @@ if __name__ == "__main__":
     state["_exchange"] = exchange
     state["_notifier"] = notifier
     state["grids"]     = {}
+    
+    # ═══════════════════════════════════════════════════════════════
+    # STARTUP PAUSE: Bot tự động PAUSE khi deploy, phải bật manual
+    # ═══════════════════════════════════════════════════════════════
+    with lock:
+        state["paused"] = True
+    logger.info("🛑 Bot started in PAUSED mode - enable from web dashboard to resume trading")
+    print("🛑 Bot PAUSED on startup - enable from web dashboard", flush=True)
 
     # ═══════════════════════════════════════════════════════════════
     # STARTUP CLEANUP: Cancel old LIMIT orders từ session trước
