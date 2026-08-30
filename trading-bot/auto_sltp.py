@@ -366,7 +366,7 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
 
             # Log raw để debug lần đầu
             if algo_list:
-                logger.info(f"[AutoSLTP] algo orders raw sample: {algo_list[0]}")
+                logger.debug(f"[AutoSLTP] algo orders raw sample: {algo_list[0]}")
 
             for o in algo_list:
                 sym   = o.get("symbol", "")
@@ -396,20 +396,6 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
             amt   = float(p["positionAmt"])
             entry = float(p["entryPrice"])
             side  = "LONG" if amt > 0 else "SHORT"
-
-            # Check orders riêng từng symbol để không bỏ sót STOP_MARKET
-            try:
-                sym_orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
-                for o in sym_orders:
-                    if not o.get("reduceOnly", False):
-                        continue
-                    otype = o.get("type", "")
-                    if otype in ("STOP_MARKET", "STOP", "STOP_LOSS_LIMIT"):
-                        regular_sl_syms.add(sym)
-                    if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"):
-                        regular_tp_syms.add(sym)
-            except Exception:
-                pass
 
             has_sl = sym in regular_sl_syms or sym in algo_sl_syms
             has_tp = sym in regular_tp_syms or sym in algo_tp_syms
