@@ -3518,14 +3518,25 @@ def scan_engine(exchange, notifier):
 
                     liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
                     if liq_entry:
-                        entry_price = round(liq_entry["price"], 8)
+                        raw_entry = round(liq_entry["price"], 8)
                         logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
-                                    f"entry={entry_price:.6f} dist={liq_entry['dist_pct']:.1f}% "
+                                    f"entry={raw_entry:.6f} dist={liq_entry['dist_pct']:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                     else:
-                        # Fallback: dùng current price
-                        entry_price = cur_price
-                        logger.info(f"[LiqFallback] {best.symbol}: using cur_price={entry_price:.6f}")
+                        raw_entry = cur_price
+                        logger.info(f"[LiqFallback] {best.symbol}: using cur_price={raw_entry:.6f}")
+
+                    # Apply Entry Offset
+                    if getattr(config, "ENTRY_OFFSET_ENABLED", False) and raw_entry > 0:
+                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.015)
+                        if best.signal == "LONG":
+                            entry_price = round(raw_entry * (1 - offset_pct), 8)
+                        else:
+                            entry_price = round(raw_entry * (1 + offset_pct), 8)
+                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
+                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                    else:
+                        entry_price = raw_entry
 
                 # ═══ BƯỚC 7: Tính SL / TP + RR ═══
                 if not skip_reason:
