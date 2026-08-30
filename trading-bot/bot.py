@@ -5953,14 +5953,6 @@ if __name__ == "__main__":
     state["_exchange"] = exchange
     state["_notifier"] = notifier
     state["grids"]     = {}
-    
-    # ═══════════════════════════════════════════════════════════════
-    # STARTUP PAUSE: Bot tự động PAUSE khi deploy, phải bật manual
-    # ═══════════════════════════════════════════════════════════════
-    with lock:
-        state["paused"] = True
-    logger.info("🛑 Bot started in PAUSED mode - enable from web dashboard to resume trading")
-    print("🛑 Bot PAUSED on startup - enable from web dashboard", flush=True)
 
     # ═══════════════════════════════════════════════════════════════
     # STARTUP CLEANUP: Cancel old LIMIT orders từ session trước
@@ -6143,6 +6135,17 @@ if __name__ == "__main__":
         print(f"🌐 Web Dashboard: http://localhost:{WEB_PORT}")
     except Exception as e:
         logger.warning(f"Web dashboard disabled: {e}")
+
+    # ═══════════════════════════════════════════════════════════════
+    # STARTUP PAUSE: Set PAUSE sau khi web dashboard start
+    # Tránh web dashboard override paused state
+    # ═══════════════════════════════════════════════════════════════
+    import time as _time_pause
+    _time_pause.sleep(2)  # Đợi web dashboard init xong
+    with lock:
+        state["paused"] = True
+    logger.info("🛑 Bot started in PAUSED mode - enable from web dashboard to resume trading")
+    print("🛑 Bot PAUSED on startup - enable from web dashboard", flush=True)
 
     def _start_worker_threads():
         """Khởi động lại tất cả worker threads sau khi resume."""
