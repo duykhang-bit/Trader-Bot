@@ -364,6 +364,10 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
             else:
                 algo_list = []
 
+            # Log raw để debug lần đầu
+            if algo_list:
+                logger.info(f"[AutoSLTP] algo orders raw sample: {algo_list[0]}")
+
             for o in algo_list:
                 sym   = o.get("symbol", "")
                 # Algo conditional orders: type="CONDITIONAL", subType hoặc check triggerPrice
