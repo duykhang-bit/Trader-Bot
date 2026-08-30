@@ -366,12 +366,21 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
 
             for o in algo_list:
                 sym   = o.get("symbol", "")
-                # Algo orders dùng "orderType" thay vì "type"
-                otype = o.get("orderType", o.get("type", ""))
-                if otype in ("STOP_MARKET", "STOP"):
-                    algo_sl_syms.add(sym)
-                if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
-                    algo_tp_syms.add(sym)
+                # Algo conditional orders: type="CONDITIONAL", subType hoặc check triggerPrice
+                # Binance algoOrder trả về: {"type": "STOP_MARKET"/"TAKE_PROFIT_MARKET", "symbol": ...}
+                otype = o.get("type", o.get("orderType", ""))
+                # Nếu có triggerPrice → đây là SL hoặc TP
+                has_trigger = o.get("triggerPrice", 0) or o.get("stopPrice", 0)
+                if has_trigger:
+                    # Phân biệt SL vs TP dựa trên type
+                    if otype in ("STOP_MARKET", "STOP") or "STOP" in otype.upper():
+                        algo_sl_syms.add(sym)
+                    elif otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") or "PROFIT" in otype.upper():
+                        algo_tp_syms.add(sym)
+                    else:
+                        # Không rõ loại → tính là có cả SL và TP để không đặt lại
+                        algo_sl_syms.add(sym)
+                        algo_tp_syms.add(sym)
 
         except Exception as e:
             logger.debug(f"get_positions_without_sltp: algo orders error: {e}")
