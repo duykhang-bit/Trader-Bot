@@ -3509,186 +3509,53 @@ def scan_engine(exchange, notifier):
                     except Exception:
                         pass
 
-                # ═══ BƯỚC 6: Liq Cluster Entry (logic b3a3788) ═══
+                # ═══ BƯỚC 6: Liquidity Engine — xác định vùng entry ═══
                 if not skip_reason:
                     cur_price = exchange.get_ticker_price(best.symbol)
-                    raw_entry = 0.0
 
-                    # Fetch 15m để check momentum + dùng cho BƯỚC 7
+                    # Fetch 15m để tính SL/TP
                     klines_15m_entry = exchange.get_klines(best.symbol, "15m", limit=20)
                     df_15m_entry = _klines_to_df(klines_15m_entry)
 
-                    # Ưu tiên liq source: WS tracker → REST API cache
-                    liq_source = None
-                    if liq_inst and liq_inst.is_connected() and liq_inst.total_liq_usd(best.symbol) > 0:
-                        liq_source = liq_inst
+                    from liquidity_engine import get_best_entry
+                    swing_low  = df_15m_entry["low"].iloc[-20:].min()
+                    swing_high = df_15m_entry["high"].iloc[-20:].max()
+                    swing_price = swing_low if best.signal == "LONG" else swing_high
+
+                    liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
+                    if liq_entry:
+                        entry_price = round(liq_entry["price"], 8)
+                        logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
+                                    f"entry={entry_price:.6f} dist={liq_entry['dist_pct']:.1f}% "
+                                    f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                     else:
-                        liq_api = state.get("liq_api_cache")
-                        if liq_api and liq_api.is_ready(best.symbol):
-                            liq_source = liq_api
+                        # Fallback: dùng current price
+                        entry_price = cur_price
+                        logger.info(f"[LiqFallback] {best.symbol}: using cur_price={entry_price:.6f}")
 
-                    if not liq_source:
-                        # Fallback: dùng get_best_entry cũ (swing 15m + orderbook)
-                        from liquidity_engine import get_best_entry
-                        klines_15m_swing = exchange.get_klines(best.symbol, "15m", limit=20)
-                        df_15m_swing = _klines_to_df(klines_15m_swing)
-                        swing_low  = df_15m_swing["low"].iloc[-20:].min()
-                        swing_high = df_15m_swing["high"].iloc[-20:].max()
-                        swing_price = swing_low if best.signal == "LONG" else swing_high
-                        liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
-                        if liq_entry:
-                            raw_entry = round(liq_entry["price"], 8)
-                            logger.info(f"[LiqFallback] {best.symbol} {best.signal}: entry={raw_entry:.6f} (no liq source)")
-                        else:
-                            skip_reason = "Không có liq data và liq engine fail"
-                    else:
-                        # Tìm cluster liq — thử min_usd 30k trước, fallback 10k
-                        cluster = liq_source.get_best_entry_cluster(
-                            symbol=best.symbol, current_price=cur_price,
-                            direction=best.signal, min_usd=30_000, cluster_gap_pct=0.008,
-                        )
-                        if not cluster:
-                            cluster = liq_source.get_best_entry_cluster(
-                                symbol=best.symbol, current_price=cur_price,
-                                direction=best.signal, min_usd=10_000, cluster_gap_pct=0.012,
-                            )
-
-                        if not cluster:
-                            # Không có cluster → fallback về current price thay vì skip
-                            raw_entry = cur_price
-                            logger.info(f"[LiqFallback] {best.symbol}: no cluster found, using cur_price={cur_price:.6f}")
-                        elif cluster["dist_pct"] > 10.0:
-                            skip_reason = f"Cluster quá xa {cluster['dist_pct']:.1f}% > 10%"
-                        else:
-                            # Check 15m momentum — giá đang tiến về cluster không
-                            klines_check = exchange.get_klines(best.symbol, "15m", limit=5)
-                            df_check = _klines_to_df(klines_check)
-                            price_3ago = df_check["close"].iloc[-4]
-                            price_now  = df_check["close"].iloc[-1]
-
-                            if best.signal == "LONG":
-                                price_moving_toward = price_now < price_3ago
-                                near_cluster = cluster["dist_pct"] <= 2.0
-                            else:
-                                price_moving_toward = price_now > price_3ago
-                                near_cluster = cluster["dist_pct"] <= 2.0
-
-                            sweep_check = (
-                                df_check["low"].iloc[-1]  <= cluster["cluster_low"]  * 1.003
-                                if best.signal == "LONG" else
-                                df_check["high"].iloc[-1] >= cluster["cluster_high"] * 0.997
-                            )
-
-                            if not price_moving_toward and not sweep_check and not near_cluster:
-                                skip_reason = (f"Giá đang hồi ngược cluster "
-                                               f"({'↗' if price_now > price_3ago else '↘'} "
-                                               f"dist={cluster['dist_pct']:.1f}%)")
-                            else:
-                                raw_entry = cluster["entry"]
-                                # Validate entry đúng phía
-                                if best.signal == "LONG" and raw_entry >= cur_price:
-                                    skip_reason = f"Entry LONG {raw_entry:.6f} >= giá {cur_price:.6f}"
-                                elif best.signal == "SHORT" and raw_entry <= cur_price:
-                                    skip_reason = f"Entry SHORT {raw_entry:.6f} <= giá {cur_price:.6f}"
-                                else:
-                                    mode = "SWEEP" if sweep_check else "TOWARD"
-                                    logger.info(f"[LiqCluster] {best.symbol} {best.signal} {mode}: "
-                                                f"entry={raw_entry:.6f} dist={cluster['dist_pct']:.1f}% "
-                                                f"cluster_usd=${cluster.get('total_usd',0)/1e6:.1f}M")
-                
-                # Fallback: nếu không có raw_entry từ liq logic → dùng current price
-                if not skip_reason and raw_entry == 0.0:
-                    raw_entry = cur_price
-                    logger.info(f"[EntryFallback] {best.symbol}: using current price {raw_entry:.6f}")
-
-                # Apply Entry Offset — LUÔN LUÔN apply nếu có raw_entry
-                if not skip_reason and raw_entry > 0:
-                    if getattr(config, "ENTRY_OFFSET_ENABLED", False):
-                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                        if best.signal == "LONG":
-                            entry_price = round(raw_entry * (1 - offset_pct), 8)
-                        else:
-                            entry_price = round(raw_entry * (1 + offset_pct), 8)
-                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
-                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
-                    else:
-                        entry_price = raw_entry
-
-                # ═══ BƯỚC 7: Tính SL / TP theo entry_price cuối + RR + No-Chase ═══
+                # ═══ BƯỚC 7: Tính SL / TP + RR ═══
                 if not skip_reason:
-                    from scanner import calc_structure_sl_tp, check_no_chase
-
-                    # Tính SL/TP từ structure dựa trên entry_price đã apply offset
-                    mss_res = getattr(best, "mss_result", None)
-                    if (mss_res is not None
-                            and mss_res.tier in ("A", "B")
-                            and mss_res.sl_price > 0):
-                        # MSS có sl_price riêng (dưới/trên sweep point)
-                        # Nhưng vẫn cần validate sl ở đúng phía entry sau offset
-                        sl_raw = mss_res.sl_price
-                        if best.signal == "LONG" and sl_raw < entry_price:
-                            sl = sl_raw
-                        elif best.signal == "SHORT" and sl_raw > entry_price:
-                            sl = sl_raw
-                        else:
-                            # MSS SL sai phía → fallback structure
-                            sltp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                            sl   = sltp["sl"]
-                        # TP từ structure tính theo entry_price mới
-                        sltp_tp = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                        tp      = sltp_tp["tp"]
-                        risk    = abs(entry_price - sl)
-                        reward  = abs(tp - entry_price)
-                        rr      = reward / risk if risk > 0 else 0.0
-                        sl_pct  = risk / entry_price * 100 if entry_price > 0 else 0
-                        logger.info(f"[SL/TP] {best.symbol} MSS+offset: "
-                                    f"entry={entry_price:.6f} sl={sl:.6f}({sl_pct:.2f}%) "
-                                    f"tp={tp:.6f} RR={rr:.2f}")
-                    else:
-                        # Structure SL/TP tính theo entry_price đã offset
-                        sltp    = calc_structure_sl_tp(df_15m_entry, best.signal, entry_price, config)
-                        sl      = sltp["sl"]
-                        tp      = sltp["tp"]
-                        rr      = sltp["rr"]
-                        logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
-                                    f"entry={entry_price:.6f} sl={sl:.6f}({sltp['sl_pct']:.2f}%) "
-                                    f"tp={tp:.6f} RR={rr:.2f} | {sltp['sl_reason']}")
-
-                    # Validate SL/TP đúng phía
-                    if best.signal == "LONG":
-                        if sl >= entry_price:
-                            sl = round(entry_price * (1 - getattr(config, "SL_MIN_PCT", 0.008)), 8)
-                        if tp <= entry_price:
-                            from indicators import calculate_atr as _calc_atr
-                            _atr = float(_calc_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1])
-                            tp = round(entry_price + _atr * 8, 8)
-                    else:  # SHORT
-                        if sl <= entry_price:
-                            sl = round(entry_price * (1 + getattr(config, "SL_MIN_PCT", 0.008)), 8)
-                        if tp >= entry_price:
-                            from indicators import calculate_atr as _calc_atr
-                            _atr = float(_calc_atr(df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]).iloc[-1])
-                            tp = round(entry_price - _atr * 8, 8)
-
-                    # Tính lại RR sau validate
-                    risk   = abs(entry_price - sl)
-                    reward = abs(tp - entry_price)
-                    rr     = reward / risk if risk > 0 else 0.0
-
-                    # No-chase: giá đã chạy xa khỏi planned entry?
                     atr_15m = float(calculate_atr(
                         df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]
                     ).iloc[-1])
-                    cur_mark = exchange.get_ticker_price(best.symbol)
-                    if cur_mark > 0 and check_no_chase(cur_mark, entry_price, atr_15m, best.signal, config):
-                        skip_reason = (f"NoChase: mark={cur_mark:.6f} planned={entry_price:.6f} "
-                                       f"({abs(cur_mark-entry_price)/entry_price*100:.1f}% away)")
+                    if best.signal == "LONG":
+                        sl = round(entry_price * 0.98, 8)          # SL 2% dưới entry
+                        tp = round(entry_price + atr_15m * 8, 8)   # TP ATR×8
+                    else:
+                        sl = round(entry_price * 1.02, 8)           # SL 2% trên entry
+                        tp = round(entry_price - atr_15m * 8, 8)    # TP ATR×8
+
+                    risk   = abs(entry_price - sl)
+                    reward = abs(tp - entry_price)
+                    rr     = reward / risk if risk > 0 else 0.0
+                    logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
+                                f"entry={entry_price:.6f} sl={sl:.6f}(2%) "
+                                f"tp={tp:.6f} RR={rr:.2f}")
 
                     # RR check
-                    if not skip_reason:
-                        min_rr = getattr(config, "MIN_RR", 1.5)
-                        if rr < min_rr:
-                            skip_reason = f"RR={rr:.2f} < {min_rr} (SL={sl:.6f} TP={tp:.6f})"
+                    min_rr = getattr(config, "MIN_RR", 1.5)
+                    if rr < min_rr:
+                        skip_reason = f"RR={rr:.2f} < {min_rr}"
 
                 # ═══ BƯỚC 8-9: Đặt LIMIT (max 2) hoặc lưu armed backup ═══
                 if not skip_reason:
