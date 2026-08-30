@@ -5919,6 +5919,34 @@ if __name__ == "__main__":
     state["_notifier"] = notifier
     state["grids"]     = {}
 
+    # ═══════════════════════════════════════════════════════════════
+    # STARTUP CLEANUP: Cancel old LIMIT orders từ session trước
+    # Tránh khớp lệnh cũ với entry quality kém khi bot restart
+    # ═══════════════════════════════════════════════════════════════
+    try:
+        logger.info("[Startup] Checking for old LIMIT orders...")
+        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+        old_limits = [o for o in all_orders 
+                      if not o.get("reduceOnly", False) 
+                      and o.get("type") == "LIMIT"]
+        
+        if old_limits:
+            logger.info(f"[Startup] Found {len(old_limits)} old LIMIT orders, cancelling...")
+            for o in old_limits:
+                try:
+                    exchange._delete("/fapi/v1/order", 
+                                   {"symbol": o["symbol"], "orderId": o["orderId"]}, 
+                                   signed=True)
+                    logger.info(f"[Startup] ✅ Cancelled {o['symbol']} LIMIT @ {o['price']}")
+                except Exception as e:
+                    logger.warning(f"[Startup] Failed to cancel {o['symbol']}: {e}")
+            print(f"🗑️  Cleaned up {len(old_limits)} old LIMIT orders", flush=True)
+        else:
+            logger.info("[Startup] No old LIMIT orders to clean")
+    except Exception as e:
+        logger.warning(f"[Startup] Failed to cleanup old orders: {e}")
+        print(f"⚠️ Order cleanup failed: {e}", flush=True)
+
     # Khởi động Liquidation Tracker (websocket — tích lũy theo thời gian)
     from scanner import WATCHLIST as _wl
     liq_tracker = LiquidationTracker(
