@@ -336,10 +336,20 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
                 continue
             otype = o.get("type", "")
             sym   = o.get("symbol", "")
-            if otype in ("STOP_MARKET", "STOP"):
+            if otype in ("STOP_MARKET", "STOP", "STOP_LOSS_LIMIT"):
                 regular_sl_syms.add(sym)
-            if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
+            if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"):
                 regular_tp_syms.add(sym)
+
+        # ── THÊM: check tất cả orders (bao gồm STOP/TP conditional) ──
+        # /fapi/v1/openOrders không trả STOP_MARKET đang chờ trigger
+        # Cần check thêm từ positionRisk xem có SL/TP price set chưa
+        for p in open_pos:
+            sym = p.get("symbol", "")
+            # Binance set stopPrice trong positionRisk khi có SL
+            stop_price = float(p.get("stopPrice", 0) or 0)
+            if stop_price > 0:
+                regular_sl_syms.add(sym)
 
         # ── 3. Lấy Algo/Conditional orders — đây là nơi SL/TP được lưu ──
         algo_sl_syms = set()
@@ -373,6 +383,20 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
             amt   = float(p["positionAmt"])
             entry = float(p["entryPrice"])
             side  = "LONG" if amt > 0 else "SHORT"
+
+            # Check orders riêng từng symbol để không bỏ sót STOP_MARKET
+            try:
+                sym_orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
+                for o in sym_orders:
+                    if not o.get("reduceOnly", False):
+                        continue
+                    otype = o.get("type", "")
+                    if otype in ("STOP_MARKET", "STOP", "STOP_LOSS_LIMIT"):
+                        regular_sl_syms.add(sym)
+                    if otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"):
+                        regular_tp_syms.add(sym)
+            except Exception:
+                pass
 
             has_sl = sym in regular_sl_syms or sym in algo_sl_syms
             has_tp = sym in regular_tp_syms or sym in algo_tp_syms
