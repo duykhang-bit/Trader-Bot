@@ -5085,8 +5085,14 @@ def profit_protection_monitor(exchange, notifier):
     with lock:
         state["_pp_state"] = _pp_state
 
+    _last_heartbeat = time.time()
     while state["running"]:
         try:
+            # Heartbeat mỗi 30s để biết thread còn sống
+            if time.time() - _last_heartbeat > 30:
+                logger.info(f"[PP] heartbeat: running={state['running']}")
+                _last_heartbeat = time.time()
+
             if not getattr(config, "PROFIT_PROTECTION_ENABLED", True):
                 time.sleep(5)
                 continue
