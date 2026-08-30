@@ -2975,7 +2975,7 @@ def api_state():
         entry_targets = _et_cache
 
     resp = jsonify({
-        "running": s.get("running", False),
+        "running": s.get("running", False) and not s.get("paused", False),
         "auto_cancel_orphan": s.get("auto_cancel_orphan", False),
         "balance": s.get("balance", 0),
         "today_pnl": today_pnl, "total_pnl": total_pnl, "unrealized": unrealized,
