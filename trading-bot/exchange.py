@@ -67,45 +67,87 @@ class BinanceFutures:
                 else:
                     raise
 
-    def _post(self, endpoint: str, params: dict = None):
+    def _post(self, endpoint: str, params: dict = None, retries: int = 3):
         params = params or {}
         params = self._sign(params)
-        try:
-            resp = self.session.post(
-                f"{self.base_url}{endpoint}", params=params, timeout=10
-            )
-            if resp.status_code != 200:
-                logger.error(f"POST {endpoint} failed ({resp.status_code}): {resp.text[:300]}")
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as e:
-            logger.error(f"POST {endpoint} failed: {e}")
-            raise
+        for attempt in range(retries):
+            try:
+                resp = self.session.post(
+                    f"{self.base_url}{endpoint}", params=params, timeout=10
+                )
+                if resp.status_code == 418 or resp.status_code == 429:
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST ({resp.status_code}), waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code != 200:
+                    logger.error(f"POST {endpoint} failed ({resp.status_code}): {resp.text[:300]}")
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as e:
+                if "418" in str(e) or "429" in str(e):
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"POST {endpoint} failed (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
 
-    def _post_url(self, url: str, params: dict = None):
+    def _post_url(self, url: str, params: dict = None, retries: int = 3):
         """POST to absolute URL (for Portfolio Margin papi.binance.com)"""
         params = params or {}
         params = self._sign(params)
-        try:
-            resp = self.session.post(url, params=params, timeout=10)
-            if resp.status_code != 200:
-                logger.error(f"POST {url} failed ({resp.status_code}): {resp.text[:300]}")
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as e:
-            logger.error(f"POST {url} failed: {e}")
-            raise
+        for attempt in range(retries):
+            try:
+                resp = self.session.post(url, params=params, timeout=10)
+                if resp.status_code == 418 or resp.status_code == 429:
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST_URL ({resp.status_code}), waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code != 200:
+                    logger.error(f"POST {url} failed ({resp.status_code}): {resp.text[:300]}")
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as e:
+                if "418" in str(e) or "429" in str(e):
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST_URL, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"POST {url} failed (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
 
-    def _delete(self, endpoint: str, params: dict = None):
+    def _delete(self, endpoint: str, params: dict = None, retries: int = 3):
         params = params or {}
         params = self._sign(params)
-        try:
-            resp = self.session.delete(f"{self.base_url}{endpoint}", params=params)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as e:
-            logger.error(f"DELETE {endpoint} failed: {e}")
-            raise
+        for attempt in range(retries):
+            try:
+                resp = self.session.delete(f"{self.base_url}{endpoint}", params=params, timeout=10)
+                if resp.status_code == 418 or resp.status_code == 429:
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited DELETE ({resp.status_code}), waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as e:
+                if "418" in str(e) or "429" in str(e):
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited DELETE, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"DELETE {endpoint} failed (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
 
     # ---- Market Data ----
 

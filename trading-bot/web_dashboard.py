@@ -165,10 +165,10 @@ def logout():
     session.clear()
     return redirect("/login")
 
-# Cache pending orders — chỉ fetch Binance mỗi 30 giây thay vì mỗi 10s
+# Cache pending orders — fetch thường xuyên hơn để UI realtime
 _pending_orders_cache = []
 _pending_orders_last_fetch = 0
-_PENDING_ORDERS_TTL = 30  # giây — tăng từ 10→30 giảm Binance API calls
+_PENDING_ORDERS_TTL = 5  # giây — giảm từ 30→5 để UI update nhanh hơn
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -540,8 +540,9 @@ async function placeOrder() {
 async function updateSettings() {
     const maxUsdt = parseFloat(document.getElementById('set-max-usdt').value);
     const lev = parseInt(document.getElementById('set-leverage').value);
-    if (!maxUsdt || maxUsdt <= 0 || !lev || lev < 1) { toast('Invalid', false); return; }
-    await apiPost('/api/settings', {max_order_usdt: maxUsdt, leverage: lev});
+    const maxPos = parseInt(document.getElementById('set-max-positions').value);
+    if (!maxUsdt || maxUsdt <= 0 || !lev || lev < 1 || !maxPos || maxPos < 1) { toast('Invalid', false); return; }
+    await apiPost('/api/settings', {max_order_usdt: maxUsdt, leverage: lev, max_open_positions: maxPos});
     refresh();
 }
 async function closePosition(sym) {
@@ -1148,6 +1149,8 @@ function renderDashboard(d) {
             <input id="set-max-usdt" type="number" value="${d.settings.max_order_usdt}" style="width:80px" step="any">
             <label style="font-size:12px;color:#8b949e">Leverage:</label>
             <input id="set-leverage" type="number" value="${d.settings.leverage}" style="width:55px">
+            <label style="font-size:12px;color:#8b949e">Max Positions:</label>
+            <input id="set-max-positions" type="number" value="${d.settings.max_open_positions || 6}" style="width:55px" min="1" max="20">
             <button class="btn btn-blue btn-sm" onclick="updateSettings()">Save</button>
             <span style="font-size:11px;color:#8b949e">Bot dùng giá trị này khi tự động vào lệnh</span>
         </div>
@@ -2426,7 +2429,7 @@ function updateClock(){document.getElementById('clock').textContent=new Date().t
 // Lưu state input để không bị reset khi refresh
 let _savedInputs = {};
 function saveInputs() {
-    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','add-coin-input','pump-coin-input'].forEach(id => {
+    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','set-max-positions','add-coin-input','pump-coin-input'].forEach(id => {
         const el = document.getElementById(id);
         if (el) _savedInputs[id] = el.value;
     });
@@ -2559,7 +2562,7 @@ function _patchDashboard(d) {
 }
 
 setInterval(updateClock,1000);
-setInterval(refresh, 3000);
+setInterval(refresh, 1500);  // Giảm từ 3s → 1.5s cho UI update nhanh hơn
 updateClock();
 refresh();
 
@@ -2984,6 +2987,7 @@ def api_state():
         "settings": {
             "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
             "leverage": getattr(_config, "LEVERAGE", 10),
+            "max_open_positions": getattr(_config, "MAX_OPEN_POSITIONS", 6),
         },
         "reversal_monitor_enabled": getattr(_config, "REVERSAL_MONITOR_ENABLED", True),
         "reversal_alert_only":      getattr(_config, "REVERSAL_ALERT_ONLY", False),
@@ -3519,10 +3523,11 @@ def api_auto_sltp():
 
 @app.route("/api/settings", methods=["POST"])
 def api_settings():
-    """Update bot settings: MAX_ORDER_USDT, LEVERAGE."""
+    """Update bot settings: MAX_ORDER_USDT, LEVERAGE, MAX_OPEN_POSITIONS."""
     data = request.get_json() or {}
     max_usdt = data.get("max_order_usdt")
     leverage = data.get("leverage")
+    max_positions = data.get("max_open_positions")
 
     msgs = []
     if max_usdt is not None and float(max_usdt) > 0:
@@ -3531,6 +3536,9 @@ def api_settings():
     if leverage is not None and 1 <= int(leverage) <= 125:
         _config.LEVERAGE = int(leverage)
         msgs.append(f"Leverage={leverage}x")
+    if max_positions is not None and 1 <= int(max_positions) <= 20:
+        _config.MAX_OPEN_POSITIONS = int(max_positions)
+        msgs.append(f"Max Positions={max_positions}")
 
     if not msgs:
         return jsonify({"ok": False, "msg": "No valid settings"})

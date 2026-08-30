@@ -366,7 +366,7 @@ def dashboard_updater():
             print_dashboard()
         except Exception:
             pass
-        time.sleep(28800)  # 8 tiếng
+        time.sleep(1)  # Cập nhật mỗi 1 giây cho realtime
 
 # ============================================================
 # THREAD 1a: Giá realtime qua WebSocket (cập nhật mỗi 100ms)
@@ -1210,6 +1210,7 @@ def price_updater(exchange):
             try:
                 all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
                 open_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0))) > 0]
+                logger.info(f"[PriceUpdater] Fetched {len(open_pos)} open positions from Binance: {[p['symbol'] for p in open_pos]}")
                 for p in open_pos:
                     sym   = p["symbol"]
                     amt   = float(p.get("positionAmt", 0))
@@ -5107,14 +5108,9 @@ def profit_protection_monitor(exchange, notifier):
                         "trailing_ts":   0.0,
                         "peak_price":    mark,
                         "trailing_sl":   0.0,
+                        "notified":      False,  # chưa gửi notification
                     }
                     logger.info(f"[PP] {sym} initialized tier=1 sl={cur_sl:.6f}")
-                    notifier.telegram.send(
-                        f"🛡 <b>PP MONITOR</b>: {sym} {side}\n"
-                        f"Đang theo dõi — trigger khi lời {pp_trigger}%\n"
-                        f"Entry: ${entry:.6f} | SL hiện: ${cur_sl:.6f}\n"
-                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                    )
                     continue  # skip vòng này, xử lý vòng sau
 
                 ps = _pp_state[sym]

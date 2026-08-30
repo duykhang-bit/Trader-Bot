@@ -1087,18 +1087,20 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
                     continue
 
-            # ═══ BƯỚC 6: 1H Location — không entry sát S/R ═══
-            cur_price = float(df_15m["close"].iloc[-1])
-            atr_1h    = float(calculate_atr(df_1h["high"], df_1h["low"], df_1h["close"]).iloc[-1])
-            loc_check = check_1h_location(df_1h, bias, cur_price, atr_1h, config)
-            if not loc_check["ok"]:
-                logger.info(f"  📍 {symbol}: {loc_check['reason']} → PENDING location")
-                _pending_watch[symbol] = {
-                    "signal": bias, "score": scored.score, "bias": bias,
-                    "win_rate": 0, "ts": time.time(), "retry": 0, "css": {},
-                    "skip_reason": "location",
-                }
-                continue
+            # ═══ BƯỚC 6: Location check — BỎ (skip nhiều entry tốt) ═══
+            # Code cũ không có filter này → vào nhanh hơn, bắt đáy/đỉnh tốt hơn
+            # Giữ lại code để bật khi cần:
+            # cur_price = float(df_15m["close"].iloc[-1])
+            # atr_1h    = float(calculate_atr(df_1h["high"], df_1h["low"], df_1h["close"]).iloc[-1])
+            # loc_check = check_1h_location(df_1h, bias, cur_price, atr_1h, config)
+            # if not loc_check["ok"]:
+            #     logger.info(f"  📍 {symbol}: {loc_check['reason']} → PENDING location")
+            #     _pending_watch[symbol] = {
+            #         "signal": bias, "score": scored.score, "bias": bias,
+            #         "win_rate": 0, "ts": time.time(), "retry": 0, "css": {},
+            #         "skip_reason": "location",
+            #     }
+            #     continue
 
             # ═══ BƯỚC 7: MTF bonus + BTC score adjustment ═══
             bonus = 15 if strength == "STRONG" else 8
