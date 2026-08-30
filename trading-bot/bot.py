@@ -2236,6 +2236,7 @@ def auto_profit_lock(exchange, notifier):
     _t.sleep(20)
 
     _prev_price: dict = {}   # {symbol: (price, timestamp)}
+    _closed_symbols: dict = {}  # {symbol: timestamp} — cooldown to prevent re-close
 
     while state["running"]:
         try:
@@ -2298,6 +2299,11 @@ def auto_profit_lock(exchange, notifier):
                 if not should_lock:
                     continue
 
+                # ═══ COOLDOWN: Tránh close 3 lần liên tục ═══
+                if sym in _closed_symbols:
+                    if now - _closed_symbols[sym] < 10:  # 10s cooldown
+                        continue
+
                 # Đóng lệnh
                 qty        = abs(amt)
                 close_side = "SELL" if side == "LONG" else "BUY"
@@ -2306,6 +2312,15 @@ def auto_profit_lock(exchange, notifier):
                 try:
                     exchange.place_market_order(sym, close_side, qty)
                     exchange.cancel_all_orders(sym)
+                    _closed_symbols[sym] = now  # Track để tránh re-close
+
+                    # ═══ XÓA ARMED ENTRY nếu có ═══
+                    with lock:
+                        state.get("armed_entries", {}).pop(sym, None)
+                        # Xóa pump trade symbol nếu có
+                        pump_syms = state.get("pump_trade_symbols", set())
+                        if sym in pump_syms:
+                            pump_syms.discard(sym)
 
                     _t.sleep(0.5)
                     pnl = _fetch_actual_pnl(exchange, sym, side, qty, entry, cur_price, 0)
