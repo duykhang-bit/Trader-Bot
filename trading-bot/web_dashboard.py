@@ -2650,14 +2650,56 @@ function updatePPMonitor(d) {
 
         const fmt = (v) => v >= 1 ? '$'+v.toFixed(4) : (v > 0 ? '$'+v.toFixed(6) : '-');
 
-        rows += `<tr>
-            <td><b>${p.symbol.replace('USDT','')}</b></td>
-            <td>${p.side === 'LONG' ? '<span style="color:#3fb950">LONG</span>' : '<span style="color:#f85149">SHORT</span>'}</td>
-            <td style="color:${profitColor}"><b>${profit.toFixed(2)}%</b></td>
-            <td>${tierBadge}</td>
-            <td style="color:#f85149">${fmt(sl)}</td>
-            <td style="color:#58a6ff">${fmt(peak)}</td>
-            <td style="color:#d29922">${trailSL > 0 ? fmt(trailSL) : '-'}</td>
+        // ── Progress to next tier ──
+        const nowTs = Date.now() / 1000;
+        const ppTrigger = parseFloat(document.getElementById('pp-trigger-pct')?.value || 0.6);
+        const ppTimer   = parseFloat(document.getElementById('pp-timer')?.value || 5);
+        const trailTrigger = parseFloat(document.getElementById('pp-trail-trigger')?.value || 1.0);
+        const trailTimer   = parseFloat(document.getElementById('pp-trail-timer')?.value || 3);
+
+        let progressHtml = '';
+        if (tier === 1) {
+            // Progress tới Tier 2
+            const pct = Math.max(0, Math.min(100, profit / ppTrigger * 100));
+            const barColor = profit >= ppTrigger ? '#d29922' : (profit >= 0 ? '#3fb950' : '#f85149');
+            const timerElapsed = ps.protection_ts > 0 ? Math.min(nowTs - ps.protection_ts, ppTimer) : 0;
+            const timerPct = ps.protection_ts > 0 ? Math.min(100, timerElapsed / ppTimer * 100) : 0;
+            const timerStr = ps.protection_ts > 0
+                ? `⏱ ${timerElapsed.toFixed(0)}s/${ppTimer}s`
+                : `${profit.toFixed(2)}% / ${ppTrigger}%`;
+            progressHtml = `
+                <div style="font-size:10px;color:#484f58">${timerStr}</div>
+                <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
+                    <div style="background:${barColor};height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
+                </div>
+                ${ps.protection_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
+        } else if (tier === 2) {
+            // Progress tới Tier 3
+            const pct = Math.max(0, Math.min(100, profit / trailTrigger * 100));
+            const timerElapsed = ps.trailing_ts > 0 ? Math.min(nowTs - ps.trailing_ts, trailTimer) : 0;
+            const timerPct = ps.trailing_ts > 0 ? Math.min(100, timerElapsed / trailTimer * 100) : 0;
+            const timerStr = ps.trailing_ts > 0
+                ? `⏱ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3`
+                : `${profit.toFixed(2)}% / ${trailTrigger}%`;
+            progressHtml = `
+                <div style="font-size:10px;color:#d29922">${timerStr}</div>
+                <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
+                    <div style="background:#3fb950;height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
+                </div>
+                ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#3fb950;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
+        } else {
+            progressHtml = `<div style="font-size:10px;color:#3fb950">✅ Trailing ON</div>`;
+        }
+
+        rows += `<tr style="border-bottom:1px solid #21262d">
+            <td style="padding:3px 6px"><b>${p.symbol.replace('USDT','')}</b></td>
+            <td style="padding:3px 6px">${p.side === 'LONG' ? '<span style="color:#3fb950">LONG</span>' : '<span style="color:#f85149">SHORT</span>'}</td>
+            <td style="padding:3px 6px;color:${profitColor}"><b>${profit.toFixed(2)}%</b></td>
+            <td style="padding:3px 6px">${tierBadge}</td>
+            <td style="padding:3px 6px">${progressHtml}</td>
+            <td style="padding:3px 6px;color:#f85149">${fmt(sl)}</td>
+            <td style="padding:3px 6px;color:#58a6ff">${fmt(peak)}</td>
+            <td style="padding:3px 6px;color:#d29922">${trailSL > 0 ? fmt(trailSL) : '-'}</td>
         </tr>`;
     });
 
@@ -2672,6 +2714,7 @@ function updatePPMonitor(d) {
             <th style="padding:2px 6px">Side</th>
             <th style="padding:2px 6px">Lợi</th>
             <th style="padding:2px 6px">Tier</th>
+            <th style="padding:2px 6px">Progress</th>
             <th style="padding:2px 6px">SL hiện tại</th>
             <th style="padding:2px 6px">Peak</th>
             <th style="padding:2px 6px">Trailing SL</th>
@@ -2991,7 +3034,8 @@ def api_state():
         "trades_history": trades_fmt,
         "watchlist": watchlist,
         "pp_state": {k: {"tier": v.get("tier",1), "current_sl": v.get("current_sl",0),
-                         "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0)}
+                         "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0),
+                         "protection_ts": v.get("protection_ts",0), "trailing_ts": v.get("trailing_ts",0)}
                      for k, v in s.get("_pp_state", {}).items()},
         "settings": {
             "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
