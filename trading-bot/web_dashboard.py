@@ -168,7 +168,7 @@ def logout():
 # Cache pending orders — fetch thường xuyên hơn để UI realtime
 _pending_orders_cache = []
 _pending_orders_last_fetch = 0
-_PENDING_ORDERS_TTL = 5  # giây — giảm từ 30→5 để UI update nhanh hơn
+_PENDING_ORDERS_TTL = 30  # giây — tăng lên 30s để tránh rate limit
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -2938,7 +2938,7 @@ def api_state():
     if now_ts - _pending_orders_last_fetch > _PENDING_ORDERS_TTL:
         try:
             if _exchange:
-                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=5)
+                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=3)
                 _pending_orders_cache = [{
                     "symbol": o.get("symbol", ""),
                     "side": o.get("side", ""),
