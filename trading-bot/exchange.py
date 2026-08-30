@@ -307,6 +307,25 @@ class BinanceFutures:
         logger.info(f"Market order placed: {side} {quantity} {symbol} @ market")
         return result
 
+    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float) -> dict:
+        """
+        Đặt lệnh LIMIT
+        side: 'BUY' hoặc 'SELL'
+        price: giá limit
+        """
+        if quantity == int(quantity):
+            quantity = int(quantity)
+        result = self._post("/fapi/v1/order", {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "quantity": quantity,
+            "price": price,
+            "timeInForce": "GTC"  # Good Till Cancel
+        })
+        logger.info(f"Limit order placed: {side} {quantity} {symbol} @ ${price}")
+        return result
+
     def _round_price(self, price: float) -> float:
         """Làm tròn giá đúng theo độ lớn của coin"""
         if price >= 10000:

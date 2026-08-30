@@ -4692,51 +4692,71 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
             side_market = "BUY"  if sp.direction == "LONG"  else "SELL"
             side_close  = "SELL" if sp.direction == "LONG"  else "BUY"
 
-            # ── Lệnh 1 chưa khớp → kiểm tra giá đã chạm entry1 chưa ──
+            # ── Lệnh 1 chưa khớp → đặt LIMIT order nếu chưa có ──
             if not sp.filled1:
-                hit1 = (
-                    (sp.direction == "LONG"  and price <= sp.entry1) or
-                    (sp.direction == "SHORT" and price >= sp.entry1)
-                )
-                if hit1:
+                # Check xem đã đặt limit order chưa
+                if not hasattr(sp, 'limit1_placed') or not sp.limit1_placed:
                     try:
                         exchange.set_leverage(sym, config.LEVERAGE)
-                        exchange.place_market_order(sym, side_market, sp.qty1)
+                        # Đặt LIMIT order tại entry1 (KHÔNG vào MARKET)
+                        exchange.place_limit_order(sym, side_market, sp.qty1, sp.entry1)
+                        with lock:
+                            state["split_positions"][sym].limit1_placed = True
+                        logger.info(f"[LiqEngine] LIMIT order1 placed {sym} @ {sp.entry1}")
+                    except Exception as e:
+                        logger.error(f"[LiqEngine] LIMIT order1 failed {sym}: {e}")
+                
+                # Check xem limit order đã khớp chưa
+                try:
+                    orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
+                    limit_orders = [o for o in orders if o.get("type") == "LIMIT" and not o.get("reduceOnly")]
+                    # Nếu không còn limit order → đã khớp
+                    if not limit_orders and hasattr(sp, 'limit1_placed') and sp.limit1_placed:
                         with lock:
                             state["split_positions"][sym].filled1 = True
                             state["trade_log"].append({
                                 "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": sym, "side": sp.direction,
-                                "entry" : price, "sl": sp.sl, "tp": sp.tp,
+                                "entry" : sp.entry1, "sl": sp.sl, "tp": sp.tp,
                                 "qty"   : sp.qty1, "status": "OPEN",
                                 "note"  : "liq_order1"
                             })
                         icon = "🟢" if sp.direction == "LONG" else "🔴"
                         notifier.telegram.send(
                             f"{icon} <b>LIQ ORDER 1 FILLED: {sp.direction} {sym}</b>\n"
-                            f"💰 Price  : <b>${price:.4f}</b>  qty={sp.qty1}\n"
+                            f"💰 Entry  : <b>${sp.entry1:.4f}</b>  qty={sp.qty1}\n"
                             f"⏳ Chờ Order 2 @ ${sp.entry2:.4f}\n"
                             f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
                         )
-                        logger.info(f"[LiqEngine] Order1 filled {sym} @ {price}")
-                    except Exception as e:
-                        logger.error(f"[LiqEngine] Order1 place failed {sym}: {e}")
+                        logger.info(f"[LiqEngine] Order1 filled {sym} @ {sp.entry1}")
+                except Exception as e:
+                    logger.error(f"[LiqEngine] Check order1 failed {sym}: {e}")
 
-            # ── Lệnh 2 chưa khớp → kiểm tra giá chạm entry2 ──
+            # ── Lệnh 2 chưa khớp → đặt LIMIT order nếu chưa có ──
             elif sp.filled1 and not sp.filled2:
-                hit2 = (
-                    (sp.direction == "LONG"  and price <= sp.entry2) or
-                    (sp.direction == "SHORT" and price >= sp.entry2)
-                )
-                if hit2:
+                # Check xem đã đặt limit order chưa
+                if not hasattr(sp, 'limit2_placed') or not sp.limit2_placed:
                     try:
-                        exchange.place_market_order(sym, side_market, sp.qty2)
+                        # Đặt LIMIT order tại entry2
+                        exchange.place_limit_order(sym, side_market, sp.qty2, sp.entry2)
+                        with lock:
+                            state["split_positions"][sym].limit2_placed = True
+                        logger.info(f"[LiqEngine] LIMIT order2 placed {sym} @ {sp.entry2}")
+                    except Exception as e:
+                        logger.error(f"[LiqEngine] LIMIT order2 failed {sym}: {e}")
+                
+                # Check xem limit order đã khớp chưa
+                try:
+                    orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
+                    limit_orders = [o for o in orders if o.get("type") == "LIMIT" and not o.get("reduceOnly")]
+                    # Nếu không còn limit order → đã khớp
+                    if not limit_orders and hasattr(sp, 'limit2_placed') and sp.limit2_placed:
                         with lock:
                             state["split_positions"][sym].filled2 = True
                             state["trade_log"].append({
                                 "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": sym, "side": sp.direction,
-                                "entry" : price, "sl": sp.sl, "tp": sp.tp,
+                                "entry" : sp.entry2, "sl": sp.sl, "tp": sp.tp,
                                 "qty"   : sp.qty2, "status": "OPEN",
                                 "note"  : "liq_order2"
                             })
@@ -4755,15 +4775,15 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                         icon = "🟢" if sp.direction == "LONG" else "🔴"
                         notifier.telegram.send(
                             f"{icon} <b>LIQ ORDER 2 FILLED: {sp.direction} {sym}</b>\n"
-                            f"💰 Price  : <b>${price:.4f}</b>  qty={sp.qty2}\n"
+                            f"💰 Entry  : <b>${sp.entry2:.4f}</b>  qty={sp.qty2}\n"
                             f"📦 Total  : {total_qty} (order1+order2)\n"
                             f"🛑 SL set : <b>${sp.sl:.4f}</b>\n"
                             f"🎯 TP set : <b>${sp.tp:.4f}</b>\n"
                             f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
                         )
                         logger.info(f"[LiqEngine] Order2 filled + SL/TP set {sym}")
-                    except Exception as e:
-                        logger.error(f"[LiqEngine] Order2 place failed {sym}: {e}")
+                except Exception as e:
+                    logger.error(f"[LiqEngine] Check order2 failed {sym}: {e}")
 
                 # Nếu giá đã đi ngược quá xa mà lệnh 2 chưa khớp → huỷ setup
                 elif sp.direction == "SHORT" and price < sp.entry1 * 0.985:

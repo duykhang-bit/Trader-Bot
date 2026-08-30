@@ -293,7 +293,9 @@ class LiqStrategy:
             return None
 
         entry1_price, liq1_usd = below[0]
-        entry1 = entry1_price * (1 + self.entry_offset_pct)  # long ngay trên vùng liq
+        # LONG: entry ĐÚNG TẠI vùng liq (không cộng offset)
+        # Vì mục đích là mua khi giá dump XUỐNG vùng liq, không phải mua TRÊN vùng liq
+        entry1 = entry1_price
 
         entry2_price, liq2_usd = None, 0.0
         for p, u in below[1:]:
@@ -305,7 +307,7 @@ class LiqStrategy:
             entry2_price = entry1_price * (1 - self.entry2_min_gap * 2)
             liq2_usd = liq1_usd * 0.5
 
-        entry2 = entry2_price * (1 + self.entry_offset_pct)
+        entry2 = entry2_price  # entry2 cũng không cộng offset
 
         # SL: thấp hơn entry2_price - buffer
         sl = entry2_price * (1 - self.sl_buffer_pct)
