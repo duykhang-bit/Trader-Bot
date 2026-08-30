@@ -3091,6 +3091,13 @@ def scan_engine(exchange, notifier):
 
     while state["running"]:
         try:
+            # ═══ CHECK PAUSED ═══
+            with lock:
+                is_paused = state.get("paused", False)
+            if is_paused:
+                _scan_monitor.wait_for_signal(timeout=5)
+                continue
+
             with lock:
                 last_loss_time = state.get("last_loss_time", 0)
             cooldown = getattr(config, "COOLDOWN_AFTER_LOSS", 180)
