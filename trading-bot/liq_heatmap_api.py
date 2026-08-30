@@ -216,7 +216,7 @@ class LiqHeatmapCache:
     Cache liq heatmap cho nhiều symbols.
     Refresh mỗi 15 phút (dữ liệu REST không cần realtime).
     """
-    REFRESH_INTERVAL = 900  # 15 phút
+    REFRESH_INTERVAL = 1800  # 30 phút — tránh rate limit 429
 
     def __init__(self, symbols: List[str], interval: str = "1h", lookback: int = 24):
         self.symbols  = [s.upper() for s in symbols]
@@ -251,8 +251,10 @@ class LiqHeatmapCache:
                     self._cache[sym] = data
                     self._last_update[sym] = time.time()
                 logger.debug(f"[LiqHeatmapCache] Refreshed {sym}: {len(data)} buckets")
+                time.sleep(0.5)  # 500ms giữa mỗi symbol tránh rate limit
             except Exception as e:
                 logger.error(f"[LiqHeatmapCache] Refresh {sym} failed: {e}")
+                time.sleep(1)  # sleep thêm nếu lỗi
 
     def get_heatmap(self, symbol: str) -> Dict[float, float]:
         sym = symbol.upper()
