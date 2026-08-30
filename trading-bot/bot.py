@@ -511,6 +511,7 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
                         tp_price = round(cur_price * 0.85, 8)
 
                         exchange_ref.place_market_order(sym, "SELL", qty)
+                        _cache_entry(sym, "SHORT", cur_price, qty)  # cache ngay sau lệnh
                         _t.sleep(0.3)
                         try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sl_price)
                         except Exception as e: logger.error(f"[FastShort] SL {sym}: {e}")
@@ -695,6 +696,7 @@ def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: in
             return
 
         exchange_ref.place_market_order(sym, "SELL", qty)
+        _cache_entry(sym, "SHORT", sig.entry_price, qty)  # cache ngay sau lệnh
         import time as _t; _t.sleep(0.3)
         try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
         except Exception as e: logger.error(f"[WS-Spike] SL {sym}: {e}")
@@ -803,6 +805,7 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
 
         # Vào lệnh SHORT
         exchange_ref.place_market_order(sym, "SELL", qty)
+        _cache_entry(sym, "SHORT", sig.entry_price, qty)  # cache ngay sau lệnh
         import time as _t; _t.sleep(0.3)
         try:
             exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
@@ -1015,19 +1018,36 @@ def price_ws_streamer():
                     state["prices"][sym] = mark
 
                 # ── MAX LOSS REALTIME CHECK — check ngay trên WS tick ──
-                if getattr(config, "MAX_LOSS_ENABLED", False):
+                if getattr(config, "MAX_LOSS_ENABLED", True):
                     max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
                     with lock:
                         open_pos_ws = list(state.get("open_positions", []))
+
+                    # Tìm data từ open_positions (sau sync)
+                    _amt   = 0.0
+                    _entry = 0.0
                     for _p in open_pos_ws:
                         if _p.get("symbol") != sym:
                             continue
-                        _amt = float(_p.get("positionAmt", 0))
-                        if abs(_amt) == 0:
-                            continue
+                        _amt   = float(_p.get("positionAmt", 0))
                         _entry = float(_p.get("entryPrice", 0))
-                        if _entry <= 0:
-                            continue
+                        break
+
+                    # Khi Binance đã sync xong → xóa cache (không cần nữa)
+                    if abs(_amt) > 0 and _entry > 0 and sym in _entry_cache:
+                        _remove_entry_cache(sym)
+
+                    # ── FALLBACK: dùng _entry_cache nếu open_positions chưa sync ──
+                    # Trường hợp lệnh vừa đặt xong, Binance chưa kịp trả về trong
+                    # vòng fetch tiếp theo → _entry = 0, bỏ qua → lỗ vượt ngưỡng
+                    if (_entry <= 0 or abs(_amt) == 0) and sym in _entry_cache:
+                        _cached = _entry_cache[sym]
+                        _entry  = _cached["entry"]
+                        _qty_c  = _cached["qty"]
+                        _side_c = _cached["side"]
+                        _amt    = _qty_c if _side_c == "LONG" else -_qty_c
+
+                    if abs(_amt) > 0 and _entry > 0:
                         # Tính PnL realtime từ mark price WS — không dùng cached PnL
                         _pnl = (mark - _entry) * abs(_amt) if _amt > 0 else (_entry - mark) * abs(_amt)
                         if _pnl < -max_loss:
@@ -1038,33 +1058,34 @@ def price_ws_streamer():
                                 _already_closing_key = f"_ml_closing_{sym}"
                                 with lock:
                                     if state.get(_already_closing_key):
-                                        break
-                                    state[_already_closing_key] = True
-                                import threading as _th_ml
-                                def _do_max_loss_close(_sym, _close_side, _qty, _pnl_val):
-                                    try:
-                                        exc.place_market_order(_sym, _close_side, _qty)
-                                        exc.cancel_all_orders(_sym)
-                                        logger.info(f"[MAX LOSS WS] Closed {_sym} pnl=${_pnl_val:.2f}")
-                                        if noti:
-                                            noti.telegram.send(
-                                                f"🚨 <b>MAX LOSS</b>: {_sym}\n"
-                                                f"💵 PnL: <b>${_pnl_val:.2f}</b> (vượt -${max_loss})\n"
-                                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                            )
-                                    except Exception as _e:
-                                        logger.error(f"[MAX LOSS WS] {_sym}: {_e}")
-                                    finally:
-                                        with lock:
-                                            state.pop(f"_ml_closing_{_sym}", None)
-                                _close_side = "SELL" if _amt > 0 else "BUY"
-                                _qty = abs(_amt)
-                                _th_ml.Thread(
-                                    target=_do_max_loss_close,
-                                    args=(sym, _close_side, _qty, _pnl),
-                                    daemon=True
-                                ).start()
-                        break
+                                        pass
+                                    else:
+                                        state[_already_closing_key] = True
+                                        import threading as _th_ml
+                                        def _do_max_loss_close(_sym, _close_side, _qty, _pnl_val, _max_l):
+                                            try:
+                                                exc.place_market_order(_sym, _close_side, _qty)
+                                                exc.cancel_all_orders(_sym)
+                                                _remove_entry_cache(_sym)
+                                                logger.info(f"[MAX LOSS WS] Closed {_sym} pnl=${_pnl_val:.2f}")
+                                                if noti:
+                                                    noti.telegram.send(
+                                                        f"🚨 <b>MAX LOSS CẮT LỖ</b>: {_sym}\n"
+                                                        f"💵 PnL: <b>${_pnl_val:.2f}</b> (vượt -${_max_l})\n"
+                                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                                    )
+                                            except Exception as _e:
+                                                logger.error(f"[MAX LOSS WS] {_sym}: {_e}")
+                                            finally:
+                                                with lock:
+                                                    state.pop(f"_ml_closing_{_sym}", None)
+                                        _close_side = "SELL" if _amt > 0 else "BUY"
+                                        _qty = abs(_amt)
+                                        _th_ml.Thread(
+                                            target=_do_max_loss_close,
+                                            args=(sym, _close_side, _qty, _pnl, max_loss),
+                                            daemon=True
+                                        ).start()
 
                 # ── ARMED ENTRY CHECK — khớp ngay khi giá tới zone ──
                 with lock:
@@ -1293,6 +1314,7 @@ def price_updater(exchange):
                                 "note":     "closed_external"
                             })
                             break
+                _remove_entry_cache(sym)  # xóa cache khi lệnh đóng
 
                 logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
                 from trade_history import save_history
@@ -2768,6 +2790,7 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
             return
 
         exchange.place_market_order(symbol, "SELL", qty)
+        _cache_entry(symbol, "SHORT", cur_price, qty)  # cache ngay sau lệnh
         time.sleep(0.8)
 
         sl_ok = False
@@ -2822,6 +2845,7 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
             return
 
         exchange.place_market_order(symbol, "BUY", qty)
+        _cache_entry(symbol, "LONG", cur_price, qty)  # cache ngay sau lệnh
         time.sleep(0.8)
 
         sl_ok = False
@@ -4072,6 +4096,7 @@ def pump_scan_engine(exchange, notifier):
 
                                         if qty_nhe * cur_p_nhe >= 5.0:
                                             exchange.place_market_order(symbol, "SELL", qty_nhe)
+                                            _cache_entry(symbol, "SHORT", cur_p_nhe, qty_nhe)  # cache ngay sau lệnh
                                             time.sleep(0.8)
 
                                             # SL với retry
@@ -4381,6 +4406,7 @@ def pump_scan_engine(exchange, notifier):
                             # Nếu giá đã dưới entry_price → dùng MARKET ngay
                             if current_price <= sig.entry_price:
                                 exchange.place_market_order(symbol, "SELL", qty)
+                                _cache_entry(symbol, "SHORT", current_price, qty)  # cache ngay sau lệnh
                                 order_tag = "MARKET (đã dưới limit)"
                             else:
                                 exchange.place_limit_order(symbol, "SELL", qty, sig.entry_price)
@@ -4412,6 +4438,7 @@ def pump_scan_engine(exchange, notifier):
                                 continue
                         else:
                             exchange.place_market_order(symbol, "SELL", qty)
+                            _cache_entry(symbol, "SHORT", current_price, qty)  # cache ngay sau lệnh
                             order_tag = "MARKET"
 
                         time.sleep(0.8)  # đợi lệnh fill trước khi đặt SL/TP
