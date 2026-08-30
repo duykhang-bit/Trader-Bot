@@ -2443,6 +2443,7 @@ function restoreInputs() {
 
 let _firstRender = true;
 let _refreshPaused = false;  // dừng refresh khi bot tắt
+let _lastP0Load = 0;         // timestamp lần cuối load P0 settings
 
 async function refresh(){
     try{
@@ -2495,6 +2496,14 @@ function _patchDashboard(d) {
 
     // PP Monitor realtime
     updatePPMonitor(d);
+
+    // Auto-refresh P0 Settings nếu panel đang mở (throttle mỗi 10 giây để tránh spam API)
+    const p0Body = document.getElementById('p0-settings-body');
+    const now = Date.now();
+    if (p0Body && p0Body.style.display !== 'none' && now - _lastP0Load > 10000) {
+        _lastP0Load = now;
+        loadP0Settings();  // Tự động load P0 settings khi panel mở (10s/lần)
+    }
 
     // Bot status dot
     const running = d.running;
@@ -2562,7 +2571,7 @@ function _patchDashboard(d) {
 }
 
 setInterval(updateClock,1000);
-setInterval(refresh, 1500);  // Giảm từ 3s → 1.5s cho UI update nhanh hơn
+setInterval(refresh, 3000);  // Giữ nguyên 3s - đừng làm giật UI
 updateClock();
 refresh();
 

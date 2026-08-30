@@ -3619,10 +3619,36 @@ def scan_engine(exchange, notifier):
 
                 # ═══ BƯỚC 8-9: Đặt LIMIT (max 2) hoặc lưu armed backup ═══
                 if not skip_reason:
+                    # ═══ CHECK: coin đã có position hoặc LIMIT order chưa? ═══
+                    with lock:
+                        open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                                     if abs(float(p.get("positionAmt", 0))) > 0}
+                    
+                    if best.symbol in open_syms:
+                        logger.info(f"[Armed] SKIP {best.symbol}: đã có position")
+                        skip_reason = "already_has_position"
+                    
+                    # Check coin đã có LIMIT order riêng chưa
+                    has_limit_for_coin = False
+                    try:
+                        coin_orders = exchange._get("/fapi/v1/openOrders",
+                                                    {"symbol": best.symbol}, signed=True)
+                        has_limit_for_coin = any(
+                            not o.get("reduceOnly", False) and o.get("type") == "LIMIT"
+                            for o in coin_orders
+                        )
+                    except Exception:
+                        pass
+                    
+                    if has_limit_for_coin:
+                        logger.info(f"[Armed] SKIP {best.symbol}: đã có LIMIT order")
+                        skip_reason = "already_has_limit"
+
+                if not skip_reason:
                     with lock:
                         armed = state.setdefault("armed_entries", {})
 
-                    # Check số LIMIT entry đang có trên Binance
+                    # Check số LIMIT entry đang có trên Binance (tổng tất cả coins)
                     try:
                         all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                         limit_entry_count = len([o for o in all_orders
