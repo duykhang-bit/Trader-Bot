@@ -4998,7 +4998,10 @@ def profit_protection_monitor(exchange, notifier):
                 pump_syms  = set(state.get("pump_trade_symbols", set()))
                 prices_now = dict(state.get("prices", {}))
 
-            logger.debug(f"[PP] tick: {len(open_pos)} positions, enabled={getattr(config,'PROFIT_PROTECTION_ENABLED',True)}")
+            if open_pos:
+                logger.info(f"[PP] tick: {len(open_pos)} positions — {[p['symbol'] for p in open_pos]}")
+            else:
+                logger.debug(f"[PP] tick: 0 positions")
 
             # Cleanup state cho position đã đóng
             active_syms = {p["symbol"] for p in open_pos}
@@ -5062,6 +5065,12 @@ def profit_protection_monitor(exchange, notifier):
                         "trailing_sl":   0.0,
                     }
                     logger.info(f"[PP] {sym} initialized tier=1 sl={cur_sl:.6f}")
+                    notifier.telegram.send(
+                        f"🛡 <b>PP MONITOR</b>: {sym} {side}\n"
+                        f"Đang theo dõi — trigger khi lời {pp_trigger}%\n"
+                        f"Entry: ${entry:.6f} | SL hiện: ${cur_sl:.6f}\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
                     continue  # skip vòng này, xử lý vòng sau
 
                 ps = _pp_state[sym]
