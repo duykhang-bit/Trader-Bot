@@ -3564,6 +3564,11 @@ def scan_engine(exchange, notifier):
                                     logger.info(f"[LiqCluster] {best.symbol} {best.signal} {mode}: "
                                                 f"entry={raw_entry:.6f} dist={cluster['dist_pct']:.1f}% "
                                                 f"cluster_usd=${cluster.get('total_usd',0)/1e6:.1f}M")
+                
+                # Fallback: nếu không có raw_entry từ liq logic → dùng current price
+                if not skip_reason and raw_entry == 0.0:
+                    raw_entry = cur_price
+                    logger.info(f"[EntryFallback] {best.symbol}: using current price {raw_entry:.6f}")
 
                     # Apply Entry Offset
                     if not skip_reason and raw_entry > 0:
