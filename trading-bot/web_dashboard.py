@@ -1334,6 +1334,12 @@ function renderDashboard(d) {
                      oninput="updateRiskNote()">
               <span style="font-size:11px;color:#484f58">USDT notional</span>
             </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+              <span style="font-size:12px;color:#8b949e;width:110px">Max positions:</span>
+              <input type="number" id="p0-max-positions" min="1" max="20" step="1"
+                     style="width:60px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
+              <span style="font-size:11px;color:#484f58">coin đồng thời</span>
+            </div>
             <!-- Risk note realtime -->
             <div id="p0-risk-note" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:11px;color:#8b949e;line-height:1.6">
               —
@@ -2749,6 +2755,7 @@ async function loadP0Settings() {
         set('p0-max-consec',     s.max_consecutive_losses);
         set('p0-risk-pct',       (s.risk_per_trade_pct * 100).toFixed(1));
         set('p0-max-order',      s.risk_max_order_usdt);
+        set('p0-max-positions',  s.max_open_positions || 6);
         set('p0-min-rr',         s.min_rr);
         set('p0-sl-struct',      s.sl_structure_enabled);
         set('p0-kill-chaos',     s.chaos_skip_enabled);
@@ -2796,6 +2803,7 @@ async function saveP0Settings() {
         max_consecutive_losses:   parseInt(get('p0-max-consec')),
         risk_per_trade_pct:       parseFloat(get('p0-risk-pct')) / 100,
         risk_max_order_usdt:      parseFloat(get('p0-max-order')),
+        max_open_positions:       parseInt(get('p0-max-positions')) || 6,
         min_rr:                   parseFloat(get('p0-min-rr')),
         sl_structure_enabled:     get('p0-sl-struct'),
         chaos_skip_enabled:       get('p0-kill-chaos'),
@@ -4110,6 +4118,7 @@ def api_p0_settings_get():
             "max_consecutive_losses":    getattr(_cfg, "MAX_CONSECUTIVE_LOSSES",    3),
             "risk_per_trade_pct":        getattr(_cfg, "RISK_PER_TRADE_PCT",        0.01),
             "risk_max_order_usdt":       getattr(_cfg, "RISK_MAX_ORDER_USDT",       50.0),
+            "max_open_positions":        getattr(_cfg, "MAX_OPEN_POSITIONS",        6),
             "min_rr":                    getattr(_cfg, "MIN_RR",                    1.5),
             "sl_structure_enabled":      getattr(_cfg, "SL_STRUCTURE_ENABLED",      True),
             "chaos_skip_enabled":        getattr(_cfg, "CHAOS_ATR_MULT",            2.5) > 0,
@@ -4140,6 +4149,8 @@ def api_p0_settings_save():
             _cfg.RISK_PER_TRADE_PCT        = max(0.001, min(0.05, float(data["risk_per_trade_pct"])))
         if "risk_max_order_usdt" in data:
             _cfg.RISK_MAX_ORDER_USDT       = max(0.0, min(500.0, float(data["risk_max_order_usdt"])))
+        if "max_open_positions" in data:
+            _cfg.MAX_OPEN_POSITIONS        = max(1, min(20, int(data["max_open_positions"])))
         if "min_rr" in data:
             _cfg.MIN_RR                    = max(1.0, min(5.0, float(data["min_rr"])))
         if "sl_structure_enabled" in data:
@@ -4158,6 +4169,7 @@ def api_p0_settings_save():
             "MAX_CONSECUTIVE_LOSSES":    str(_cfg.MAX_CONSECUTIVE_LOSSES),
             "RISK_PER_TRADE_PCT":        str(round(_cfg.RISK_PER_TRADE_PCT, 4)),
             "RISK_MAX_ORDER_USDT":       str(round(_cfg.RISK_MAX_ORDER_USDT, 1)),
+            "MAX_OPEN_POSITIONS":        str(getattr(_cfg, "MAX_OPEN_POSITIONS", 6)),
             "MIN_RR":                    str(round(_cfg.MIN_RR, 1)),
             "SL_STRUCTURE_ENABLED":      str(_cfg.SL_STRUCTURE_ENABLED),
             "CHAOS_ATR_MULT":            str(round(_cfg.CHAOS_ATR_MULT, 1)),

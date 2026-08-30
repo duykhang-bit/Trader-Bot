@@ -102,6 +102,21 @@ lock = threading.Lock()
 # Guard chống double entry — set các symbol đang trong quá trình xử lý order
 _executing_symbols: set = set()
 
+# ── ENTRY CACHE — lưu entry price ngay sau place_market_order ──
+# open_positions được sync mỗi ~10-15s, trong khoảng đó WS max loss check
+# không có data → lệnh có thể lỗ vượt ngưỡng mà không bị cắt.
+# _entry_cache được set NGAY sau place_market_order, không cần đợi sync.
+# {symbol: {"entry": float, "side": "LONG"/"SHORT", "qty": float}}
+_entry_cache: dict = {}
+
+def _cache_entry(symbol: str, side: str, entry: float, qty: float):
+    """Ghi nhớ entry ngay sau khi đặt lệnh thành công."""
+    _entry_cache[symbol] = {"entry": entry, "side": side, "qty": qty}
+
+def _remove_entry_cache(symbol: str):
+    """Xóa cache khi lệnh đóng."""
+    _entry_cache.pop(symbol, None)
+
 # ============================================================
 # DASHBOARD
 # ============================================================
