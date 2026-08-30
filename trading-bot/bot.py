@@ -4784,9 +4784,9 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                         logger.info(f"[LiqEngine] Order2 filled + SL/TP set {sym}")
                 except Exception as e:
                     logger.error(f"[LiqEngine] Check order2 failed {sym}: {e}")
-
+                
                 # Nếu giá đã đi ngược quá xa mà lệnh 2 chưa khớp → huỷ setup
-                elif sp.direction == "SHORT" and price < sp.entry1 * 0.985:
+                if sp.direction == "SHORT" and price < sp.entry1 * 0.985:
                     logger.info(f"[LiqEngine] {sym} price reversed, cancel split setup")
                     _cancel_split(sym, sp, exchange, notifier, side_close, "Giá đảo chiều trước khi Order2 khớp")
                 elif sp.direction == "LONG" and price > sp.entry1 * 1.015:
