@@ -1152,9 +1152,6 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 if bias == "SHORT" and btc_block_short:
                     logger.info(f"  🚫 {symbol}: SHORT blocked by BTC STRONG_BULL")
                     continue
-            else:
-                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
-                continue
 
             # ═══ BƯỚC 2: Tìm entry 15m THEO CHIỀU bias ═══
             klines_15m = exchange.get_klines(symbol, "15m", limit=100)

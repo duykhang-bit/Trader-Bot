@@ -3485,12 +3485,6 @@ def scan_engine(exchange, notifier):
                 order_type_used = "SKIP"
                 skip_reason = None
 
-                # ═══ BƯỚC 0: Daily Kill Switch ═══
-                kill = check_daily_kill_switch(bal)
-                if not kill["ok"]:
-                    skip_reason = f"KillSwitch: {kill['reason']}"
-                    logger.info(f"[KillSwitch] ⛔ {skip_reason}")
-
                 # ═══ BƯỚC 4: Score >= 70 ═══
                 if not skip_reason and best.score < 70:
                     skip_reason = f"Score {best.score} < 70"
