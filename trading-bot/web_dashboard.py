@@ -3134,11 +3134,13 @@ def api_toggle():
             # Fallback: chỉ set running=True (thread còn sống)
             with _lock:
                 _state["running"] = True
+                _state["paused"] = False
             return jsonify({"ok": True, "msg": "Bot resumed", "running": True})
     else:
         # Đang chạy → pause
         with _lock:
             _state["running"] = False
+            _state["paused"] = True
         logger.info("Bot paused via web")
         return jsonify({"ok": True, "msg": "Bot paused ⏸", "running": False})
 

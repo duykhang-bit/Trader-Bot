@@ -3091,6 +3091,11 @@ def scan_engine(exchange, notifier):
 
     while state["running"]:
         try:
+            # ── Check paused ──
+            if state.get("paused", False):
+                _scan_monitor.wait_for_signal(timeout=5)
+                continue
+
             with lock:
                 last_loss_time = state.get("last_loss_time", 0)
             cooldown = getattr(config, "COOLDOWN_AFTER_LOSS", 180)
@@ -6192,7 +6197,9 @@ if __name__ == "__main__":
     # ═══════════════════════════════════════════════════════════════
     with lock:
         state["running"] = True
-    logger.info("=== state['running'] = True === Starting all worker threads")
+        state["paused"] = True   # Bot start ở PAUSED mode - scan engine sẽ skip
+    logger.info("=== state['running'] = True, paused=True === Starting threads in PAUSED mode")
+    print("🛑 Bot PAUSED on startup - click Start Bot from web dashboard", flush=True)
 
     t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
     t1.start()
