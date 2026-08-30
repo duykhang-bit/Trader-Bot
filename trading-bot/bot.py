@@ -6026,49 +6026,11 @@ if __name__ == "__main__":
         logger.warning(f"Web dashboard disabled: {e}")
 
     def _start_worker_threads():
-        """Khởi động lại tất cả worker threads sau khi resume."""
+        """Resume bot - chỉ set paused=False, threads cũ vẫn còn sống."""
         with lock:
             state["running"] = True
-
-        _t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
-        _t1.start()
-        _t1ws = threading.Thread(target=price_ws_streamer, daemon=True)
-        _t1ws.start()
-        _t2a = threading.Thread(target=monitor_engine, args=(exchange, notifier), daemon=True)
-        _t2a.start()
-        _t2a2 = threading.Thread(target=position_reversal_monitor, args=(exchange, notifier), daemon=True)
-        _t2a2.start()
-        _t2a3 = threading.Thread(target=scan_position_protector, args=(exchange, notifier), daemon=True)
-        _t2a3.start()
-        _t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
-        _t_trailing.start()
-        _t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
-        _t_mfe_scan.start()
-        _t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
-        _t2b.start()
-        _t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
-        _t3.start()
-        _t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
-        _t5.start()
-        _t_pump = threading.Thread(target=pump_scan_engine, args=(exchange, notifier), daemon=True)
-        _t_pump.start()
-        _t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
-        _t7.start()
-        # Restart Telegram command handler
-        try:
-            from telegram_commands import TelegramCommandHandler
-            from notifier import NOTIFICATION_CONFIG
-            _cmd = TelegramCommandHandler(
-                bot_token=NOTIFICATION_CONFIG["telegram"]["bot_token"],
-                chat_id=NOTIFICATION_CONFIG["telegram"]["chat_id"],
-                state=state, state_lock=lock,
-                watchlist=WATCHLIST, config=config
-            )
-            _t4 = threading.Thread(target=_cmd.run, daemon=True)
-            _t4.start()
-        except Exception as _e:
-            logger.warning(f"Telegram restart failed: {_e}")
-        logger.info("✅ All worker threads restarted via web Start Bot")
+            state["paused"]  = False
+        logger.info("✅ Bot resumed via web Start Bot")
         notifier.telegram.send("▶️ <b>Bot đã được khởi động lại từ Web Dashboard</b>")
 
     # Đăng ký restart callback cho web dashboard
