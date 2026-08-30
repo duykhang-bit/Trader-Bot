@@ -5086,14 +5086,19 @@ def profit_protection_monitor(exchange, notifier):
         state["_pp_state"] = _pp_state
 
     _last_heartbeat = time.time()
+    logger.info(f"[PP] entering main loop, running={state['running']}")
+    
     while state["running"]:
         try:
             # Heartbeat mỗi 30s để biết thread còn sống
             if time.time() - _last_heartbeat > 30:
-                logger.info(f"[PP] heartbeat: running={state['running']}")
+                logger.info(f"[PP] heartbeat: running={state['running']}, thread alive")
                 _last_heartbeat = time.time()
 
-            if not getattr(config, "PROFIT_PROTECTION_ENABLED", True):
+            pp_enabled = getattr(config, "PROFIT_PROTECTION_ENABLED", True)
+            logger.debug(f"[PP] loop iteration, enabled={pp_enabled}")
+            
+            if not pp_enabled:
                 time.sleep(5)
                 continue
 
@@ -5112,10 +5117,11 @@ def profit_protection_monitor(exchange, notifier):
                 pump_syms  = set(state.get("pump_trade_symbols", set()))
                 prices_now = dict(state.get("prices", {}))
 
+            # Always log tick count so we know thread is alive
             if open_pos:
                 logger.info(f"[PP] tick: {len(open_pos)} positions — {[p['symbol'] for p in open_pos]}")
             else:
-                logger.debug(f"[PP] tick: 0 positions")
+                logger.info(f"[PP] tick: 0 positions")  # Changed from debug to info
 
             # Cleanup state cho position đã đóng
             active_syms = {p["symbol"] for p in open_pos}

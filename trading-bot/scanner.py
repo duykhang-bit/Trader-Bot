@@ -5,6 +5,7 @@ import logging
 import time
 import requests
 import pandas as pd
+import numpy as np
 from dataclasses import dataclass
 from typing import Optional, List
 from indicators import (
@@ -773,6 +774,67 @@ class CoinScore:
     reason: str          # Lý do vào lệnh
 
 
+def detect_swing_points(df: pd.DataFrame, lookback: int = 10) -> tuple:
+    """
+    Detect swing low/high in recent candles.
+    Returns: (swing_low_price, swing_high_price, distance_from_low, distance_from_high)
+    
+    Swing low: lowest low in last `lookback` bars where price bounced up
+    Swing high: highest high in last `lookback` bars where price rejected down
+    
+    Distance is in number of candles from current bar.
+    """
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
+    
+    current_price = close[-1]
+    
+    # Find swing low: lowest point in lookback window that has bounced
+    swing_low = None
+    swing_low_dist = lookback
+    for i in range(len(low) - lookback, len(low) - 1):  # Skip current bar
+        if i < 0:
+            continue
+        # Check if this is a local minimum (lower than neighbors)
+        is_swing_low = True
+        for j in range(max(0, i-2), min(len(low), i+3)):
+            if j != i and low[j] < low[i]:
+                is_swing_low = False
+                break
+        if is_swing_low:
+            if swing_low is None or low[i] < swing_low:
+                swing_low = low[i]
+                swing_low_dist = len(low) - 1 - i
+    
+    # Find swing high: highest point in lookback window that has rejected
+    swing_high = None
+    swing_high_dist = lookback
+    for i in range(len(high) - lookback, len(high) - 1):  # Skip current bar
+        if i < 0:
+            continue
+        # Check if this is a local maximum (higher than neighbors)
+        is_swing_high = True
+        for j in range(max(0, i-2), min(len(high), i+3)):
+            if j != i and high[j] > high[i]:
+                is_swing_high = False
+                break
+        if is_swing_high:
+            if swing_high is None or high[i] > swing_high:
+                swing_high = high[i]
+                swing_high_dist = len(high) - 1 - i
+    
+    # Fallback: use absolute low/high if no swing detected
+    if swing_low is None:
+        swing_low = np.min(low[-lookback:])
+        swing_low_dist = lookback
+    if swing_high is None:
+        swing_high = np.max(high[-lookback:])
+        swing_high_dist = lookback
+    
+    return swing_low, swing_high, swing_low_dist, swing_high_dist
+
+
 def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
     """
     Chấm điểm 1 coin dựa trên nhiều tiêu chí:
@@ -824,18 +886,45 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             if not is_pulling_back:
                 return None
 
-        # Kiểm tra giá đang gần recent high/low (20 nến)
-        recent_high = high.rolling(20).max().iloc[-1]
-        recent_low  = low.rolling(20).min().iloc[-1]
-        price_range = recent_high - recent_low
-        if price_range > 0:
-            price_pos = (current_price - recent_low) / price_range
-            if signal == "SHORT" and price_pos < 0.4:
+        # ═══════════════════════════════════════════════════════════════
+        # SWING-BASED ENTRY FILTER — Vào lệnh gần swing low/high thực sự
+        # ═══════════════════════════════════════════════════════════════
+        swing_low, swing_high, dist_from_low, dist_from_high = detect_swing_points(df, lookback=15)
+        
+        # Tính ATR để định khoảng cách cho phép
+        atr_value = atr  # Already calculated above
+        atr_multiplier = 2.0  # Cho phép entry trong vòng 2 ATR từ swing point
+        
+        if signal == "LONG":
+            # LONG: giá phải gần swing low (trong vòng 2 ATR)
+            distance_from_swing_low = current_price - swing_low
+            max_distance = atr_value * atr_multiplier
+            
+            if distance_from_swing_low > max_distance:
+                # Quá xa swing low → không vào LONG
+                logger.debug(f"{symbol} LONG skipped: price {current_price:.6f} too far from swing_low {swing_low:.6f} "
+                           f"(distance={distance_from_swing_low:.6f} > {max_distance:.6f})")
                 return None
-            # Nới lỏng price_pos filter cho LONG:
-            # Sau pump mạnh, range 20 nến rất rộng → đáy pullback vẫn > 0.6
-            # Chỉ block khi giá thực sự ở đỉnh range (> 0.80)
-            if signal == "LONG" and price_pos > 0.80:
+            
+            # Check thêm: không vào LONG nếu đang ở gần swing high
+            if current_price > swing_high * 0.97:  # Trong 3% của swing high
+                logger.debug(f"{symbol} LONG skipped: too close to swing_high {swing_high:.6f}")
+                return None
+                
+        elif signal == "SHORT":
+            # SHORT: giá phải gần swing high (trong vòng 2 ATR)
+            distance_from_swing_high = swing_high - current_price
+            max_distance = atr_value * atr_multiplier
+            
+            if distance_from_swing_high > max_distance:
+                # Quá xa swing high → không vào SHORT
+                logger.debug(f"{symbol} SHORT skipped: price {current_price:.6f} too far from swing_high {swing_high:.6f} "
+                           f"(distance={distance_from_swing_high:.6f} > {max_distance:.6f})")
+                return None
+            
+            # Check thêm: không vào SHORT nếu đang ở gần swing low
+            if current_price < swing_low * 1.03:  # Trong 3% của swing low
+                logger.debug(f"{symbol} SHORT skipped: too close to swing_low {swing_low:.6f}")
                 return None
 
         # --- Chấm điểm ---
@@ -892,6 +981,16 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         if symbol in PRIORITY_COINS:
             score = min(score + 10, 100)
             reasons.append("⭐PRIORITY")
+
+        # Log swing detection results for entries that pass filters
+        if signal == "LONG":
+            dist_pct = ((current_price - swing_low) / swing_low) * 100
+            logger.info(f"{symbol} LONG entry approved: price={current_price:.6f} swing_low={swing_low:.6f} "
+                       f"distance={dist_pct:.2f}% (within {atr_multiplier}×ATR)")
+        elif signal == "SHORT":
+            dist_pct = ((swing_high - current_price) / swing_high) * 100
+            logger.info(f"{symbol} SHORT entry approved: price={current_price:.6f} swing_high={swing_high:.6f} "
+                       f"distance={dist_pct:.2f}% (within {atr_multiplier}×ATR)")
 
         return CoinScore(
             symbol=symbol,
