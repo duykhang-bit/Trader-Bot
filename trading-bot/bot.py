@@ -3109,6 +3109,30 @@ def scan_engine(exchange, notifier):
                             if limit_count >= 2:
                                 break
                             try:
+                                # ═══ CHECK: coin đã có position chưa? ═══
+                                with lock:
+                                    open_syms = {p["symbol"] for p in state.get("open_positions", [])
+                                                 if abs(float(p.get("positionAmt", 0))) > 0}
+                                if a_sym in open_syms:
+                                    with lock:
+                                        state.get("armed_entries", {}).pop(a_sym, None)
+                                    logger.info(f"[Promote] ❌ Remove {a_sym}: đã có position")
+                                    continue
+
+                                # ═══ CHECK: coin đã có LIMIT order chưa? ═══
+                                try:
+                                    coin_orders = exchange._get("/fapi/v1/openOrders",
+                                                               {"symbol": a_sym}, signed=True)
+                                    has_limit = any(not o.get("reduceOnly", False) and o.get("type") == "LIMIT"
+                                                   for o in coin_orders)
+                                    if has_limit:
+                                        with lock:
+                                            state.get("armed_entries", {}).pop(a_sym, None)
+                                        logger.info(f"[Promote] ❌ Remove {a_sym}: đã có LIMIT order")
+                                        continue
+                                except Exception:
+                                    pass
+
                                 # Kiểm tra entry còn hợp lệ với mark price (85%-115%)
                                 cur_mark = exchange.get_ticker_price(a_sym)
                                 entry_p  = a_info["entry_price"]
@@ -3323,6 +3347,19 @@ def scan_engine(exchange, notifier):
                                 logger.info(f"[MSS] {mss_sym} đã có position → skip armed")
                                 mss_mgr.remove(mss_sym)
                                 continue
+
+                            # Check coin đã có LIMIT order chưa
+                            try:
+                                mss_coin_orders = exchange._get("/fapi/v1/openOrders",
+                                                               {"symbol": mss_sym}, signed=True)
+                                has_limit_mss = any(not o.get("reduceOnly", False) and o.get("type") == "LIMIT"
+                                                   for o in mss_coin_orders)
+                                if has_limit_mss:
+                                    logger.info(f"[MSS] {mss_sym} đã có LIMIT order → skip armed")
+                                    mss_mgr.remove(mss_sym)
+                                    continue
+                            except Exception:
+                                pass
 
                             with lock:
                                 armed_mss = state.setdefault("armed_entries", {})
