@@ -3172,20 +3172,29 @@ def scan_engine(exchange, notifier):
                                 if qty * final_entry < 5.0:
                                     qty = round(5.0 / final_entry + 0.001, 3)
                                 exchange.place_limit_order(a_sym, a_info["side"], qty, final_entry)
-                                try:
-                                    ords = exchange._get("/fapi/v1/openOrders", {"symbol": a_sym}, signed=True)
-                                    for o in ords:
-                                        if not o.get("reduceOnly") and o.get("type") == "LIMIT" and o.get("symbol") == a_sym:
-                                            with lock:
-                                                psm = state.setdefault("pending_smart_orders", {})
-                                                psm[str(o["orderId"])] = {
-                                                    "symbol": a_sym, "side": a_info["signal"],
-                                                    "qty": float(o.get("origQty", qty)),
-                                                    "sl": final_sl, "tp": final_tp,
-                                                    "ts": time.time(),
-                                                }
-                                except Exception:
-                                    pass
+                                # Retry lấy orderId để lưu pending_smart_orders (Binance cần ~300ms settle)
+                                _saved_psm = False
+                                for _retry in range(3):
+                                    try:
+                                        time.sleep(0.3)
+                                        ords = exchange._get("/fapi/v1/openOrders", {"symbol": a_sym}, signed=True)
+                                        for o in ords:
+                                            if not o.get("reduceOnly") and o.get("type") == "LIMIT" and o.get("symbol") == a_sym:
+                                                with lock:
+                                                    psm = state.setdefault("pending_smart_orders", {})
+                                                    psm[str(o["orderId"])] = {
+                                                        "symbol": a_sym, "side": a_info["signal"],
+                                                        "qty": float(o.get("origQty", qty)),
+                                                        "sl": final_sl, "tp": final_tp,
+                                                        "ts": time.time(),
+                                                    }
+                                                _saved_psm = True
+                                        if _saved_psm:
+                                            break
+                                    except Exception:
+                                        pass
+                                if not _saved_psm:
+                                    logger.warning(f"[Promote] ⚠️ pending_smart_orders NOT saved for {a_sym} — auto_sltp will handle")
                                 with lock:
                                     state.get("armed_entries", {}).pop(a_sym, None)
                                 limit_count += 1
@@ -3545,7 +3554,9 @@ def scan_engine(exchange, notifier):
                             )
 
                         if not cluster:
-                            skip_reason = "Không tìm được cluster liq"
+                            # Không có cluster → fallback về current price thay vì skip
+                            raw_entry = cur_price
+                            logger.info(f"[LiqFallback] {best.symbol}: no cluster found, using cur_price={cur_price:.6f}")
                         elif cluster["dist_pct"] > 10.0:
                             skip_reason = f"Cluster quá xa {cluster['dist_pct']:.1f}% > 10%"
                         else:

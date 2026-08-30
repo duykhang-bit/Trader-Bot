@@ -913,6 +913,10 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
                 
         elif signal == "SHORT":
             # SHORT: giá phải gần swing high (trong vòng 2 ATR)
+            # Đảm bảo price <= swing_high (giá chưa vượt qua đỉnh)
+            if current_price > swing_high:
+                logger.debug(f"{symbol} SHORT skipped: price {current_price:.6f} above swing_high {swing_high:.6f}")
+                return None
             distance_from_swing_high = swing_high - current_price
             max_distance = atr_value * atr_multiplier
             
