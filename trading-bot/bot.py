@@ -5066,6 +5066,8 @@ def profit_protection_monitor(exchange, notifier):
     Monitor mỗi 1s, check tất cả open positions.
     Áp dụng 3 tầng SL tự động.
     """
+    logger.info("[PP] ========== FUNCTION CALLED ==========")
+    
     # Per-position state
     # {symbol: {
     #   "side": LONG/SHORT,
@@ -5079,26 +5081,42 @@ def profit_protection_monitor(exchange, notifier):
     # }}
     _pp_state: dict = {}
 
-    time.sleep(20)  # đợi bot ổn định
-    logger.info("[PP] profit_protection_monitor started")
-    # Expose state cho web dashboard
-    with lock:
-        state["_pp_state"] = _pp_state
+    logger.info("[PP] sleeping 20s for bot warmup...")
+    time.sleep(20)
+    logger.info("[PP] warmup complete, initializing state")
+    
+    try:
+        # Expose state cho web dashboard
+        with lock:
+            state["_pp_state"] = _pp_state
+        logger.info("[PP] state initialized in shared dict")
+    except Exception as e:
+        logger.error(f"[PP] FAILED to init state: {e}", exc_info=True)
+        return
 
     _last_heartbeat = time.time()
-    logger.info(f"[PP] entering main loop, running={state['running']}")
+    logger.info(f"[PP] ========== ENTERING MAIN LOOP ========== running={state.get('running', 'UNKNOWN')}")
     
-    while state["running"]:
+    loop_count = 0
+    while state.get("running", False):
         try:
+            loop_count += 1
+            if loop_count <= 5:
+                logger.info(f"[PP] loop iteration #{loop_count}")
+            
             # Heartbeat mỗi 30s để biết thread còn sống
-            if time.time() - _last_heartbeat > 30:
-                logger.info(f"[PP] heartbeat: running={state['running']}, thread alive")
-                _last_heartbeat = time.time()
+            now = time.time()
+            if now - _last_heartbeat > 30:
+                logger.info(f"[PP] ========== HEARTBEAT ========== loop_count={loop_count}, running={state.get('running')}")
+                _last_heartbeat = now
 
             pp_enabled = getattr(config, "PROFIT_PROTECTION_ENABLED", True)
-            logger.debug(f"[PP] loop iteration, enabled={pp_enabled}")
+            if loop_count <= 3:
+                logger.info(f"[PP] PP_ENABLED={pp_enabled}")
             
             if not pp_enabled:
+                if loop_count <= 3:
+                    logger.info("[PP] PP disabled, sleeping 5s")
                 time.sleep(5)
                 continue
 
@@ -5111,17 +5129,29 @@ def profit_protection_monitor(exchange, notifier):
             apply_scan    = getattr(config, "PP_APPLY_SCAN",            True)
             apply_pump    = getattr(config, "PP_APPLY_PUMP",            True)
 
-            with lock:
-                open_pos   = [p for p in state.get("open_positions", [])
-                              if abs(float(p.get("positionAmt", 0))) > 0]
-                pump_syms  = set(state.get("pump_trade_symbols", set()))
-                prices_now = dict(state.get("prices", {}))
+            if loop_count <= 3:
+                logger.info(f"[PP] config loaded: trigger={pp_trigger}%, timer={pp_timer}s, trail={trail_trigger}%")
+
+            try:
+                with lock:
+                    open_pos   = [p for p in state.get("open_positions", [])
+                                  if abs(float(p.get("positionAmt", 0))) > 0]
+                    pump_syms  = set(state.get("pump_trade_symbols", set()))
+                    prices_now = dict(state.get("prices", {}))
+                
+                if loop_count <= 3:
+                    logger.info(f"[PP] state read: {len(open_pos)} positions, {len(prices_now)} prices")
+            except Exception as e:
+                logger.error(f"[PP] FAILED to read state: {e}", exc_info=True)
+                time.sleep(1)
+                continue
 
             # Always log tick count so we know thread is alive
             if open_pos:
-                logger.info(f"[PP] tick: {len(open_pos)} positions — {[p['symbol'] for p in open_pos]}")
+                logger.info(f"[PP] ✓ tick: {len(open_pos)} positions — {[p['symbol'] for p in open_pos]}")
             else:
-                logger.info(f"[PP] tick: 0 positions")  # Changed from debug to info
+                if loop_count % 10 == 0:  # Log every 10 loops when empty
+                    logger.info(f"[PP] ✓ tick: 0 positions (loop #{loop_count})")  # Changed from debug to info
 
             # Cleanup state cho position đã đóng
             active_syms = {p["symbol"] for p in open_pos}
@@ -5271,9 +5301,15 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
 
         except Exception as e:
-            logger.error(f"[PP] monitor loop error: {e}", exc_info=True)
+            logger.error(f"[PP] ========== LOOP EXCEPTION ========== {e}", exc_info=True)
 
-        time.sleep(getattr(config, "PP_CHECK_INTERVAL_SECS", 1))
+        # Log sleep before actually sleeping
+        sleep_interval = getattr(config, "PP_CHECK_INTERVAL_SECS", 1)
+        if loop_count <= 5:
+            logger.info(f"[PP] sleeping {sleep_interval}s before next loop")
+        time.sleep(sleep_interval)
+    
+    logger.warning(f"[PP] ========== EXITED MAIN LOOP ========== running={state.get('running')}")
 
 
 def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> bool:
@@ -6082,6 +6118,14 @@ if __name__ == "__main__":
     with lock:
         state["_restart_fn"] = _start_worker_threads
 
+    # ═══════════════════════════════════════════════════════════════
+    # CRITICAL: Set running=True BEFORE starting ANY threads!
+    # Many threads check while state["running"]: in their main loop
+    # ═══════════════════════════════════════════════════════════════
+    with lock:
+        state["running"] = True
+    logger.info("=== state['running'] = True === Starting all worker threads")
+
     t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
     t1.start()
 
@@ -6136,8 +6180,10 @@ if __name__ == "__main__":
     t_mfe_scan.start()
     t_partial_tp = threading.Thread(target=partial_tp_monitor, args=(exchange, notifier), daemon=True)
     t_partial_tp.start()
+    
     t_pp = threading.Thread(target=profit_protection_monitor, args=(exchange, notifier), daemon=True)
     t_pp.start()
+    logger.info("=== PP thread started ===")
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
