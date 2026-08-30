@@ -1187,8 +1187,10 @@ def price_updater(exchange):
                     p["_pnl"]  = pnl
                     p["_pct"]  = pct
                     p["_lev"]  = lev
-            except:
-                open_pos = []
+            except Exception as _pos_e:
+                logger.warning(f"[PriceUpdater] positionRisk failed: {_pos_e} — giữ positions cũ")
+                with lock:
+                    open_pos = list(state.get("open_positions", []))
 
             # Lấy balance NGOÀI lock — tránh block Flask khi gọi Binance API
             new_balance = exchange.get_account_balance()
