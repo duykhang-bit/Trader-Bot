@@ -1010,32 +1010,18 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
 
 def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Optional[CoinScore]:
     """
-    Quét coin theo thứ tự P0:
-    1. Market Regime (4H) — CHAOS/RANGE → skip
-    2. BTC Context (4H+1H+15M) — block/adjust score
-    3. 4H+1H bias xác định hướng
-    4. 1H Location — không entry sát S/R
-    5. 15M setup + score
-    6. compute_signal_score (WR check)
-    7. Rank candidates → chọn best theo score+RR composite
+    Quét coin theo thứ tự đúng:
+    1. Xác định xu hướng từ khung LỚN (4h → 1h) TRƯỚC
+    2. Tìm entry trên 15m THEO CHIỀU xu hướng
+    3. compute_signal_score check WR
     """
     base_url = getattr(config, "LIVE_BASE_URL", "https://demo-fapi.binance.com")
 
     active = get_active_universe(base_url, top_n=10)
-    logger.info(f"🔍 Scanning {len(active)} coins (P0 regime+BTC+location)...")
+    logger.info(f"🔍 Scanning {len(active)} coins (trend-first)...")
     candidates = []
 
-    # ── Lấy BTC context 1 lần cho toàn bộ vòng scan ────────────────
-    btc_ctx = {}
-    try:
-        btc_ctx = get_btc_context(exchange, config)
-        logger.debug(f"[BTC] {btc_ctx.get('reason','')} "
-                     f"adj_long={btc_ctx.get('score_adj_long',0):+.0f} "
-                     f"adj_short={btc_ctx.get('score_adj_short',0):+.0f}")
-    except Exception as _e:
-        logger.debug(f"[BTC] context error: {_e}")
-
-    # ── Cleanup expired pending ──────────────────────────────────────
+    # ── Cleanup expired pending entries ──────────────────────────────
     now_ts = time.time()
     expired = [s for s, v in _pending_watch.items() if now_ts - v["ts"] > _PENDING_TTL]
     for s in expired:
@@ -1096,32 +1082,15 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             except Exception as _e:
                 logger.debug(f"  ⚠️  pending retry {p_sym}: {_e}")
 
-    # ── MAIN SCAN: P0 Pipeline ───────────────────────────────────────
+    # ── MAIN SCAN: Trend-First ───────────────────────────────────────
     for symbol in active:
         try:
-            # ═══ BƯỚC 1: Fetch 4H + 1H data ═══
+            # ═══ BƯỚC 1: Xác định xu hướng từ 4h + 1h TRƯỚC ═══
             klines_4h = exchange.get_klines(symbol, "4h", limit=100)
             klines_1h = exchange.get_klines(symbol, "1h", limit=100)
             df_4h = _klines_to_df(klines_4h)
             df_1h = _klines_to_df(klines_1h)
 
-            # ═══ BƯỚC 2: Market Regime — CHAOS/RANGE → skip ═══
-            regime_info = detect_regime(df_4h, config)
-            regime = regime_info["regime"]
-
-            if regime == "CHAOS":
-                logger.info(f"  ⛔ {symbol}: CHAOS → skip | {regime_info['reason']}")
-                continue
-            if regime == "RANGE":
-                logger.debug(f"  ⏭  {symbol}: RANGE → skip trend-following | {regime_info['reason']}")
-                continue
-
-            # ═══ BƯỚC 3: BTC Filter (chỉ áp dụng cho ALT, không cho BTC/ETH) ═══
-            is_btc_eth = symbol in ("BTCUSDT", "ETHUSDT")
-            btc_block_long  = btc_ctx.get("block_long",  False) and not is_btc_eth
-            btc_block_short = btc_ctx.get("block_short", False) and not is_btc_eth
-
-            # ═══ BƯỚC 4: 4H+1H bias ═══
             close_4h = df_4h["close"]
             ema9_4h  = calculate_ema(close_4h, 9).iloc[-1]
             ema21_4h = calculate_ema(close_4h, 21).iloc[-1]
@@ -1144,30 +1113,27 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             elif ema9_1h < ema21_1h:
                 trend_1h = "SHORT"
 
+            # Bias chung
             if trend_4h == trend_1h and trend_4h != "NEUTRAL":
-                bias = trend_4h; strength = "STRONG"
+                bias = trend_4h
+                strength = "STRONG"
             elif trend_4h != "NEUTRAL":
-                bias = trend_4h; strength = "MEDIUM"
+                bias = trend_4h
+                strength = "MEDIUM"
             elif trend_1h != "NEUTRAL":
-                bias = trend_1h; strength = "MEDIUM"
+                bias = trend_1h
+                strength = "MEDIUM"
             else:
                 logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
                 continue
 
-            # Block nếu BTC ngược chiều mạnh
-            if bias == "LONG" and btc_block_long:
-                logger.info(f"  🚫 {symbol}: LONG blocked by BTC strong bearish")
-                continue
-            if bias == "SHORT" and btc_block_short:
-                logger.info(f"  🚫 {symbol}: SHORT blocked by BTC strong bullish")
-                continue
-
-            # ═══ BƯỚC 5: 15m setup ═══
+            # ═══ BƯỚC 2: Tìm entry 15m THEO CHIỀU bias ═══
             klines_15m = exchange.get_klines(symbol, "15m", limit=100)
             df_15m = _klines_to_df(klines_15m)
 
             scored = score_coin(symbol, df_15m, config)
 
+            # Nếu score_coin không trả signal đúng chiều → thử pullback
             if not scored or scored.signal != bias:
                 volatile = is_volatile_coin(df_1h, threshold_pct=4.0)
                 if volatile:
@@ -1186,32 +1152,11 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
                     continue
 
-            # ═══ BƯỚC 6: Location check — BỎ (skip nhiều entry tốt) ═══
-            # Code cũ không có filter này → vào nhanh hơn, bắt đáy/đỉnh tốt hơn
-            # Giữ lại code để bật khi cần:
-            # cur_price = float(df_15m["close"].iloc[-1])
-            # atr_1h    = float(calculate_atr(df_1h["high"], df_1h["low"], df_1h["close"]).iloc[-1])
-            # loc_check = check_1h_location(df_1h, bias, cur_price, atr_1h, config)
-            # if not loc_check["ok"]:
-            #     logger.info(f"  📍 {symbol}: {loc_check['reason']} → PENDING location")
-            #     _pending_watch[symbol] = {
-            #         "signal": bias, "score": scored.score, "bias": bias,
-            #         "win_rate": 0, "ts": time.time(), "retry": 0, "css": {},
-            #         "skip_reason": "location",
-            #     }
-            #     continue
-
-            # ═══ BƯỚC 7: MTF bonus + BTC score adjustment ═══
+            # Bonus MTF strength
             bonus = 15 if strength == "STRONG" else 8
             final_score = min(scored.score + bonus, 100)
 
-            # BTC score adjustment (không áp dụng cho BTC/ETH)
-            if not is_btc_eth:
-                adj = btc_ctx.get("score_adj_long", 0) if bias == "LONG" \
-                      else btc_ctx.get("score_adj_short", 0)
-                final_score = max(0, min(100, final_score + adj))
-
-            # ═══ BƯỚC 8: compute_signal_score (WR check) ═══
+            # ═══ BƯỚC 3: compute_signal_score — WR check ═══
             try:
                 css = compute_signal_score(df_15m, df_1h, df_4h)
             except Exception:
@@ -1239,95 +1184,33 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 logger.info(f"  📊 LOW WR {symbol}: {bias} WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}%")
                 continue
 
-            # ═══ PASS — tạo candidate với MSS analysis ═══
+            # ═══ PASS — tạo candidate ═══
             _pending_watch.pop(symbol, None)
             wr_bonus    = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
             final_score = min(final_score + wr_bonus, 100)
-            mtf_tag  = "MTF✅" if strength == "STRONG" else "MTF⚡"
-            reg_tag  = regime_info["regime"]
-            btc_tag  = btc_ctx.get("reason", "")[:30]
-
-            # ═══ BƯỚC 9: MSS / Liquidity Sweep Analysis ═══
-            mss_result  = None
-            mss_tag     = ""
-            mss_enabled = getattr(config, "MSS_ENGINE_ENABLED", True)
-
-            if mss_enabled:
-                try:
-                    from mss_engine import analyze_mss, get_mss_pending
-
-                    # Fetch 5m chỉ khi MSS engine cần (tiết kiệm API)
-                    df_5m = None
-                    if getattr(config, "MSS_USE_5M_CONFIRM", True):
-                        try:
-                            klines_5m = exchange.get_klines(symbol, "5m", limit=20)
-                            df_5m     = _klines_to_df(klines_5m)
-                        except Exception:
-                            pass
-
-                    mss_result = analyze_mss(df_15m, df_5m, bias, config)
-                    tier       = mss_result.tier
-
-                    if tier == "A":
-                        # Tier A: FULL confidence — bonus score cao nhất
-                        tier_bonus   = getattr(config, "MSS_TIER_A_BONUS", 20)
-                        final_score  = min(final_score + tier_bonus, 100)
-                        mss_tag      = f"MSS_A(conf={mss_result.confidence:.0f}%)"
-                        logger.info(f"  🎯 {symbol} MSS TIER A: {mss_result.reason[:80]}")
-
-                    elif tier == "B":
-                        # Tier B: HIGH confidence — bonus nhỏ hơn
-                        tier_bonus   = getattr(config, "MSS_TIER_B_BONUS", 10)
-                        final_score  = min(final_score + tier_bonus, 100)
-                        mss_tag      = f"MSS_B(conf={mss_result.confidence:.0f}%)"
-                        logger.info(f"  📊 {symbol} MSS TIER B: {mss_result.reason[:80]}")
-
-                    elif tier == "C":
-                        # Tier C: PENDING MSS — lưu lại chờ fast-check
-                        get_mss_pending().add(symbol, bias, mss_result)
-                        logger.info(f"  ⏳ {symbol} MSS TIER C PENDING: {mss_result.reason[:80]}")
-                        # Vẫn tạo candidate nhưng không có MSS bonus
-                        mss_tag = "MSS_C(pending)"
-
-                    else:
-                        # Tier D: không có sweep — không bonus nhưng vẫn pass
-                        mss_tag = "MSS_D(no_sweep)"
-
-                except Exception as _mss_e:
-                    logger.debug(f"  [MSS] {symbol} error: {_mss_e}")
-                    mss_tag = "MSS_err"
+            mtf_tag = "MTF✅" if strength == "STRONG" else "MTF⚡"
 
             final = CoinScore(
                 symbol=symbol, signal=bias, score=final_score,
                 rsi=scored.rsi, trend=scored.trend, atr_pct=scored.atr_pct,
-                reason=(f"{reg_tag} | 4h={trend_4h} 1h={trend_1h} | {mtf_tag} "
-                        f"WR={win_rate:.0f}% | {mss_tag} | {scored.reason} | {btc_tag}")
+                reason=f"4h={trend_4h} 1h={trend_1h} | {mtf_tag} WR={win_rate:.0f}% | {scored.reason}"
             )
-            # Đính kèm mss_result vào candidate để bot.py dùng entry_price
-            final.mss_result = mss_result  # type: ignore[attr-defined]
 
             if final.score >= min_score:
                 candidates.append(final)
-                logger.info(f"  ✅ {symbol}: {bias} score={final.score} "
-                            f"WR={win_rate:.0f}% loc_room={loc_check['room_atr']:.1f}×ATR "
-                            f"| {final.reason[:140]}")
+                logger.info(f"  ✅ {symbol}: {bias} score={final.score} WR={win_rate:.0f}% | {final.reason[:100]}")
 
         except Exception as e:
             logger.debug(f"  ⚠️  {symbol} skip: {e}")
 
-    # ═══ RANK candidates theo composite score (score + RR bonus) ═══
-    # Không dùng raw score đơn thuần — tính composite có RR component
-    def _candidate_quality(c: CoinScore) -> float:
-        return c.score  # RR check được làm trong bot.py (sau khi có entry zone)
+    # Lưu lại để dashboard hiển thị
+    scan_market._last_candidates = sorted(candidates, key=lambda x: x.score, reverse=True)
 
-    candidates_sorted = sorted(candidates, key=_candidate_quality, reverse=True)
-    scan_market._last_candidates = candidates_sorted
-
-    if not candidates_sorted:
+    if not candidates:
         logger.info("  No strong signals found.")
         return None
 
-    best = candidates_sorted[0]
+    best = max(candidates, key=lambda x: x.score)
     logger.info(f"🏆 Best: {best.symbol} | {best.signal} | Score={best.score}")
     return best
 
