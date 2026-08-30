@@ -1025,6 +1025,18 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
     logger.info(f"🔍 Scanning {len(active)} coins (trend-first)...")
     candidates = []
 
+    # ── BTC Context Filter (chỉ block khi STRONG 3TF đồng thuận) ────
+    btc_block_long  = False
+    btc_block_short = False
+    if getattr(config, "BTC_FILTER_ENABLED", False):
+        try:
+            btc_ctx = get_btc_context(exchange, config)
+            btc_block_long  = btc_ctx.get("block_long",  False)
+            btc_block_short = btc_ctx.get("block_short", False)
+            logger.debug(f"[BTC] {btc_ctx.get('reason','')} block_long={btc_block_long} block_short={btc_block_short}")
+        except Exception as _e:
+            logger.debug(f"[BTC] context error: {_e}")
+
     # ── Cleanup expired pending entries ──────────────────────────────
     now_ts = time.time()
     expired = [s for s, v in _pending_watch.items() if now_ts - v["ts"] > _PENDING_TTL]
@@ -1127,6 +1139,19 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             elif trend_1h != "NEUTRAL":
                 bias = trend_1h
                 strength = "MEDIUM"
+            else:
+                logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
+                continue
+
+            # BTC Filter — chỉ block ALT khi BTC strong ngược chiều
+            is_btc_eth = symbol in ("BTCUSDT", "ETHUSDT")
+            if not is_btc_eth:
+                if bias == "LONG" and btc_block_long:
+                    logger.info(f"  🚫 {symbol}: LONG blocked by BTC STRONG_BEAR")
+                    continue
+                if bias == "SHORT" and btc_block_short:
+                    logger.info(f"  🚫 {symbol}: SHORT blocked by BTC STRONG_BULL")
+                    continue
             else:
                 logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
                 continue
