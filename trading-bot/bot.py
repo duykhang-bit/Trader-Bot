@@ -5259,7 +5259,7 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
 
         except Exception as e:
-            logger.debug(f"[PP] monitor error: {e}")
+            logger.error(f"[PP] monitor loop error: {e}", exc_info=True)
 
         time.sleep(getattr(config, "PP_CHECK_INTERVAL_SECS", 1))
 
