@@ -3570,18 +3570,18 @@ def scan_engine(exchange, notifier):
                     raw_entry = cur_price
                     logger.info(f"[EntryFallback] {best.symbol}: using current price {raw_entry:.6f}")
 
-                    # Apply Entry Offset
-                    if not skip_reason and raw_entry > 0:
-                        if getattr(config, "ENTRY_OFFSET_ENABLED", False):
-                            offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
-                            if best.signal == "LONG":
-                                entry_price = round(raw_entry * (1 - offset_pct), 8)
-                            else:
-                                entry_price = round(raw_entry * (1 + offset_pct), 8)
-                            logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
-                                        f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                # Apply Entry Offset — LUÔN LUÔN apply nếu có raw_entry
+                if not skip_reason and raw_entry > 0:
+                    if getattr(config, "ENTRY_OFFSET_ENABLED", False):
+                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.003)
+                        if best.signal == "LONG":
+                            entry_price = round(raw_entry * (1 - offset_pct), 8)
                         else:
-                            entry_price = raw_entry
+                            entry_price = round(raw_entry * (1 + offset_pct), 8)
+                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
+                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
+                    else:
+                        entry_price = raw_entry
 
                 # ═══ BƯỚC 7: Tính SL / TP theo entry_price cuối + RR + No-Chase ═══
                 if not skip_reason:
