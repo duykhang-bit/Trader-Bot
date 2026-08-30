@@ -3539,17 +3539,18 @@ def scan_engine(exchange, notifier):
                         df_15m_entry["high"], df_15m_entry["low"], df_15m_entry["close"]
                     ).iloc[-1])
                     if best.signal == "LONG":
-                        sl = round(entry_price * 0.98, 8)          # SL 2% dưới entry
-                        tp = round(entry_price + atr_15m * 8, 8)   # TP ATR×8
+                        sl = round(entry_price - max(atr_15m * 2.0, entry_price * 0.02), 8)
+                        tp = round(entry_price + atr_15m * 8, 8)
                     else:
-                        sl = round(entry_price * 1.02, 8)           # SL 2% trên entry
-                        tp = round(entry_price - atr_15m * 8, 8)    # TP ATR×8
+                        sl = round(entry_price + max(atr_15m * 2.0, entry_price * 0.02), 8)
+                        tp = round(entry_price - atr_15m * 8, 8)
 
                     risk   = abs(entry_price - sl)
                     reward = abs(tp - entry_price)
                     rr     = reward / risk if risk > 0 else 0.0
+                    sl_pct = risk / entry_price * 100
                     logger.info(f"[SL/TP] {best.symbol} {best.signal}: "
-                                f"entry={entry_price:.6f} sl={sl:.6f}(2%) "
+                                f"entry={entry_price:.6f} sl={sl:.6f}({sl_pct:.2f}%) "
                                 f"tp={tp:.6f} RR={rr:.2f}")
 
                     # RR check
