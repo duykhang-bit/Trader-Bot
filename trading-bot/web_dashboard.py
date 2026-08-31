@@ -4413,7 +4413,7 @@ def api_pp_settings_get():
             "trigger_pct":           getattr(_cfg, "PP_TRIGGER_PCT",             0.6),
             "timer_secs":            getattr(_cfg, "PP_TIMER_SECS",              15),
             "fee_buffer_pct":        getattr(_cfg, "PP_FEE_BUFFER_PCT",          0.15),
-            "protection_buffer_pct": getattr(_cfg, "PP_PROTECTION_BUFFER_PCT",   0.2),
+            "protection_buffer_pct": getattr(_cfg, "PP_PROTECTION_BUFFER_PCT",   0.25),
             "trailing_trigger_pct":  getattr(_cfg, "PP_TRAILING_TRIGGER_PCT",    1.0),
             "trailing_timer_secs":   getattr(_cfg, "PP_TRAILING_TIMER_SECS",     7),
             "trailing_distance_pct": getattr(_cfg, "PP_TRAILING_DISTANCE_PCT",   0.5),
