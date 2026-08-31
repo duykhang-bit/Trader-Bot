@@ -2879,7 +2879,7 @@ def check_auth():
     if request.path in ("/login", "/logout"):
         return None  # public
 @app.route("/")
-@requires_auth
+@require_auth
 def index():
     return render_template_string(HTML_TEMPLATE)
 
