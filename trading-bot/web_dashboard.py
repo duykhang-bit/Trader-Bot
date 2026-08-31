@@ -28,11 +28,8 @@ def require_auth(f):
     """Decorator bảo vệ route — redirect về login nếu chưa đăng nhập."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("authenticated"):
-            # API endpoints trả 401, page endpoints redirect login
-            if request.path.startswith("/api/"):
-                return jsonify({"ok": False, "msg": "Unauthorized"}), 401
-            return redirect("/login")
+        # Auto-authenticate - không cần login
+        session["authenticated"] = True
         return f(*args, **kwargs)
     return decorated
 
