@@ -5242,11 +5242,9 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + trail_dist), 8)
-                            # BUG FIX: SL SHORT không được thấp hơn entry
-                            # (nếu thấp hơn entry = đang lỗ, SL vô nghĩa)
-                            if entry > 0 and new_trail_sl < entry:
-                                new_trail_sl = round(entry * 1.0005, 8)  # tối thiểu entry + 0.05%
-                            if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
+                            # SHORT: SL trailing chỉ được TĂNG LÊN (kéo về phía entry/lỗ)
+                            # Không bao giờ được giảm xuống thấp hơn SL hiện tại!
+                            if new_trail_sl > ps["current_sl"] or ps["current_sl"] == 0:
                                 if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                     if ps["tier"] < 3:
                                         ps["tier"] = 3
