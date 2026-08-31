@@ -459,6 +459,25 @@ async function setEntryOffset() {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function toggleProfitLock(enabled) {
+    const r = await apiPost('/api/profit_lock', {enabled});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
+async function setProfitLock() {
+    const minEl = document.getElementById('profit-lock-min');
+    const highEl = document.getElementById('profit-lock-high');
+    const speedEl = document.getElementById('profit-lock-speed');
+    const minPct = minEl ? parseFloat(minEl.value) : 2.0;
+    const highPct = highEl ? parseFloat(highEl.value) : 15.0;
+    const speedPct = speedEl ? parseFloat(speedEl.value) : 1.5;
+    if (isNaN(minPct) || minPct < 0.5 || minPct > 10) { toast('Min phải 0.5-10%', false); return; }
+    if (isNaN(highPct) || highPct < 5 || highPct > 50) { toast('High phải 5-50%', false); return; }
+    if (isNaN(speedPct) || speedPct < 0.5 || speedPct > 5) { toast('Speed phải 0.5-5%/s', false); return; }
+    const r = await apiPost('/api/profit_lock', {min_pct: minPct, high_pct: highPct, speed_pct: speedPct});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 function updateTVChart() {
     const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
@@ -973,6 +992,37 @@ function renderDashboard(d) {
                 <button class="btn btn-sm" onclick="setEntryOffset()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#d29922;border:1px solid #3a2a00">Set</button>
                 <span style="font-size:11px;color:${eo?'#d29922':'#8b949e'}">
                     ${eo?'LONG −'+pct+'% | SHORT +'+pct+'%':'Đã tắt — vào đúng giá liq'}
+                </span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F4B0; Profit Lock:</span>
+            ${(() => {
+                const en = d.profit_lock_enabled !== false;
+                const minPct = (d.profit_lock_min_pct || 2.0).toFixed(1);
+                const highPct = (d.profit_lock_high_pct || 15.0).toFixed(1);
+                const speedPct = (d.profit_lock_speed_pct || 1.5).toFixed(1);
+                return `
+                <button class="btn btn-sm ${en ? 'btn-green' : ''}" onclick="toggleProfitLock(true)"
+                        style="${en ? '' : 'background:#21262d;color:#8b949e'}">&#x2705; Bật</button>
+                <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleProfitLock(false)"
+                        style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
+                <span style="font-size:11px;color:#484f58;margin-left:6px">Min</span>
+                <input id="profit-lock-min" type="number" min="0.5" max="10" step="0.5" value="${minPct}"
+                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center"
+                       title="Lời tối thiểu (%) để bắt đầu theo dõi dump/pump">
+                <span style="font-size:11px;color:#484f58">% High</span>
+                <input id="profit-lock-high" type="number" min="5" max="50" step="1" value="${highPct}"
+                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#f85149;text-align:center"
+                       title="Lời cao (%) → chốt ngay không cần check tốc độ">
+                <span style="font-size:11px;color:#484f58">% Speed</span>
+                <input id="profit-lock-speed" type="number" min="0.5" max="5" step="0.1" value="${speedPct}"
+                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center"
+                       title="Tốc độ giá (%) thay đổi trong 1s → coi là dump/pump mạnh">
+                <span style="font-size:11px;color:#484f58">%/s</span>
+                <button class="btn btn-sm" onclick="setProfitLock()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#58a6ff;border:1px solid #1a3a5a">Set</button>
+                <span style="font-size:11px;color:${en?'#58a6ff':'#8b949e'}">
+                    ${en?'Min:'+minPct+'% High:'+highPct+'% Speed:'+speedPct+'%/s':'Đã tắt'}
                 </span>`;
             })()}
         </div>
@@ -3035,6 +3085,10 @@ def api_state():
         "breakeven_pump_pnl_floor":   getattr(_config, "BREAKEVEN_PUMP_PNL_FLOOR", 1.0),
         "breakeven_scan_pnl_floor":   getattr(_config, "BREAKEVEN_SCAN_PNL_FLOOR", 0.7),
         "breakeven_reversal_confirm": getattr(_config, "BREAKEVEN_REVERSAL_CONFIRM", 2),
+        "profit_lock_enabled":        getattr(_config, "PROFIT_LOCK_ENABLED", True),
+        "profit_lock_min_pct":        getattr(_config, "PROFIT_LOCK_MIN_PCT", 2.0),
+        "profit_lock_high_pct":       getattr(_config, "PROFIT_LOCK_HIGH_PCT", 15.0),
+        "profit_lock_speed_pct":      getattr(_config, "PROFIT_LOCK_SPEED_PCT", 1.5),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
         "candidates": [{"symbol": c.symbol, "signal": c.signal, "score": c.score,
@@ -4056,6 +4110,50 @@ def api_entry_offset():
         pct     = getattr(_config, "ENTRY_OFFSET_PCT", 0.003)
         status  = f"bật {pct*100:.1f}%" if enabled else "tắt"
         return jsonify({"ok": True, "msg": f"Entry Offset: {status}", "enabled": enabled, "pct": pct})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+@app.route("/api/profit_lock", methods=["POST"])
+@require_auth
+def api_profit_lock():
+    """Bật/tắt và config Profit Lock (min%, high%, speed%)."""
+    data = request.get_json() or {}
+    try:
+        if "enabled" in data:
+            _config.PROFIT_LOCK_ENABLED = bool(data["enabled"])
+        if "min_pct" in data:
+            _config.PROFIT_LOCK_MIN_PCT = max(0.5, min(10.0, float(data["min_pct"])))
+        if "high_pct" in data:
+            _config.PROFIT_LOCK_HIGH_PCT = max(5.0, min(50.0, float(data["high_pct"])))
+        if "speed_pct" in data:
+            _config.PROFIT_LOCK_SPEED_PCT = max(0.5, min(5.0, float(data["speed_pct"])))
+        
+        # Ghi persistent vào config.py
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for key, val_str in [
+                ("PROFIT_LOCK_ENABLED",   str(_config.PROFIT_LOCK_ENABLED)),
+                ("PROFIT_LOCK_MIN_PCT",   str(round(_config.PROFIT_LOCK_MIN_PCT, 1))),
+                ("PROFIT_LOCK_HIGH_PCT",  str(round(_config.PROFIT_LOCK_HIGH_PCT, 1))),
+                ("PROFIT_LOCK_SPEED_PCT", str(round(_config.PROFIT_LOCK_SPEED_PCT, 1))),
+            ]:
+                content = _re.sub(rf"(?m)^{key}\s*=\s*.+$", f"{key} = {val_str}", content)
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"[ProfitLock] Config saved to {config_path}")
+        except Exception as ex:
+            logger.warning(f"[ProfitLock] Cannot persist config: {ex}")
+        
+        enabled = getattr(_config, "PROFIT_LOCK_ENABLED", True)
+        min_pct = getattr(_config, "PROFIT_LOCK_MIN_PCT", 2.0)
+        high_pct = getattr(_config, "PROFIT_LOCK_HIGH_PCT", 15.0)
+        speed_pct = getattr(_config, "PROFIT_LOCK_SPEED_PCT", 1.5)
+        status = f"bật Min:{min_pct:.1f}% High:{high_pct:.1f}% Speed:{speed_pct:.1f}%/s" if enabled else "tắt"
+        return jsonify({"ok": True, "msg": f"Profit Lock: {status}", "enabled": enabled,
+                        "min_pct": min_pct, "high_pct": high_pct, "speed_pct": speed_pct})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 
