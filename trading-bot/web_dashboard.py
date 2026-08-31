@@ -4029,24 +4029,6 @@ def api_scan_protector():
     })
 
 
-@app.route("/api/profit_lock", methods=["POST"])
-@require_auth
-def api_profit_lock():
-    """Bật/tắt Auto Profit Lock — tự chốt lời khi coin bay mạnh mà TP xa."""
-    data    = request.get_json() or {}
-    enabled = data.get("enabled", True)
-    try:
-        import config as _cfg
-        _cfg.PROFIT_LOCK_ENABLED = bool(enabled)
-    except Exception:
-        pass
-    status = "bật" if enabled else "tắt"
-    return jsonify({
-        "ok":  True,
-        "msg": f"Profit Lock: {status}",
-        "enabled": bool(enabled),
-    })
-
 @app.route("/api/breakeven_exit", methods=["POST"])
 @require_auth
 def api_breakeven_exit():
