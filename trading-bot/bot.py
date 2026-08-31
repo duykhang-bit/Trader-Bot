@@ -5228,9 +5228,6 @@ def profit_protection_monitor(exchange, notifier):
                         peak = ps["peak_price"]
                         if is_long:
                             new_trail_sl = round(peak * (1 - trail_dist), 8)
-                            # BUG FIX: SL LONG không được cao hơn entry
-                            if entry > 0 and new_trail_sl > entry:
-                                new_trail_sl = round(entry * 0.9995, 8)  # tối thiểu entry - 0.05%
                             # Chỉ update nếu tốt hơn SL hiện tại
                             if new_trail_sl > ps["current_sl"]:
                                 if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
@@ -5242,10 +5239,6 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + trail_dist), 8)
-                            # BUG FIX: SL SHORT không được thấp hơn entry
-                            # (nếu thấp hơn entry = đang lỗ, SL vô nghĩa)
-                            if entry > 0 and new_trail_sl < entry:
-                                new_trail_sl = round(entry * 1.0005, 8)  # tối thiểu entry + 0.05%
                             if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
                                 if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                     if ps["tier"] < 3:
