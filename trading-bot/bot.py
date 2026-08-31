@@ -57,11 +57,12 @@ from liq_strategy import LiqStrategy, SplitPosition
 os.makedirs("logs", exist_ok=True)
 
 # Rotating log: tối đa 5MB/file, giữ 2 file backup → tự xóa cũ
-from logging.handlers import RotatingFileHandler
-_log_handler = RotatingFileHandler(
+from logging.handlers import TimedRotatingFileHandler
+_log_handler = TimedRotatingFileHandler(
     config.LOG_FILE,
-    maxBytes=5 * 1024 * 1024,   # 5MB
-    backupCount=2,
+    when="midnight",        # rotate lúc 00:00 mỗi ngày
+    interval=1,
+    backupCount=3,          # giữ 3 ngày, tự xóa cũ hơn
     encoding="utf-8"
 )
 _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
