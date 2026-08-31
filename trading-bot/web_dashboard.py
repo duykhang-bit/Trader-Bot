@@ -2875,9 +2875,9 @@ async function saveP0Settings() {
 
 @app.before_request
 def check_auth():
-    """Bảo vệ toàn bộ dashboard — chỉ cho qua /login và /logout."""
-    if request.path in ("/login", "/logout"):
-        return None  # public
+    """Auto-authenticate mọi request."""
+    session["authenticated"] = True
+    return None
 @app.route("/")
 @require_auth
 def index():
