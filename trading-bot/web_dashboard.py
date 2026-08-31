@@ -1538,6 +1538,13 @@ function renderDashboard(d) {
                      style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
               <span style="font-size:11px;color:#484f58">% (phí+slip)</span>
             </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">Protection buffer:</span>
+              <input type="number" id="pp-protection-buf" min="0" max="1" step="0.05"
+                     style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px"
+                     title="SL trên entry bao nhiêu % (0=sát entry, 0.2=an toàn)">
+              <span style="font-size:11px;color:#484f58">% (SL+entry)</span>
+            </div>
           </div>
 
           <!-- Trailing -->
@@ -2654,6 +2661,7 @@ async function loadPP() {
         set('pp-trigger-pct',   s.trigger_pct);
         set('pp-timer',         s.timer_secs);
         set('pp-fee-buf',       s.fee_buffer_pct);
+        set('pp-protection-buf', s.protection_buffer_pct);
         set('pp-trail-trigger', s.trailing_trigger_pct);
         set('pp-trail-timer',   s.trailing_timer_secs);
         set('pp-trail-dist',    s.trailing_distance_pct);
@@ -2777,6 +2785,7 @@ async function savePP() {
         trigger_pct:           parseFloat(get('pp-trigger-pct')),
         timer_secs:            parseInt(get('pp-timer')),
         fee_buffer_pct:        parseFloat(get('pp-fee-buf')),
+        protection_buffer_pct: parseFloat(get('pp-protection-buf')),
         trailing_trigger_pct:  parseFloat(get('pp-trail-trigger')),
         trailing_timer_secs:   parseInt(get('pp-trail-timer')),
         trailing_distance_pct: parseFloat(get('pp-trail-dist')),
