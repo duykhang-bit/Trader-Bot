@@ -2878,13 +2878,8 @@ def check_auth():
     """Bảo vệ toàn bộ dashboard — chỉ cho qua /login và /logout."""
     if request.path in ("/login", "/logout"):
         return None  # public
-    if not session.get("authenticated"):
-        if request.path.startswith("/api/"):
-            return jsonify({"ok": False, "msg": "Unauthorized"}), 401
-        return redirect("/login")
-
-
 @app.route("/")
+@requires_auth
 def index():
     return render_template_string(HTML_TEMPLATE)
 
