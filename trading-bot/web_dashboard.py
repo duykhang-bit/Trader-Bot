@@ -2938,7 +2938,7 @@ def api_state():
     if now_ts - _pending_orders_last_fetch > _PENDING_ORDERS_TTL:
         try:
             if _exchange:
-                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=3)
+                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=2)
                 _pending_orders_cache = [{
                     "symbol": o.get("symbol", ""),
                     "side": o.get("side", ""),
