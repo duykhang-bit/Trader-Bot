@@ -3096,7 +3096,7 @@ def api_state():
         "breakeven_reversal_confirm": getattr(_config, "BREAKEVEN_REVERSAL_CONFIRM", 2),
         "profit_lock_enabled":        getattr(_config, "PROFIT_LOCK_ENABLED", True),
         "profit_lock_min_pct":        getattr(_config, "PROFIT_LOCK_MIN_PCT", 15.0),
-        "profit_lock_high_pct":       getattr(_config, "PROFIT_LOCK_HIGH_PCT", 50.0),
+        "profit_lock_high_pct":       getattr(_config, "PROFIT_LOCK_HIGH_PCT", 30.0),
         "profit_lock_speed_pct":      getattr(_config, "PROFIT_LOCK_SPEED_PCT", 1.5),
         "max_loss_enabled":         getattr(_config, "MAX_LOSS_ENABLED", True),
         "max_loss_value":           getattr(_config, "MAX_LOSS_PER_POSITION", 20.0),
@@ -4140,7 +4140,7 @@ def api_profit_lock():
         
         enabled = getattr(_config, "PROFIT_LOCK_ENABLED", True)
         min_pct = getattr(_config, "PROFIT_LOCK_MIN_PCT", 15.0)
-        high_pct = getattr(_config, "PROFIT_LOCK_HIGH_PCT", 50.0)
+        high_pct = getattr(_config, "PROFIT_LOCK_HIGH_PCT", 30.0)
         speed_pct = getattr(_config, "PROFIT_LOCK_SPEED_PCT", 1.5)
         status = f"bật Min:{min_pct:.1f}% High:{high_pct:.1f}% Speed:{speed_pct:.1f}%/s" if enabled else "tắt"
         return jsonify({"ok": True, "msg": f"Profit Lock: {status}", "enabled": enabled,
