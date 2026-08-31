@@ -5159,8 +5159,20 @@ def profit_protection_monitor(exchange, notifier):
                         "trailing_ts":   0.0,
                         "peak_price":    mark,
                         "trailing_sl":   0.0,
-                        "notified":      False,  # chưa gửi notification
+                        "notified":      False,
+                        "tp":            0.0,   # sẽ được fill từ open orders
+                        "sl_last_update_ts": 0.0,  # throttle SL update
                     }
+                    # Lấy TP từ Binance open orders
+                    try:
+                        orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
+                        tp_orders = [o for o in orders
+                                     if o.get("type") in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")
+                                     and o.get("reduceOnly", False)]
+                        if tp_orders:
+                            _pp_state[sym]["tp"] = float(tp_orders[0].get("stopPrice", 0))
+                    except Exception:
+                        pass
                     logger.info(f"[PP] {sym} initialized tier=1 sl={cur_sl:.6f}")
                     continue  # skip vòng này, xử lý vòng sau
 
@@ -5221,32 +5233,64 @@ def profit_protection_monitor(exchange, notifier):
                 if ps["tier"] >= 2 and profit_pct >= trail_trigger:
                     if ps["trailing_ts"] == 0.0:
                         ps["trailing_ts"] = now
-                        ps["peak_price"]  = mark  # reset peak từ đây
+                        ps["peak_price"]  = mark
                         logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {trail_trigger}% → trailing timer")
                     elif now - ps["trailing_ts"] >= trail_timer:
-                        # Trailing ON — tính trailing SL từ peak
                         peak = ps["peak_price"]
+
+                        # ── Tính trailing distance: gần TP thì trail chặt hơn ──
+                        tp       = ps.get("tp", 0.0)
+                        near_tp_dist = getattr(config, "PP_NEAR_TP_DISTANCE_PCT", 0.2) / 100
+                        near_tp_threshold = getattr(config, "PP_NEAR_TP_THRESHOLD_PCT", 50.0) / 100  # 50%
+
+                        tp_progress = 0.0  # % đã đi được từ entry → TP
+                        if tp > 0 and entry > 0:
+                            total = abs(tp - entry)
+                            done  = abs(peak - entry)
+                            tp_progress = done / total if total > 0 else 0.0
+
+                        # Gần TP (>= 50% đường) → trailing chặt hơn
+                        active_dist = near_tp_dist if tp_progress >= near_tp_threshold else trail_dist
+
                         if is_long:
-                            new_trail_sl = round(peak * (1 - trail_dist), 8)
+                            new_trail_sl = round(peak * (1 - active_dist), 8)
                             # Chỉ update nếu tốt hơn SL hiện tại
                             if new_trail_sl > ps["current_sl"]:
-                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
-                                    if ps["tier"] < 3:
-                                        ps["tier"] = 3
-                                        logger.info(f"[PP] ✅ {sym} LONG tier3 TRAILING ON "
-                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f}")
-                                    ps["current_sl"]  = new_trail_sl
-                                    ps["trailing_sl"] = new_trail_sl
+                                # Throttle: chỉ update nếu thay đổi >= 0.05% so với SL hiện tại
+                                min_change = ps["current_sl"] * 0.0005
+                                if new_trail_sl - ps["current_sl"] >= min_change:
+                                    if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                        tier_label = "tier3" if ps["tier"] < 3 else "tier3"
+                                        if ps["tier"] < 3:
+                                            ps["tier"] = 3
+                                            logger.info(f"[PP] ✅ {sym} LONG {tier_label} TRAILING ON "
+                                                        f"peak={peak:.6f} sl={new_trail_sl:.6f} "
+                                                        f"tp_progress={tp_progress*100:.0f}%")
+                                        else:
+                                            logger.info(f"[PP] 📈 {sym} LONG TRAILING UPDATE "
+                                                        f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                        ps["current_sl"]  = new_trail_sl
+                                        ps["trailing_sl"] = new_trail_sl
+                                        ps["sl_last_update_ts"] = now
                         else:  # SHORT
-                            new_trail_sl = round(peak * (1 + trail_dist), 8)
+                            new_trail_sl = round(peak * (1 + active_dist), 8)
+                            # SHORT: SL chỉ được GIẢM XUỐNG (tiến về phía lời)
                             if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
-                                    if ps["tier"] < 3:
-                                        ps["tier"] = 3
-                                        logger.info(f"[PP] ✅ {sym} SHORT tier3 TRAILING ON "
-                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f}")
-                                    ps["current_sl"]  = new_trail_sl
-                                    ps["trailing_sl"] = new_trail_sl
+                                # Throttle: chỉ update nếu thay đổi >= 0.05%
+                                min_change = ps["current_sl"] * 0.0005
+                                if ps["current_sl"] == 0 or ps["current_sl"] - new_trail_sl >= min_change:
+                                    if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                        if ps["tier"] < 3:
+                                            ps["tier"] = 3
+                                            logger.info(f"[PP] ✅ {sym} SHORT tier3 TRAILING ON "
+                                                        f"peak={peak:.6f} sl={new_trail_sl:.6f} "
+                                                        f"tp_progress={tp_progress*100:.0f}%")
+                                        else:
+                                            logger.info(f"[PP] 📉 {sym} SHORT TRAILING UPDATE "
+                                                        f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                        ps["current_sl"]  = new_trail_sl
+                                        ps["trailing_sl"] = new_trail_sl
+                                        ps["sl_last_update_ts"] = now
 
         except Exception as e:
             logger.error(f"[PP] ========== LOOP EXCEPTION ========== {e}", exc_info=True)
