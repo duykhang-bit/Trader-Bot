@@ -1913,8 +1913,8 @@ function renderPumpNhe(d) {
     el.innerHTML = html;
 }
 
-// Pump Nhẹ Radar auto-refresh mỗi 5s
-setInterval(fetchPumpNhe, 5000);
+// Pump Nhẹ Radar auto-refresh mỗi 10s
+setInterval(fetchPumpNhe, 10000);
 fetchPumpNhe();
 
 // ── PUMP RADAR ───────────────────────────────────────────────
@@ -2467,8 +2467,8 @@ function scrollToCoin(sym) {
     if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 
-// Pump radar auto-refresh riêng — nhanh hơn main (2s)
-setInterval(fetchPump, 3000);
+// Pump radar auto-refresh riêng — 5s
+setInterval(fetchPump, 5000);
 fetchPump();
 
 // PnL stats refresh mỗi 30s (không cần nhanh)
@@ -2625,7 +2625,7 @@ function _patchDashboard(d) {
 }
 
 setInterval(updateClock,1000);
-setInterval(refresh, 3000);  // Giữ nguyên 3s - đừng làm giật UI
+setInterval(refresh, 5000);  // 5s - đủ nhanh, giảm tải browser
 updateClock();
 refresh();
 
@@ -2981,10 +2981,8 @@ def api_state():
             "entry": float(p.get("entryPrice",0)), "mark": p.get("_mark",0),
             "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
 
-    # Pending orders (lệnh chờ khớp) — đọc từ state (được update bởi limit_order_monitor)
-    pending_orders = []
-    with _lock:
-        pending_orders = list(_state.get("pending_orders_cache", []))
+    # Pending orders — đọc từ state cache (không cần lock riêng)
+    pending_orders = list(s.get("pending_orders_cache", []))
 
     recent = sorted(closed, key=lambda t: t.get("time",""), reverse=True)[:15]
     trades_fmt = [{"symbol":t.get("symbol",""),"side":t.get("side",""),"entry":t.get("entry",0),
