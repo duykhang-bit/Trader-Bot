@@ -4422,6 +4422,7 @@ def api_pp_settings_get():
             "trigger_pct":           getattr(_cfg, "PP_TRIGGER_PCT",             0.6),
             "timer_secs":            getattr(_cfg, "PP_TIMER_SECS",              15),
             "fee_buffer_pct":        getattr(_cfg, "PP_FEE_BUFFER_PCT",          0.15),
+            "protection_buffer_pct": getattr(_cfg, "PP_PROTECTION_BUFFER_PCT",   0.2),
             "trailing_trigger_pct":  getattr(_cfg, "PP_TRAILING_TRIGGER_PCT",    1.0),
             "trailing_timer_secs":   getattr(_cfg, "PP_TRAILING_TIMER_SECS",     7),
             "trailing_distance_pct": getattr(_cfg, "PP_TRAILING_DISTANCE_PCT",   0.5),
@@ -4443,6 +4444,7 @@ def api_pp_settings_save():
         if "trigger_pct"           in data: _cfg.PP_TRIGGER_PCT             = max(0.1, min(5.0,  float(data["trigger_pct"])))
         if "timer_secs"            in data: _cfg.PP_TIMER_SECS              = max(5,   min(60,   int(data["timer_secs"])))
         if "fee_buffer_pct"        in data: _cfg.PP_FEE_BUFFER_PCT          = max(0.05,min(0.5,  float(data["fee_buffer_pct"])))
+        if "protection_buffer_pct" in data: _cfg.PP_PROTECTION_BUFFER_PCT   = max(0.0, min(1.0,  float(data["protection_buffer_pct"])))
         if "trailing_trigger_pct"  in data: _cfg.PP_TRAILING_TRIGGER_PCT    = max(0.5, min(10.0, float(data["trailing_trigger_pct"])))
         if "trailing_timer_secs"   in data: _cfg.PP_TRAILING_TIMER_SECS     = max(3,   min(30,   int(data["trailing_timer_secs"])))
         if "trailing_distance_pct" in data: _cfg.PP_TRAILING_DISTANCE_PCT   = max(0.1, min(3.0,  float(data["trailing_distance_pct"])))
@@ -4457,6 +4459,7 @@ def api_pp_settings_save():
             "PP_TRIGGER_PCT":             str(round(_cfg.PP_TRIGGER_PCT, 2)),
             "PP_TIMER_SECS":              str(_cfg.PP_TIMER_SECS),
             "PP_FEE_BUFFER_PCT":          str(round(_cfg.PP_FEE_BUFFER_PCT, 3)),
+            "PP_PROTECTION_BUFFER_PCT":   str(round(_cfg.PP_PROTECTION_BUFFER_PCT, 2)),
             "PP_TRAILING_TRIGGER_PCT":    str(round(_cfg.PP_TRAILING_TRIGGER_PCT, 2)),
             "PP_TRAILING_TIMER_SECS":     str(_cfg.PP_TRAILING_TIMER_SECS),
             "PP_TRAILING_DISTANCE_PCT":   str(round(_cfg.PP_TRAILING_DISTANCE_PCT, 2)),

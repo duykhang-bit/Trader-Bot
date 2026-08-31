@@ -5181,34 +5181,36 @@ def profit_protection_monitor(exchange, notifier):
                         logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {pp_trigger}% → timer start")
                     elif now - ps["protection_ts"] >= pp_timer:
                         # Timer đủ → đặt Protection SL
-                        # Protection SL = breakeven + fee buffer (NET PnL > 0)
+                        # Protection SL = entry + fee_buffer + protection_buffer (an toàn hơn)
                         fee_total = fee_buf / 100  # 0.15% tổng phí
+                        protection_buf = getattr(config, "PP_PROTECTION_BUFFER_PCT", 0.2) / 100  # 0.2% buffer
+                        total_buf = fee_total + protection_buf
                         if is_long:
-                            new_sl = round(entry * (1 + fee_total), 8)
+                            new_sl = round(entry * (1 + total_buf), 8)
                             # Chỉ update nếu tốt hơn SL cũ
                             if new_sl > ps["current_sl"]:
                                 if _update_sl(exchange, sym, side, new_sl, abs(amt)):
                                     ps["tier"]       = 2
                                     ps["current_sl"] = new_sl
                                     logger.info(f"[PP] ✅ {sym} LONG tier2 Protection SL={new_sl:.6f} "
-                                                f"(breakeven+{fee_buf}%)")
+                                                f"(entry+{total_buf*100:.2f}%)")
                                     notifier.telegram.send(
                                         f"🛡 <b>PROTECTION SL</b>: {sym} {side}\n"
-                                        f"SL dời về breakeven ${new_sl:.6f}\n"
-                                        f"Lời {profit_pct:.2f}% → không bao giờ lỗ\n"
+                                        f"SL dời lên ${new_sl:.6f} (entry+{total_buf*100:.2f}%)\n"
+                                        f"Lời {profit_pct:.2f}% → an toàn\n"
                                         f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                     )
                         else:  # SHORT
-                            new_sl = round(entry * (1 - fee_total), 8)
+                            new_sl = round(entry * (1 - total_buf), 8)
                             if new_sl < ps["current_sl"] or ps["current_sl"] == 0:
                                 if _update_sl(exchange, sym, side, new_sl, abs(amt)):
                                     ps["tier"]       = 2
                                     ps["current_sl"] = new_sl
-                                    logger.info(f"[PP] ✅ {sym} SHORT tier2 Protection SL={new_sl:.6f}")
+                                    logger.info(f"[PP] ✅ {sym} SHORT tier2 Protection SL={new_sl:.6f} (entry-{total_buf*100:.2f}%)")
                                     notifier.telegram.send(
                                         f"🛡 <b>PROTECTION SL</b>: {sym} {side}\n"
-                                        f"SL dời về breakeven ${new_sl:.6f}\n"
-                                        f"Lời {profit_pct:.2f}% → không bao giờ lỗ\n"
+                                        f"SL dời xuống ${new_sl:.6f} (entry-{total_buf*100:.2f}%)\n"
+                                        f"Lời {profit_pct:.2f}% → an toàn\n"
                                         f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                                     )
                 elif profit_pct < pp_trigger * 0.7:
