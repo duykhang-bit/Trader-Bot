@@ -4749,6 +4749,23 @@ def limit_order_monitor(exchange, notifier):
                 pending = dict(state.get("pending_smart_orders", {}))
                 pump_limits = dict(state.get("pump_limit_orders", {}))
 
+            # ── Update pending orders cache for web dashboard (30s) ──
+            if _time.time() - last_auto_check > 30:
+                try:
+                    all_orders = exchange._get("/fapi/v1/openOrders", signed=True, timeout=2)
+                    pending_cache = [{
+                        "symbol": o.get("symbol", ""),
+                        "side": o.get("side", ""),
+                        "type": o.get("type", ""),
+                        "qty": float(o.get("origQty", 0)),
+                        "price": float(o.get("price", 0) or o.get("stopPrice", 0)),
+                        "order_id": str(o.get("orderId", "")),
+                    } for o in all_orders]
+                    with lock:
+                        state["pending_orders_cache"] = pending_cache
+                except Exception:
+                    pass
+
             # ── A0. Check pump LIMIT SHORT orders ──────────────────
             if pump_limits:
                 for sym, info in list(pump_limits.items()):

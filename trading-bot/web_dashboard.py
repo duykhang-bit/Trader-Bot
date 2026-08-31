@@ -2930,27 +2930,10 @@ def api_state():
             "entry": float(p.get("entryPrice",0)), "mark": p.get("_mark",0),
             "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
 
-    # Pending orders (lệnh chờ khớp) — cache 10s để tránh rate limit
+    # Pending orders (lệnh chờ khớp) — đọc từ state (được update bởi limit_order_monitor)
     pending_orders = []
-    global _pending_orders_cache, _pending_orders_last_fetch
-    import time as _time
-    now_ts = _time.time()
-    if now_ts - _pending_orders_last_fetch > _PENDING_ORDERS_TTL:
-        try:
-            if _exchange:
-                all_orders = _exchange._get("/fapi/v1/openOrders", signed=True, timeout=2)
-                _pending_orders_cache = [{
-                    "symbol": o.get("symbol", ""),
-                    "side": o.get("side", ""),
-                    "type": o.get("type", ""),
-                    "qty": float(o.get("origQty", 0)),
-                    "price": float(o.get("price", 0) or o.get("stopPrice", 0)),
-                    "order_id": str(o.get("orderId", "")),
-                } for o in all_orders]
-                _pending_orders_last_fetch = now_ts
-        except Exception:
-            pass
-    pending_orders = _pending_orders_cache
+    with _lock:
+        pending_orders = list(_state.get("pending_orders_cache", []))
 
     recent = sorted(closed, key=lambda t: t.get("time",""), reverse=True)[:15]
     trades_fmt = [{"symbol":t.get("symbol",""),"side":t.get("side",""),"entry":t.get("entry",0),
