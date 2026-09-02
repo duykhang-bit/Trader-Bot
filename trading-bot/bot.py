@@ -4308,6 +4308,8 @@ def pump_scan_engine(exchange, notifier):
                                     nhe_det._cooldown.pop(symbol, None)
                                 # Reset alert cooldown để detector detect lại ngay
                                 state.get("_pump_alert_cd", {}).pop(f"alert_{symbol}", None)
+                                # BUG FIX: Reset MFE tracking để re-entry không bị đóng sớm
+                                state.pop(f"_pump_mfe_{symbol}", None)
 
                             icon = "✅" if pnl >= 0 else "⚠️"
                             profit_tag = "Chốt lời" if pnl >= 0 else "Cắt lỗ sớm"
