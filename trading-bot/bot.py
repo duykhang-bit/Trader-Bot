@@ -3968,6 +3968,9 @@ def pump_scan_engine(exchange, notifier):
                 nhe_detector.cfg["PUMP_TOP_MIN_SCORE"] = nhe_score
                 nhe_detector.cfg["PUMP_PRICE_RISE_PCT"] = nhe_rise
                 nhe_detector.cfg["PUMP_ALERT_COOLDOWN_SECS"] = getattr(config, "PUMP_ALERT_COOLDOWN_SECS", 60)
+                nhe_detector.cfg["PUMP_SIGNAL_COOLDOWN_S"] = getattr(config, "PUMP_NHE_SIGNAL_COOLDOWN_S", 7)
+                # Lưu vào state để reset được từ bên ngoài
+                state["_nhe_detector"] = nhe_detector
 
                 for symbol in nhe_coins:
                     # Bỏ qua nếu đã là pump coin cũ (tránh scan 2 lần)
@@ -4299,6 +4302,10 @@ def pump_scan_engine(exchange, notifier):
                                 # Reset cooldown để có thể SHORT lại ngay nếu pump tiếp
                                 if hasattr(detector, '_cooldown'):
                                     detector._cooldown.pop(symbol, None)
+                                # Reset nhe_detector cooldown
+                                nhe_det = state.get("_nhe_detector")
+                                if nhe_det and hasattr(nhe_det, '_cooldown'):
+                                    nhe_det._cooldown.pop(symbol, None)
                                 # Reset alert cooldown để detector detect lại ngay
                                 state.get("_pump_alert_cd", {}).pop(f"alert_{symbol}", None)
 
