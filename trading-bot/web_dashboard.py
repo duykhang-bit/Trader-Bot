@@ -397,6 +397,14 @@ async function setPumpReversalConfig() {
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
 }
+async function setArmedTTL() {
+    const el = document.getElementById('armed-ttl-mins');
+    const mins = el ? parseInt(el.value) : 60;
+    if (isNaN(mins) || mins < 10 || mins > 480) { toast('TTL phải 10-480 phút', false); return; }
+    const r = await apiPost('/api/armed_ttl', {ttl_secs: mins * 60});
+    if (r && r.msg) toast(r.msg, r.ok !== false);
+    refresh();
+}
 async function toggleProfitLock(enabled) {
     const r = await apiPost('/api/profit_lock', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -996,8 +1004,21 @@ function renderDashboard(d) {
             })()}
         </div>
         <div class="control-row">
-            <span>&#x1F4B0; Profit Lock:</span>
+            <span>&#x23F0; Armed TTL:</span>
             ${(() => {
+                const ttlSecs = d.armed_entry_ttl_secs || 3600;
+                const ttlMins = Math.round(ttlSecs / 60);
+                return `
+                <input id="armed-ttl-mins" type="number" min="10" max="480" step="10" value="${ttlMins}"
+                       style="width:50px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#3fb950;text-align:center"
+                       title="Thời gian hết hạn armed entry (phút)">
+                <span style="font-size:11px;color:#484f58">phút</span>
+                <button class="btn btn-sm" onclick="setArmedTTL()" style="font-size:10px;padding:2px 6px;background:#0d1a0d;color:#3fb950;border:1px solid #1a3a1a">Set</button>
+                <span style="font-size:11px;color:#3fb950">Coin armed xóa sau ${ttlMins} phút</span>`;
+            })()}
+        </div>
+        <div class="control-row">
+            <span>&#x1F4B0; Profit Lock:</span>            ${(() => {
                 const en = d.profit_lock_enabled !== false;
                 const minPct = (d.profit_lock_min_pct || 2.0).toFixed(1);
                 const highPct = (d.profit_lock_high_pct || 15.0).toFixed(1);
@@ -3084,6 +3105,7 @@ def api_state():
         "mfe_retrace_pct":          getattr(_config, "MFE_RETRACE_PCT", 0.40),
         "entry_offset_enabled":     getattr(_config, "ENTRY_OFFSET_ENABLED", False),
         "entry_offset_pct":         getattr(_config, "ENTRY_OFFSET_PCT", 0.003),
+        "armed_entry_ttl_secs":     getattr(_config, "ARMED_ENTRY_TTL_SECS", 3600),
         "breakeven_exit_enabled":     getattr(_config, "BREAKEVEN_EXIT_ENABLED", True),
         "breakeven_pump_hold_seconds": getattr(_config, "BREAKEVEN_PUMP_HOLD_SECONDS", 180),
         "breakeven_scan_hold_seconds": getattr(_config, "BREAKEVEN_SCAN_HOLD_SECONDS", 300),
@@ -4102,10 +4124,35 @@ def api_entry_offset():
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 
+@app.route("/api/armed_ttl", methods=["POST"])
+@require_auth
+def api_armed_ttl():
+    """Config thời gian hết hạn Armed Entry (giây)."""
+    data = request.get_json() or {}
+    try:
+        ttl = int(data.get("ttl_secs", 3600))
+        ttl = max(600, min(28800, ttl))  # 10 phút → 8 giờ
+        _config.ARMED_ENTRY_TTL_SECS = ttl
+        # Persist vào config.py
+        import os, re as _re
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            content = _re.sub(r"(?m)^ARMED_ENTRY_TTL_SECS\s*=\s*.+$",
+                               f"ARMED_ENTRY_TTL_SECS = {ttl}", content)
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as ex:
+            logger.warning(f"[ArmedTTL] Cannot persist: {ex}")
+        mins = ttl // 60
+        return jsonify({"ok": True, "msg": f"⏰ Armed TTL: {mins} phút", "ttl_secs": ttl})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
 @app.route("/api/profit_lock", methods=["POST"])
 @require_auth
-def api_profit_lock():
-    """Bật/tắt và config Profit Lock (min%, high%, speed%)."""
+def api_profit_lock():    """Bật/tắt và config Profit Lock (min%, high%, speed%)."""
     data = request.get_json() or {}
     try:
         if "enabled" in data:

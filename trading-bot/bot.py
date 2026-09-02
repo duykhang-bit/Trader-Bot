@@ -3211,8 +3211,9 @@ def scan_engine(exchange, notifier):
             if armed:
                 for a_sym, a_info in list(armed.items()):
                     try:
-                        # Expiry 1 giờ
-                        if time.time() - a_info["ts"] > 3600:
+                        # Expiry theo config (default 1 giờ)
+                        armed_ttl = getattr(config, "ARMED_ENTRY_TTL_SECS", 3600)
+                        if time.time() - a_info["ts"] > armed_ttl:
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
                             logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>1h)")
