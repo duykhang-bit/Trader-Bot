@@ -4152,7 +4152,8 @@ def api_armed_ttl():
 
 @app.route("/api/profit_lock", methods=["POST"])
 @require_auth
-def api_profit_lock():    """Bật/tắt và config Profit Lock (min%, high%, speed%)."""
+def api_profit_lock():
+    """Bật/tắt và config Profit Lock (min%, high%, speed%)."""
     data = request.get_json() or {}
     try:
         if "enabled" in data:
