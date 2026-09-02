@@ -479,9 +479,9 @@ async function setProfitLock() {
     const minPct = minEl ? parseFloat(minEl.value) : 2.0;
     const highPct = highEl ? parseFloat(highEl.value) : 15.0;
     const speedPct = speedEl ? parseFloat(speedEl.value) : 1.5;
-    if (isNaN(minPct) || minPct < 0.5 || minPct > 10) { toast('Min phải 0.5-10%', false); return; }
-    if (isNaN(highPct) || highPct < 5 || highPct > 50) { toast('High phải 5-50%', false); return; }
-    if (isNaN(speedPct) || speedPct < 0.5 || speedPct > 5) { toast('Speed phải 0.5-5%/s', false); return; }
+    if (isNaN(minPct) || minPct < 0.5 || minPct > 50) { toast('Min phải 0.5-50%', false); return; }
+    if (isNaN(highPct) || highPct < 5 || highPct > 100) { toast('High phải 5-100%', false); return; }
+    if (isNaN(speedPct) || speedPct < 0.1 || speedPct > 10) { toast('Speed phải 0.1-10%/s', false); return; }
     const r = await apiPost('/api/profit_lock', {min_pct: minPct, high_pct: highPct, speed_pct: speedPct});
     if (r && r.msg) toast(r.msg, r.ok !== false);
     refresh();
@@ -1029,16 +1029,16 @@ function renderDashboard(d) {
                 <button class="btn btn-sm ${!en ? 'btn-red' : ''}" onclick="toggleProfitLock(false)"
                         style="${!en ? '' : 'background:#21262d;color:#8b949e'}">&#x23F8; Tắt</button>
                 <span style="font-size:11px;color:#484f58;margin-left:6px">Min</span>
-                <input id="profit-lock-min" type="number" min="0.5" max="10" step="0.5" value="${minPct}"
-                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center"
+                <input id="profit-lock-min" type="number" min="0.5" max="50" step="0.5" value="${minPct}"
+                       style="width:44px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#58a6ff;text-align:center"
                        title="Lời tối thiểu (%) để bắt đầu theo dõi dump/pump">
                 <span style="font-size:11px;color:#484f58">% High</span>
-                <input id="profit-lock-high" type="number" min="5" max="50" step="1" value="${highPct}"
+                <input id="profit-lock-high" type="number" min="5" max="100" step="1" value="${highPct}"
                        style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#f85149;text-align:center"
                        title="Lời cao (%) → chốt ngay không cần check tốc độ">
                 <span style="font-size:11px;color:#484f58">% Speed</span>
-                <input id="profit-lock-speed" type="number" min="0.5" max="5" step="0.1" value="${speedPct}"
-                       style="width:40px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center"
+                <input id="profit-lock-speed" type="number" min="0.1" max="10" step="0.1" value="${speedPct}"
+                       style="width:44px;font-size:11px;background:#060d14;border:1px solid #1a2a3d;border-radius:4px;padding:2px 4px;color:#d29922;text-align:center"
                        title="Tốc độ giá (%) thay đổi trong 1s → coi là dump/pump mạnh">
                 <span style="font-size:11px;color:#484f58">%/s</span>
                 <button class="btn btn-sm" onclick="setProfitLock()" style="font-size:10px;padding:2px 6px;background:#1a1400;color:#58a6ff;border:1px solid #1a3a5a">Set</button>
@@ -4159,11 +4159,11 @@ def api_profit_lock():
         if "enabled" in data:
             _config.PROFIT_LOCK_ENABLED = bool(data["enabled"])
         if "min_pct" in data:
-            _config.PROFIT_LOCK_MIN_PCT = max(0.5, min(10.0, float(data["min_pct"])))
+            _config.PROFIT_LOCK_MIN_PCT = max(0.5, min(50.0, float(data["min_pct"])))
         if "high_pct" in data:
-            _config.PROFIT_LOCK_HIGH_PCT = max(5.0, min(50.0, float(data["high_pct"])))
+            _config.PROFIT_LOCK_HIGH_PCT = max(5.0, min(100.0, float(data["high_pct"])))
         if "speed_pct" in data:
-            _config.PROFIT_LOCK_SPEED_PCT = max(0.5, min(5.0, float(data["speed_pct"])))
+            _config.PROFIT_LOCK_SPEED_PCT = max(0.1, min(10.0, float(data["speed_pct"])))
         
         # Ghi persistent vào config.py
         import os, re as _re
