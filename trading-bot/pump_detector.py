@@ -201,10 +201,11 @@ class PumpDetector:
 
         now = time.time()
 
-        # Cooldown riêng cho alert (ít nhất 5 phút)
+        # Cooldown riêng cho alert — config được (default 5 phút)
         if alert_cooldown is not None:
             last = alert_cooldown.get(f"alert_{symbol}", 0)
-            if now - last < 300:
+            alert_cd_secs = self.cfg.get("PUMP_ALERT_COOLDOWN_SECS", 300)
+            if now - last < alert_cd_secs:
                 return None
 
         # Step 1: Tính pump %
