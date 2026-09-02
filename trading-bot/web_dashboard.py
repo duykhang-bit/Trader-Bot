@@ -2786,19 +2786,21 @@ function updatePPMonitor(d) {
                 </div>
                 ${ps.protection_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
         } else if (tier === 2) {
-            // Progress tới Tier 3
+            // Progress tới Tier 3 — hiện profit% / trigger% VÀ timer
             const pct = Math.max(0, Math.min(100, profit / trailTrigger * 100));
             const timerElapsed = ps.trailing_ts > 0 ? Math.min(nowTs - ps.trailing_ts, trailTimer) : 0;
             const timerPct = ps.trailing_ts > 0 ? Math.min(100, timerElapsed / trailTimer * 100) : 0;
+            const profStr = `${profit.toFixed(2)}% / ${trailTrigger}%`;
             const timerStr = ps.trailing_ts > 0
                 ? `⏱ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3`
-                : `${profit.toFixed(2)}% / ${trailTrigger}%`;
+                : `→ T3`;
             progressHtml = `
-                <div style="font-size:10px;color:#d29922">${timerStr}</div>
+                <div style="font-size:10px;color:#3fb950">${profStr}</div>
                 <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
                     <div style="background:#3fb950;height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
                 </div>
-                ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#3fb950;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
+                <div style="font-size:10px;color:#d29922;margin-top:2px">${timerStr}</div>
+                ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
         } else {
             // T3/T4/T5 - hiện tp_progress và tier hiện tại
             const tp = ps.tp || 0;
@@ -2825,7 +2827,7 @@ function updatePPMonitor(d) {
             const activeDist = trailDistMap[tier] || 0.5;
             progressHtml = `
                 <div style="font-size:10px;color:${tierColors[tier]}">✅ Trailing ON (dist ${activeDist}%)</div>
-                ${nextTier ? `<div style="font-size:10px;color:${nextColor}">${tpProgress.toFixed(0)}% → ${nextTier} @${tier < 4 ? tier4Threshold : tier5Threshold}%</div>
+                ${nextTier ? `<div style="font-size:10px;color:${nextColor}">${tpProgress.toFixed(0)}% / ${tier < 4 ? tier4Threshold : tier5Threshold}% → ${nextTier}</div>
                 <div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px">
                     <div style="background:${nextColor};height:3px;border-radius:3px;width:${nextPct}%"></div>
                 </div>` : `<div style="font-size:10px;color:#f0883e">🔥 MAX TIER</div>`}`;
@@ -3156,6 +3158,8 @@ def api_state():
         "watchlist": watchlist,
         "pp_state": {k: {"tier": v.get("tier",1), "current_sl": v.get("current_sl",0),
                          "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0),
+                         "peak_price": v.get("peak_price",0),
+                         "tp": v.get("tp", 0),
                          "protection_ts": v.get("protection_ts",0), "trailing_ts": v.get("trailing_ts",0)}
                      for k, v in s.get("_pp_state", {}).items()},
         "settings": {
