@@ -1583,13 +1583,45 @@ function renderDashboard(d) {
                      style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
               <span style="font-size:11px;color:#484f58">giây</span>
             </div>
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-              <span style="font-size:12px;color:#8b949e;width:130px">Trailing distance:</span>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:12px;color:#8b949e;width:130px">T3 distance:</span>
               <input type="number" id="pp-trail-dist" min="0.1" max="3" step="0.1"
                      style="width:55px;background:#161b22;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:3px 6px;font-size:12px">
               <span style="font-size:11px;color:#484f58">%</span>
             </div>
-            <div style="display:flex;gap:10px">
+            <div style="border-top:1px solid #21262d;margin:8px 0;padding-top:8px">
+              <div style="font-size:11px;color:#58a6ff;margin-bottom:6px;font-weight:600">⚡ Tier 4 — Near TP</div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">Trigger TP%:</span>
+                <input type="number" id="pp-tier4-threshold" min="20" max="90" step="5"
+                       style="width:55px;background:#161b22;border:1px solid #1a3a5a;color:#58a6ff;border-radius:4px;padding:3px 6px;font-size:12px"
+                       title="Khi giá đi được X% đường entry→TP → vào Tier 4">
+                <span style="font-size:11px;color:#484f58">% đường</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">T4 distance:</span>
+                <input type="number" id="pp-tier4-dist" min="0.05" max="2" step="0.05"
+                       style="width:55px;background:#161b22;border:1px solid #1a3a5a;color:#58a6ff;border-radius:4px;padding:3px 6px;font-size:12px">
+                <span style="font-size:11px;color:#484f58">%</span>
+              </div>
+            </div>
+            <div style="border-top:1px solid #21262d;margin:8px 0;padding-top:8px">
+              <div style="font-size:11px;color:#f0883e;margin-bottom:6px;font-weight:600">🔥 Tier 5 — Very Near TP</div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">Trigger TP%:</span>
+                <input type="number" id="pp-tier5-threshold" min="50" max="99" step="5"
+                       style="width:55px;background:#161b22;border:1px solid #3a2a00;color:#f0883e;border-radius:4px;padding:3px 6px;font-size:12px"
+                       title="Khi giá đi được X% đường entry→TP → vào Tier 5">
+                <span style="font-size:11px;color:#484f58">% đường</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">T5 distance:</span>
+                <input type="number" id="pp-tier5-dist" min="0.05" max="1" step="0.05"
+                       style="width:55px;background:#161b22;border:1px solid #3a2a00;color:#f0883e;border-radius:4px;padding:3px 6px;font-size:12px">
+                <span style="font-size:11px;color:#484f58">%</span>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:8px">
               <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
                 <input type="checkbox" id="pp-apply-scan" style="width:14px;height:14px">
                 <span style="color:#c9d1d9">Scan</span>
@@ -2686,6 +2718,10 @@ async function loadPP() {
         set('pp-trail-trigger', s.trailing_trigger_pct);
         set('pp-trail-timer',   s.trailing_timer_secs);
         set('pp-trail-dist',    s.trailing_distance_pct);
+        set('pp-tier4-threshold', s.tier4_tp_progress_pct);
+        set('pp-tier4-dist',    s.tier4_trail_dist_pct);
+        set('pp-tier5-threshold', s.tier5_tp_progress_pct);
+        set('pp-tier5-dist',    s.tier5_trail_dist_pct);
         set('pp-apply-scan',    s.apply_scan);
         set('pp-apply-pump',    s.apply_pump);
     } catch(e) {}
@@ -2713,11 +2749,11 @@ function updatePPMonitor(d) {
         const profit = entry > 0 ? ((isLong ? (mark - entry) : (entry - mark)) / entry * 100) : 0;
 
         const tier = ps.tier || 1;
-        const tierBadge = tier === 3
-            ? '<span style="color:#3fb950;font-weight:700">T3🛡</span>'
-            : tier === 2
-            ? '<span style="color:#d29922;font-weight:700">T2🛡</span>'
-            : '<span style="color:#484f58">T1</span>';
+        const tierColors = {1:'#484f58', 2:'#d29922', 3:'#3fb950', 4:'#58a6ff', 5:'#f0883e'};
+        const tierIcons  = {1:'T1', 2:'T2🛡', 3:'T3🎯', 4:'T4⚡', 5:'T5🔥'};
+        const tierColor  = tierColors[tier] || '#484f58';
+        const tierLabel  = tierIcons[tier]  || `T${tier}`;
+        const tierBadge  = `<span style="color:${tierColor};font-weight:700">${tierLabel}</span>`;
 
         const sl = ps.current_sl || 0;
         const peak = ps.peak || 0;
@@ -2764,7 +2800,35 @@ function updatePPMonitor(d) {
                 </div>
                 ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#3fb950;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
         } else {
-            progressHtml = `<div style="font-size:10px;color:#3fb950">✅ Trailing ON</div>`;
+            // T3/T4/T5 - hiện tp_progress và tier hiện tại
+            const tp = ps.tp || 0;
+            const tier4Threshold = parseFloat(document.getElementById('pp-tier4-threshold')?.value || 50);
+            const tier5Threshold = parseFloat(document.getElementById('pp-tier5-threshold')?.value || 80);
+            const peakVal = ps.peak_price || ps.peak || 0;
+            let tpProgress = 0;
+            if (tp > 0 && entry > 0 && peakVal > 0) {
+                const total = Math.abs(tp - entry);
+                const done  = Math.abs(peakVal - entry);
+                tpProgress  = total > 0 ? Math.min(100, done / total * 100) : 0;
+            }
+            let nextTier = '', nextColor = '#484f58', nextPct = 0;
+            if (tier < 4) {
+                nextTier = 'T4'; nextColor = '#58a6ff';
+                nextPct = Math.min(100, tpProgress / tier4Threshold * 100);
+            } else if (tier < 5) {
+                nextTier = 'T5'; nextColor = '#f0883e';
+                nextPct = Math.min(100, tpProgress / tier5Threshold * 100);
+            }
+            const trailDistMap = {3: document.getElementById('pp-trail-dist')?.value||0.5,
+                                   4: document.getElementById('pp-tier4-dist')?.value||0.3,
+                                   5: document.getElementById('pp-tier5-dist')?.value||0.15};
+            const activeDist = trailDistMap[tier] || 0.5;
+            progressHtml = `
+                <div style="font-size:10px;color:${tierColors[tier]}">✅ Trailing ON (dist ${activeDist}%)</div>
+                ${nextTier ? `<div style="font-size:10px;color:${nextColor}">${tpProgress.toFixed(0)}% → ${nextTier} @${tier < 4 ? tier4Threshold : tier5Threshold}%</div>
+                <div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px">
+                    <div style="background:${nextColor};height:3px;border-radius:3px;width:${nextPct}%"></div>
+                </div>` : `<div style="font-size:10px;color:#f0883e">🔥 MAX TIER</div>`}`;
         }
 
         rows += `<tr style="border-bottom:1px solid #21262d">
@@ -2810,6 +2874,10 @@ async function savePP() {
         trailing_trigger_pct:  parseFloat(get('pp-trail-trigger')),
         trailing_timer_secs:   parseInt(get('pp-trail-timer')),
         trailing_distance_pct: parseFloat(get('pp-trail-dist')),
+        tier4_tp_progress_pct: parseFloat(get('pp-tier4-threshold')),
+        tier4_trail_dist_pct:  parseFloat(get('pp-tier4-dist')),
+        tier5_tp_progress_pct: parseFloat(get('pp-tier5-threshold')),
+        tier5_trail_dist_pct:  parseFloat(get('pp-tier5-dist')),
         apply_scan:            get('pp-apply-scan'),
         apply_pump:            get('pp-apply-pump'),
     };
@@ -4463,6 +4531,10 @@ def api_pp_settings_get():
             "trailing_trigger_pct":  getattr(_cfg, "PP_TRAILING_TRIGGER_PCT",    1.0),
             "trailing_timer_secs":   getattr(_cfg, "PP_TRAILING_TIMER_SECS",     7),
             "trailing_distance_pct": getattr(_cfg, "PP_TRAILING_DISTANCE_PCT",   0.5),
+            "tier4_tp_progress_pct": getattr(_cfg, "PP_TIER4_TP_PROGRESS_PCT",  50.0),
+            "tier4_trail_dist_pct":  getattr(_cfg, "PP_TIER4_TRAIL_DIST_PCT",    0.3),
+            "tier5_tp_progress_pct": getattr(_cfg, "PP_TIER5_TP_PROGRESS_PCT",  80.0),
+            "tier5_trail_dist_pct":  getattr(_cfg, "PP_TIER5_TRAIL_DIST_PCT",   0.15),
             "apply_scan":            getattr(_cfg, "PP_APPLY_SCAN",              True),
             "apply_pump":            getattr(_cfg, "PP_APPLY_PUMP",              True),
         }})
@@ -4485,6 +4557,10 @@ def api_pp_settings_save():
         if "trailing_trigger_pct"  in data: _cfg.PP_TRAILING_TRIGGER_PCT    = max(0.5, min(10.0, float(data["trailing_trigger_pct"])))
         if "trailing_timer_secs"   in data: _cfg.PP_TRAILING_TIMER_SECS     = max(3,   min(30,   int(data["trailing_timer_secs"])))
         if "trailing_distance_pct" in data: _cfg.PP_TRAILING_DISTANCE_PCT   = max(0.1, min(3.0,  float(data["trailing_distance_pct"])))
+        if "tier4_tp_progress_pct" in data: _cfg.PP_TIER4_TP_PROGRESS_PCT   = max(20.0,min(90.0, float(data["tier4_tp_progress_pct"])))
+        if "tier4_trail_dist_pct"  in data: _cfg.PP_TIER4_TRAIL_DIST_PCT    = max(0.05,min(2.0,  float(data["tier4_trail_dist_pct"])))
+        if "tier5_tp_progress_pct" in data: _cfg.PP_TIER5_TP_PROGRESS_PCT   = max(50.0,min(99.0, float(data["tier5_tp_progress_pct"])))
+        if "tier5_trail_dist_pct"  in data: _cfg.PP_TIER5_TRAIL_DIST_PCT    = max(0.05,min(1.0,  float(data["tier5_trail_dist_pct"])))
         if "apply_scan"            in data: _cfg.PP_APPLY_SCAN              = bool(data["apply_scan"])
         if "apply_pump"            in data: _cfg.PP_APPLY_PUMP              = bool(data["apply_pump"])
 
@@ -4500,6 +4576,10 @@ def api_pp_settings_save():
             "PP_TRAILING_TRIGGER_PCT":    str(round(_cfg.PP_TRAILING_TRIGGER_PCT, 2)),
             "PP_TRAILING_TIMER_SECS":     str(_cfg.PP_TRAILING_TIMER_SECS),
             "PP_TRAILING_DISTANCE_PCT":   str(round(_cfg.PP_TRAILING_DISTANCE_PCT, 2)),
+            "PP_TIER4_TP_PROGRESS_PCT":   str(round(_cfg.PP_TIER4_TP_PROGRESS_PCT, 1)),
+            "PP_TIER4_TRAIL_DIST_PCT":    str(round(_cfg.PP_TIER4_TRAIL_DIST_PCT, 2)),
+            "PP_TIER5_TP_PROGRESS_PCT":   str(round(_cfg.PP_TIER5_TP_PROGRESS_PCT, 1)),
+            "PP_TIER5_TRAIL_DIST_PCT":    str(round(_cfg.PP_TIER5_TRAIL_DIST_PCT, 2)),
             "PP_APPLY_SCAN":              str(_cfg.PP_APPLY_SCAN),
             "PP_APPLY_PUMP":              str(_cfg.PP_APPLY_PUMP),
         }
