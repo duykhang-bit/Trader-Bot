@@ -5732,21 +5732,23 @@ def orphan_order_cleanup(exchange, notifier):
                         if order_age_sec > 14400:
                             should_cancel = True
                             reason = f">{order_age_sec/3600:.1f}h"
-                        # > 20 phút → check trend
-                        elif order_age_sec > 1200:
+                        # > 1 tiếng → check trend (đồng bộ triết lý với scanner: AND, limit=100)
+                        elif order_age_sec > 3600:
                             try:
                                 from indicators import calculate_ema
-                                kl_4h = exchange.get_klines(sym, "4h", limit=20)
+                                kl_4h = exchange.get_klines(sym, "4h", limit=100)
                                 df_4h = _klines_to_df(kl_4h)
                                 ema9 = calculate_ema(df_4h["close"], 9).iloc[-1]
                                 ema21 = calculate_ema(df_4h["close"], 21).iloc[-1]
                                 price_4h = df_4h["close"].iloc[-1]
                                 ema50 = calculate_ema(df_4h["close"], 50).iloc[-1]
                                 order_side = o.get("side", "")
-                                if order_side == "BUY" and (ema9 < ema21 or price_4h < ema50):
+                                # AND: chỉ hủy khi trend 4h THẬT SỰ đổi (cả EMA cross VÀ giá qua EMA50)
+                                # Giống điều kiện scanner dùng để vào lệnh → không hủy oan lệnh pullback
+                                if order_side == "BUY" and (ema9 < ema21 and price_4h < ema50):
                                     should_cancel = True
                                     reason = "trend đổi bearish"
-                                elif order_side == "SELL" and (ema9 > ema21 or price_4h > ema50):
+                                elif order_side == "SELL" and (ema9 > ema21 and price_4h > ema50):
                                     should_cancel = True
                                     reason = "trend đổi bullish"
                             except Exception:
