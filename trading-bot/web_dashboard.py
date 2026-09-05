@@ -3291,34 +3291,35 @@ def _get_pending_watch_safe():
 
 @app.route("/api/toggle", methods=["POST"])
 def api_toggle():
-    """Pause/Resume bot trading."""
+    """Pause/Resume bot trading.
+
+    Model: chỉ bật/tắt cờ `paused`. KHÔNG đụng `running` (running=True suốt vòng đời process).
+    - paused=True  → các thread trade skip (không vào lệnh mới), thread bảo vệ/hạ tầng vẫn chạy.
+    - paused=False → trade lại bình thường.
+    """
     with _lock:
-        current = _state.get("running", True)
         is_paused = _state.get("paused", False)
 
-    if not current or is_paused:
-        # Đang paused → gọi restart callback (đăng ký từ bot.py)
+    if is_paused:
+        # Đang PAUSED → resume trade
+        with _lock:
+            _state["running"] = True
+            _state["paused"]  = False
+        # Gọi callback (nếu có) để gửi noti "đã khởi động lại"
         restart_fn = _state.get("_restart_fn")
         if restart_fn:
             try:
-                with _lock:
-                    _state["paused"] = False
                 restart_fn()
-                return jsonify({"ok": True, "msg": "Bot restarted ✅", "running": True})
             except Exception as e:
-                return jsonify({"ok": False, "msg": f"Restart failed: {e}", "running": False})
-        else:
-            # Fallback: chỉ set running=True (thread còn sống)
-            with _lock:
-                _state["running"] = True
-                _state["paused"] = False
-            return jsonify({"ok": True, "msg": "Bot resumed", "running": True})
+                logger.warning(f"[Toggle] restart_fn error: {e}")
+        logger.info("Bot resumed via web (paused=False)")
+        return jsonify({"ok": True, "msg": "Bot resumed ✅", "running": True})
     else:
-        # Đang chạy → pause
+        # Đang chạy → pause trade (KHÔNG giết thread)
         with _lock:
-            _state["running"] = False
-            _state["paused"] = True
-        logger.info("Bot paused via web")
+            _state["running"] = True   # giữ running=True để thread không chết
+            _state["paused"]  = True
+        logger.info("Bot paused via web (paused=True)")
         return jsonify({"ok": True, "msg": "Bot paused ⏸", "running": False})
 
 

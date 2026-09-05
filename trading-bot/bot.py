@@ -3724,6 +3724,10 @@ def pump_scan_engine(exchange, notifier):
 
     while state["running"]:
         try:
+            # ── Check paused: dừng scan pump khi bot pause ──
+            if state.get("paused", False):
+                time.sleep(2)
+                continue
             # Lấy danh sách pump coins từ state (web có thể add/remove)
             with lock:
                 pump_coins = list(state.get("pump_watch_coins", []))
@@ -4529,6 +4533,11 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
             with lock:
                 state["liq_data"]       = liq_data
                 state["liq_connected"]  = liq_tracker.is_connected()
+
+            # ── Check paused: vẫn update liq_data ở trên, nhưng skip scan setup mới ──
+            if state.get("paused", False):
+                time.sleep(5)
+                continue
 
             # Kiểm tra số lệnh đang mở
             with lock:
@@ -6112,11 +6121,12 @@ if __name__ == "__main__":
         logger.warning(f"Web dashboard disabled: {e}")
 
     def _start_worker_threads():
-        """Resume bot - chỉ set paused=False, threads cũ vẫn còn sống."""
+        """Resume bot - set paused=False. Threads luôn sống (running=True suốt vòng đời),
+        chỉ check `paused` để skip trade. Không tạo thread mới → không duplicate."""
         with lock:
             state["running"] = True
             state["paused"]  = False
-        logger.info("✅ Bot resumed via web Start Bot")
+        logger.info("✅ Bot resumed via web Start Bot (paused=False)")
         notifier.telegram.send("▶️ <b>Bot đã được khởi động lại từ Web Dashboard</b>")
 
     # Đăng ký restart callback cho web dashboard
