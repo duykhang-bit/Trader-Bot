@@ -1589,7 +1589,9 @@ class TelegramCommandHandler:
         # Set dedup callback_id — tránh xử lý cùng 1 callback 2 lần
         _processed_cb_ids: set = set()
 
-        while self.running and self.state.get("running", True):
+        # QUAN TRỌNG: chỉ dừng theo self.running, KHÔNG theo state["running"]
+        # → Telegram vẫn nhận lệnh khi bot PAUSE (tắt bot), để bấm Start lại được
+        while self.running:
             updates = self.get_updates()
             for update in updates:
                 self.last_update_id = update["update_id"]
