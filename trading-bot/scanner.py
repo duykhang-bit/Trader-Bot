@@ -894,7 +894,15 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
             # Cho phép nếu giá đang pullback (giá hiện tại < nến trước 3 nến)
             price_3_bars_ago = close.iloc[-4] if len(close) >= 4 else close.iloc[0]
             is_pulling_back = current_price < price_3_bars_ago * 0.998
-            if not is_pulling_back:
+            # FIX mâu thuẫn: BTC/ETH/BNB dùng chiến lược BB breakout — LONG nghĩa là
+            # giá vừa đóng TRÊN BB upper, khi đó RSI tự nhiên > 60 và KHÔNG thể
+            # đang pullback. Filter này giết đúng setup breakout của majors.
+            try:
+                from indicators import LOW_VOL_COINS as _LV
+                _breakout_coin = symbol in _LV
+            except Exception:
+                _breakout_coin = symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
+            if not is_pulling_back and not _breakout_coin:
                 return None
 
         # ═══════════════════════════════════════════════════════════════
@@ -906,6 +914,11 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         atr_value = atr  # Already calculated above
         atr_multiplier = 2.0  # Cho phép entry trong vòng 2 ATR từ swing point
         
+        # FIX: buffer "quá sát swing đối diện" phải scale theo ATR, KHÔNG dùng 3% cứng.
+        # Lý do: BTC/ETH swing range 15 nến chỉ ~0.5-2% → buffer 3% bao trùm toàn bộ
+        # → mọi lệnh majors bị return None. Alt ATR 3% thì 3% lại quá nhỏ.
+        opp_buffer = max(atr_value * 1.0, current_price * 0.004)   # tối thiểu 0.4%
+
         if signal == "LONG":
             # LONG: giá phải gần swing low (trong vòng 2 ATR)
             distance_from_swing_low = current_price - swing_low
@@ -917,9 +930,10 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
                            f"(distance={distance_from_swing_low:.6f} > {max_distance:.6f})")
                 return None
             
-            # Check thêm: không vào LONG nếu đang ở gần swing high
-            if current_price > swing_high * 0.97:  # Trong 3% của swing high
-                logger.debug(f"{symbol} LONG skipped: too close to swing_high {swing_high:.6f}")
+            # Không vào LONG nếu đang sát swing high (kháng cự) — buffer theo ATR
+            if current_price > swing_high - opp_buffer:
+                logger.debug(f"{symbol} LONG skipped: too close to swing_high {swing_high:.6f} "
+                             f"(buffer={opp_buffer:.6f})")
                 return None
                 
         elif signal == "SHORT":
@@ -937,9 +951,10 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
                            f"(distance={distance_from_swing_high:.6f} > {max_distance:.6f})")
                 return None
             
-            # Check thêm: không vào SHORT nếu đang ở gần swing low
-            if current_price < swing_low * 1.03:  # Trong 3% của swing low
-                logger.debug(f"{symbol} SHORT skipped: too close to swing_low {swing_low:.6f}")
+            # Không vào SHORT nếu đang sát swing low (hỗ trợ) — buffer theo ATR
+            if current_price < swing_low + opp_buffer:
+                logger.debug(f"{symbol} SHORT skipped: too close to swing_low {swing_low:.6f} "
+                             f"(buffer={opp_buffer:.6f})")
                 return None
 
         # --- Chấm điểm ---
@@ -985,12 +1000,21 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         elif vol_ratio >= 1.2:
             score += 5
 
-        # 5. ATR volatility (10 điểm) — cần đủ biến động để có lợi nhuận
-        if 1.5 <= atr_pct <= 5.0:
+        # 5. ATR volatility (10 điểm) — ngưỡng theo LOẠI coin.
+        # FIX: ngưỡng cứng 1.5% khiến BTC/ETH/BNB (ATR 15m ~0.5-1.2%) luôn 0/10 điểm
+        # dù đó là biến động BÌNH THƯỜNG của chúng → majors mất 10đ so với alt.
+        try:
+            from indicators import LOW_VOL_COINS as _LV
+            _is_low_vol = symbol in _LV
+        except Exception:
+            _is_low_vol = symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
+        _atr_lo = 0.5 if _is_low_vol else 1.5
+        _atr_hi = 3.0 if _is_low_vol else 5.0
+        if _atr_lo <= atr_pct <= _atr_hi:
             score += 10
             reasons.append(f"ATR={atr_pct:.1f}%")
-        elif atr_pct > 5.0:
-            score += 5  # Quá volatile thì trừ điểm
+        elif atr_pct > _atr_hi:
+            score += 5  # Quá volatile → chỉ nửa điểm
 
         # Bonus điểm cho priority coins
         if symbol in PRIORITY_COINS:
@@ -1201,7 +1225,17 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
 
             # Nếu score_coin không trả signal đúng chiều → thử pullback
             if not scored or scored.signal != bias:
-                volatile = is_volatile_coin(df_1h, threshold_pct=4.0)
+                # FIX: ngưỡng volatile 4.0 (≈ ATR 1h ≥ 1%) khiến BTC/ETH/BNB luôn FAIL
+                # → majors mất đường vào thứ 2 mà alt dùng nhiều nhất.
+                # Majors dùng ngưỡng thấp hơn tương ứng biến động thật của chúng.
+                try:
+                    from indicators import LOW_VOL_COINS as _LV
+                    _is_lv = symbol in _LV
+                except Exception:
+                    _is_lv = symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
+                _vol_thr = getattr(config, "PULLBACK_VOL_THRESHOLD_MAJOR", 1.5) if _is_lv \
+                           else getattr(config, "PULLBACK_VOL_THRESHOLD", 4.0)
+                volatile = is_volatile_coin(df_1h, threshold_pct=_vol_thr)
                 if volatile:
                     pb_signal = get_pullback_signal(df_15m, config, bias)
                     if pb_signal == bias:
