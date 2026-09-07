@@ -5549,6 +5549,11 @@ def position_advisor(exchange, notifier):
 
     while state["running"]:
         try:
+            # ── Check paused: không gửi phân tích khi bot pause (tránh spam) ──
+            if state.get("paused", False):
+                time.sleep(60)
+                continue
+
             with lock:
                 open_pos = [p for p in state.get("open_positions", [])
                            if abs(float(p.get("positionAmt", 0))) > 0]
