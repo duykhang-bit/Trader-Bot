@@ -3298,29 +3298,33 @@ def api_toggle():
     - paused=False → trade lại bình thường.
     """
     with _lock:
+        current = _state.get("running", True)
         is_paused = _state.get("paused", False)
 
-    if is_paused:
-        # Đang PAUSED → resume trade
-        with _lock:
-            _state["running"] = True
-            _state["paused"]  = False
-        # Gọi callback (nếu có) để gửi noti "đã khởi động lại"
+    if not current or is_paused:
+        # Đang tắt/paused → START: gọi callback tạo lại TẤT CẢ thread (bao gồm Telegram)
         restart_fn = _state.get("_restart_fn")
         if restart_fn:
             try:
+                with _lock:
+                    _state["running"] = True
+                    _state["paused"]  = False
                 restart_fn()
+                return jsonify({"ok": True, "msg": "Bot started ✅", "running": True})
             except Exception as e:
-                logger.warning(f"[Toggle] restart_fn error: {e}")
-        logger.info("Bot resumed via web (paused=False)")
-        return jsonify({"ok": True, "msg": "Bot resumed ✅", "running": True})
+                return jsonify({"ok": False, "msg": f"Start failed: {e}", "running": False})
+        else:
+            with _lock:
+                _state["running"] = True
+                _state["paused"]  = False
+            return jsonify({"ok": True, "msg": "Bot resumed", "running": True})
     else:
-        # Đang chạy → pause trade (KHÔNG giết thread)
+        # Đang chạy → PAUSE: tắt HẾT thread (trade + protect + telegram)
         with _lock:
-            _state["running"] = True   # giữ running=True để thread không chết
+            _state["running"] = False
             _state["paused"]  = True
-        logger.info("Bot paused via web (paused=True)")
-        return jsonify({"ok": True, "msg": "Bot paused ⏸", "running": False})
+        logger.info("Bot paused via web (running=False → all threads stop)")
+        return jsonify({"ok": True, "msg": "Bot paused ⏸ (tắt hết)", "running": False})
 
 
 def _save_coins_to_config(coins: list):

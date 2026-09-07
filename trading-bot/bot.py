@@ -6126,13 +6126,60 @@ if __name__ == "__main__":
         logger.warning(f"Web dashboard disabled: {e}")
 
     def _start_worker_threads():
-        """Resume bot - set paused=False. Threads luôn sống (running=True suốt vòng đời),
-        chỉ check `paused` để skip trade. Không tạo thread mới → không duplicate."""
+        """START bot từ web - tạo lại TẤT CẢ worker threads (trade + protect + telegram).
+        Dùng guard _worker_threads để không tạo trùng: chỉ tạo thread nào đã chết."""
         with lock:
             state["running"] = True
             state["paused"]  = False
-        logger.info("✅ Bot resumed via web Start Bot (paused=False)")
-        notifier.telegram.send("▶️ <b>Bot đã được khởi động lại từ Web Dashboard</b>")
+
+        _registry = state.setdefault("_worker_threads", {})
+
+        def _ensure(name, target, args=()):
+            """Tạo thread nếu chưa có hoặc đã chết."""
+            old = _registry.get(name)
+            if old is not None and old.is_alive():
+                return  # còn sống → không tạo trùng
+            th = threading.Thread(target=target, args=args, daemon=True)
+            th.start()
+            _registry[name] = th
+
+        _ensure("price_updater",   price_updater,   (exchange,))
+        _ensure("price_ws",        price_ws_streamer)
+        _ensure("monitor",         monitor_engine,  (exchange, notifier))
+        _ensure("scan",            scan_engine,     (exchange, notifier))
+        _ensure("grid",            grid_engine,     (exchange, notifier))
+        _ensure("pump",            pump_scan_engine,(exchange, notifier))
+        _ensure("liq",             liq_engine,      (exchange, notifier, liq_tracker))
+        _ensure("limit_monitor",   limit_order_monitor,(exchange, notifier))
+        _ensure("pending_review",  pending_order_reviewer,(exchange, notifier))
+        _ensure("position_advisor",position_advisor,(exchange, notifier))
+        _ensure("orphan_cleanup",  orphan_order_cleanup,(exchange, notifier))
+        _ensure("trailing",        trailing_profit_lock,(exchange, notifier))
+        _ensure("profit_lock",     auto_profit_lock,(exchange, notifier))
+        _ensure("mfe_scan",        mfe_scan_monitor,(exchange, notifier))
+        _ensure("partial_tp",      partial_tp_monitor,(exchange, notifier))
+        _ensure("profit_protect",  profit_protection_monitor,(exchange, notifier))
+
+        # Restart Telegram command handler (tạo mới nếu đã chết)
+        try:
+            from telegram_commands import TelegramCommandHandler
+            from notifier import NOTIFICATION_CONFIG
+            _cmd = TelegramCommandHandler(
+                bot_token=NOTIFICATION_CONFIG["telegram"]["bot_token"],
+                chat_id=NOTIFICATION_CONFIG["telegram"]["chat_id"],
+                state=state, state_lock=lock,
+                watchlist=WATCHLIST, config=config
+            )
+            _tg = _registry.get("telegram")
+            if _tg is None or not _tg.is_alive():
+                th = threading.Thread(target=_cmd.run, daemon=True)
+                th.start()
+                _registry["telegram"] = th
+        except Exception as _e:
+            logger.warning(f"[Start] Telegram restart failed: {_e}")
+
+        logger.info("✅ All worker threads started/verified via web Start Bot")
+        notifier.telegram.send("▶️ <b>Bot đã được khởi động từ Web Dashboard</b>")
 
     # Đăng ký restart callback cho web dashboard
     with lock:
@@ -6143,69 +6190,20 @@ if __name__ == "__main__":
     # Many threads check while state["running"]: in their main loop
     # ═══════════════════════════════════════════════════════════════
     with lock:
-        state["running"] = True
-        state["paused"] = True   # Bot start ở PAUSED mode - scan engine sẽ skip
-    logger.info("=== state['running'] = True, paused=True === Starting threads in PAUSED mode")
+        state["running"] = False   # Deploy khởi động PAUSED — bấm Start Bot trên web để chạy
+        state["paused"] = True
+    logger.info("=== Bot khởi động PAUSED (running=False) — bấm Start Bot từ web ===")
     print("🛑 Bot PAUSED on startup - click Start Bot from web dashboard", flush=True)
 
-    t1 = threading.Thread(target=price_updater, args=(exchange,), daemon=True)
-    t1.start()
-
-    # WebSocket price stream (realtime)
-    t1ws = threading.Thread(target=price_ws_streamer, daemon=True)
-    t1ws.start()
-
-    trade_engine(exchange, notifier)  # send startup notification
+    trade_engine(exchange, notifier)  # gửi noti startup "BOT STARTED"
     print("✅ trade_engine done", flush=True)
 
-    t2a = threading.Thread(target=monitor_engine, args=(exchange, notifier), daemon=True)
-    t2a.start()
-
-    t2b = threading.Thread(target=scan_engine, args=(exchange, notifier), daemon=True)
-    t2b.start()
-
-    t3 = threading.Thread(target=grid_engine, args=(exchange, notifier), daemon=True)
-    t3.start()
-
-    # Pump scan thread — phát hiện đỉnh pump để SHORT (mỗi 30s)
-    t_pump = threading.Thread(target=pump_scan_engine, args=(exchange, notifier), daemon=True)
-    t_pump.start()
-
-    # Liq strategy thread
-    t5 = threading.Thread(target=liq_engine, args=(exchange, notifier, liq_tracker), daemon=True)
-    t5.start()
-
-    # Limit order monitor thread
-    t7 = threading.Thread(target=limit_order_monitor, args=(exchange, notifier), daemon=True)
-    t7.start()
-
-    # Pending order reviewer thread (mỗi 15 phút check + hủy lệnh không hợp lý)
-    t8 = threading.Thread(target=pending_order_reviewer, args=(exchange, notifier), daemon=True)
-    t8.start()
-
-    # Memory cleanup thread (mỗi 2 giờ)
-    t9 = threading.Thread(target=memory_cleanup, daemon=True)
-    t9.start()
-
-    # Position advisor thread (mỗi 30 phút phân tích + gửi lời khuyên)
-    t10 = threading.Thread(target=position_advisor, args=(exchange, notifier), daemon=True)
-    t10.start()
-
-    # Orphan order cleanup thread (mỗi 20 phút xóa SL/TP mồ côi)
-    t11 = threading.Thread(target=orphan_order_cleanup, args=(exchange, notifier), daemon=True)
-    t11.start()
-    t_trailing = threading.Thread(target=trailing_profit_lock, args=(exchange, notifier), daemon=True)
-    t_trailing.start()
-    t_profit_lock = threading.Thread(target=auto_profit_lock, args=(exchange, notifier), daemon=True)
-    t_profit_lock.start()
-    t_mfe_scan = threading.Thread(target=mfe_scan_monitor, args=(exchange, notifier), daemon=True)
-    t_mfe_scan.start()
-    t_partial_tp = threading.Thread(target=partial_tp_monitor, args=(exchange, notifier), daemon=True)
-    t_partial_tp.start()
-    
-    t_pp = threading.Thread(target=profit_protection_monitor, args=(exchange, notifier), daemon=True)
-    t_pp.start()
-    logger.info("=== PP thread started ===")
+    # Memory cleanup — infra, chạy luôn kể cả khi paused (loop dựa running nên sẽ tự dừng;
+    # nhưng cleanup nhẹ, ta cho chạy khi Start). Ở đây KHÔNG start worker threads —
+    # tất cả tạo qua _start_worker_threads() khi bấm Start Bot trên web.
+    #
+    # NOTE: Các worker threads (price, scan, pump, liq, monitor, protect, telegram...)
+    # KHÔNG start ở đây. Bấm Start Bot trên web → _start_worker_threads() tạo tất cả.
 
     # AI Analyzer thread — chạy TradingAgents mỗi 4h
     def ai_analyzer_loop():
@@ -6261,26 +6259,24 @@ if __name__ == "__main__":
     #     t6 = threading.Thread(target=ai_analyzer_loop, daemon=True)
     #     t6.start()
 
+    # Sync watchlist từ file khi startup (telegram thread sẽ tạo khi bấm Start Bot)
     try:
         from telegram_commands import TelegramCommandHandler
         from notifier import NOTIFICATION_CONFIG
-        cmd = TelegramCommandHandler(
+        _cmd_init = TelegramCommandHandler(
             bot_token=NOTIFICATION_CONFIG["telegram"]["bot_token"],
             chat_id=NOTIFICATION_CONFIG["telegram"]["chat_id"],
             state=state, state_lock=lock,
             watchlist=WATCHLIST, config=config
         )
-        # Sync watchlist từ file (user đã add/remove coins) vào state
-        if cmd.watchlist:
+        if _cmd_init.watchlist:
             with lock:
-                state["_watchlist"] = list(cmd.watchlist)
-            # Cũng update scanner WATCHLIST để scan đúng coins
+                state["_watchlist"] = list(_cmd_init.watchlist)
             import scanner as _scanner_mod
-            _scanner_mod.WATCHLIST[:] = cmd.watchlist
-        t4 = threading.Thread(target=cmd.run, daemon=True)
-        t4.start()
+            _scanner_mod.WATCHLIST[:] = _cmd_init.watchlist
+        # KHÔNG start telegram thread ở đây — _start_worker_threads() sẽ tạo khi bấm Start Bot
     except Exception as e:
-        logger.warning(f"Telegram commands disabled: {e}")
+        logger.warning(f"Telegram init failed: {e}")
 
     # Grid auto-start TẮT — gây spam notification + lỗi 400 trên testnet
     # Muốn bật: dùng Telegram /grid hoặc uncomment bên dưới
