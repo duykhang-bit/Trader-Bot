@@ -3731,10 +3731,18 @@ def pump_scan_engine(exchange, notifier):
             # Lấy danh sách pump coins từ state (web có thể add/remove)
             with lock:
                 pump_coins = list(state.get("pump_watch_coins", []))
+                _nhe_coins_ob = list(state.get("pump_nhe_coins", []))
+            if not _nhe_coins_ob:
+                _nhe_coins_ob = list(getattr(config, "PUMP_NHE_COINS", []))
 
             # Sync ob_tracker với pump coins hiện tại
-            if pump_coins:
-                ob_tracker.add_symbols(pump_coins)
+            # FIX: gộp cả coin PUMP NHẸ. Cũ chỉ add pump_coins (pump mạnh) nên
+            # tracker không có sổ lệnh coin pump nhẹ → dù có truyền ob_tracker
+            # vào nhe_detector.analyze() thì get_snapshot() vẫn trả None → mất
+            # trọn 20đ bonus order book.
+            _ob_syms = list(dict.fromkeys(pump_coins + _nhe_coins_ob))
+            if _ob_syms:
+                ob_tracker.add_symbols(_ob_syms)
 
             # Lấy config dynamic
             auto_short   = getattr(config, "PUMP_AUTO_SHORT", False)
@@ -3994,7 +4002,11 @@ def pump_scan_engine(exchange, notifier):
                             if ws_price_nhe > float(df_1m.iloc[-1]["high"]):
                                 df_1m.iloc[-1, df_1m.columns.get_loc("high")] = ws_price_nhe
 
-                        sig = nhe_detector.analyze(symbol, df_1m, df_15m)
+                        # FIX: truyền ob_tracker như luồng pump mạnh (dòng ~3819).
+                        # Cũ thiếu tham số này → ob_score luôn 0 → pump nhẹ mất
+                        # 20đ bonus xác nhận ask wall đè, khó chạm ngưỡng.
+                        sig = nhe_detector.analyze(symbol, df_1m, df_15m,
+                                                   ob_tracker=ob_tracker)
                         if sig is None:
                             continue
 
