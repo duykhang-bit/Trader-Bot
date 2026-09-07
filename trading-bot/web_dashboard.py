@@ -1750,7 +1750,7 @@ function renderDashboard(d) {
                 <span id="p0-vol-hint" style="font-size:10px;color:#484f58;margin-left:4px"></span>
               </div>
               <div>
-                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Pullback — volume ≥ ? × MA20</div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Pullback — volume ≥ ? × MA20 <span style="color:#484f58">(0 = không check)</span></div>
                 <input type="number" id="p0-pb-vol-ratio" min="0" max="3" step="0.05"
                        style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
                               padding:4px 6px;color:#e6edf3;font-size:12px">
