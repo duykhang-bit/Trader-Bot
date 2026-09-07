@@ -167,6 +167,169 @@ _pending_orders_cache = []
 _pending_orders_last_fetch = 0
 _PENDING_ORDERS_TTL = 30  # giây — tăng lên 30s để tránh rate limit
 
+# ═══════════════════════════════════════════════════════════════
+# TIN TỨC THỊ TRƯỜNG CRYPTO + MACRO (Fed, lãi suất, CPI...)
+# ═══════════════════════════════════════════════════════════════
+# Dùng RSS công khai — KHÔNG cần API key.
+# Parse bằng xml.etree (stdlib) để không thêm dependency.
+# Đã test 07/09/2026: coindesk 25 item, cointelegraph 30, decrypt 37, newsbtc OK.
+NEWS_SOURCES = [
+    ("CoinDesk",       "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("Cointelegraph",  "https://cointelegraph.com/rss"),
+    ("Decrypt",        "https://decrypt.co/feed"),
+    ("NewsBTC",        "https://www.newsbtc.com/feed/"),
+]
+
+# Từ khoá gắn nhãn. Ưu tiên theo thứ tự trong list (khớp trước thắng).
+NEWS_TAG_RULES = [
+    ("MACRO", [
+        "fed", "federal reserve", "fomc", "powell", "jerome powell",
+        "interest rate", "rate cut", "rate hike", "basis point",
+        "inflation", "cpi", "ppi", "pce", "jobs report", "nonfarm",
+        "unemployment", "treasury", "yield", "recession", "gdp",
+        "monetary policy", "quantitative", "dollar index", "dxy",
+        "central bank", "ecb", "boj", "tariff", "stimulus",
+    ]),
+    ("QUY ĐỊNH", [
+        "sec ", "sec's", "cftc", "regulat", "lawsuit", "court", "judge",
+        "ban ", "banned", "compliance", "mica", "legislation", "senate",
+        "congress", "bill ", "law ", "sanction", "enforcement", "settle",
+        "approve", "approval", "license", "framework", "treasury dept",
+    ]),
+    ("ETF", ["etf", "spot etf", "inflow", "outflow", "blackrock", "ishares",
+             "grayscale", "fidelity", "ark invest", "aum"]),
+    ("THANH LÝ", ["liquidat", "crash", "plunge", "plummet", "tumble", "selloff",
+                  "sell-off", "capitulat", "flash crash", "wipeout", "dump"]),
+    ("TĂNG MẠNH", ["surge", "soar", "rally", "all-time high", "ath",
+                   "record high", "breakout", "skyrocket", "jump"]),
+    ("HACK", ["hack", "exploit", "breach", "stolen", "drain", "rug pull",
+              "scam", "phishing", "vulnerability"]),
+]
+
+# Coin phổ biến — để lọc theo coin
+NEWS_COIN_WORDS = {
+    "BTC": ["bitcoin", "btc"],
+    "ETH": ["ethereum", "ether", "eth"],
+    "SOL": ["solana", "sol"],
+    "XRP": ["xrp", "ripple"],
+    "BNB": ["bnb", "binance coin"],
+    "DOGE": ["dogecoin", "doge"],
+}
+
+_news_cache = {"items": [], "ts": 0, "errors": []}
+_news_lock = threading.Lock()
+_NEWS_TTL = 300          # 5 phút — tin tức không cần realtime
+_NEWS_MAX_ITEMS = 60
+
+
+def _news_parse_date(s):
+    """Parse pubDate RSS -> timestamp. Trả 0 nếu không parse được."""
+    if not s:
+        return 0
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s.strip()).timestamp()
+    except Exception:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z",
+                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s.strip(), fmt).timestamp()
+        except Exception:
+            continue
+    return 0
+
+
+def _news_tag(title, summary=""):
+    """Gắn nhãn theo từ khoá. Trả list nhãn (có thể nhiều)."""
+    blob = (title + " " + summary).lower()
+    tags = []
+    for tag, words in NEWS_TAG_RULES:
+        if any(w in blob for w in words):
+            tags.append(tag)
+    coins = [c for c, words in NEWS_COIN_WORDS.items()
+             if any(w in blob for w in words)]
+    return tags, coins
+
+
+def _news_fetch_one(name, url, out, errors):
+    """Fetch + parse 1 nguồn RSS. Lỗi 1 nguồn không làm chết các nguồn khác."""
+    import xml.etree.ElementTree as ET
+    try:
+        import requests
+        r = requests.get(url, timeout=10, allow_redirects=True,
+                         headers={"User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"})
+        if r.status_code != 200:
+            errors.append(f"{name}: HTTP {r.status_code}")
+            return
+        root = ET.fromstring(r.content)
+        items = root.findall(".//item") or root.findall(
+            ".//{http://www.w3.org/2005/Atom}entry")
+        for it in items[:25]:
+            title = (it.findtext("title")
+                     or it.findtext("{http://www.w3.org/2005/Atom}title") or "").strip()
+            if not title:
+                continue
+            link = (it.findtext("link") or "").strip()
+            if not link:
+                le = it.find("{http://www.w3.org/2005/Atom}link")
+                if le is not None:
+                    link = le.get("href", "")
+            desc = (it.findtext("description")
+                    or it.findtext("{http://www.w3.org/2005/Atom}summary") or "")
+            # bỏ thẻ HTML trong description
+            import re as _re
+            desc = _re.sub(r"<[^>]+>", "", desc).strip()[:300]
+            pub = (it.findtext("pubDate")
+                   or it.findtext("published")
+                   or it.findtext("{http://www.w3.org/2005/Atom}updated") or "")
+            ts = _news_parse_date(pub)
+            tags, coins = _news_tag(title, desc)
+            out.append({
+                "title": title, "link": link, "source": name,
+                "summary": desc, "ts": ts, "tags": tags, "coins": coins,
+            })
+    except Exception as e:
+        errors.append(f"{name}: {type(e).__name__}")
+
+
+def get_market_news(force=False):
+    """Trả tin tức đã cache. Fetch song song 4 nguồn, cache 5 phút."""
+    now = time.time()
+    with _news_lock:
+        fresh = (now - _news_cache["ts"]) < _NEWS_TTL
+        if fresh and not force and _news_cache["items"]:
+            return _news_cache["items"], _news_cache["ts"], _news_cache["errors"]
+
+    out, errors, threads = [], [], []
+    for name, url in NEWS_SOURCES:
+        t = threading.Thread(target=_news_fetch_one,
+                             args=(name, url, out, errors), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=12)
+
+    # Bỏ tin trùng tiêu đề (nhiều nguồn đưa cùng 1 tin)
+    seen, uniq = set(), []
+    for it in sorted(out, key=lambda x: x["ts"], reverse=True):
+        key = it["title"].lower()[:70]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    uniq = uniq[:_NEWS_MAX_ITEMS]
+
+    with _news_lock:
+        # Chỉ ghi đè cache khi lấy được tin — tránh mất tin cũ khi mạng lỗi
+        if uniq:
+            _news_cache["items"] = uniq
+            _news_cache["ts"] = now
+        _news_cache["errors"] = errors
+        return _news_cache["items"], _news_cache["ts"], errors
+
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -304,6 +467,36 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .ta-progress { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px 12px; font-size:12px; color:#8b949e; margin-top:8px; }
 .ta-analyst-chip { padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600; border:1px solid #30363d; background:#0d1117; color:#8b949e; cursor:pointer; transition:all .2s; user-select:none; display:inline-block; margin:3px 2px; }
 .ta-analyst-chip.active { background:#1f3a5a; border-color:#58a6ff; color:#58a6ff; }
+/* Tin tức thị trường */
+.news-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.news-chip { padding:3px 11px; border-radius:20px; font-size:11px; font-weight:600; cursor:pointer;
+             border:1px solid #30363d; background:#0d1117; color:#8b949e; transition:all .2s;
+             user-select:none; }
+.news-chip:hover { border-color:#58a6ff; color:#58a6ff; }
+.news-chip.active { background:#1f3a5a; border-color:#58a6ff; color:#58a6ff; }
+.news-list { display:flex; flex-direction:column; gap:1px; }
+.news-item { display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border-radius:6px;
+             border-left:2px solid #21262d; background:#0d1117; transition:background .15s; }
+.news-item:hover { background:#161b22; }
+.news-item.macro { border-left-color:#d29922; background:rgba(210,153,34,.05); }
+.news-item.danger { border-left-color:#f85149; background:rgba(248,81,73,.05); }
+.news-time { font-size:11px; color:#484f58; min-width:44px; text-align:right; flex-shrink:0;
+             padding-top:2px; font-variant-numeric:tabular-nums; }
+.news-body { flex:1; min-width:0; }
+.news-title { font-size:12.5px; color:#c9d1d9; text-decoration:none; line-height:1.45;
+              display:block; }
+.news-title:hover { color:#58a6ff; text-decoration:underline; }
+.news-meta { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin-top:4px; }
+.news-src { font-size:10px; color:#6e7681; }
+.news-tag { font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:4px;
+            letter-spacing:.4px; }
+.news-tag.MACRO   { background:rgba(210,153,34,.18); color:#d29922; }
+.news-tag.REG     { background:rgba(88,166,255,.15); color:#58a6ff; }
+.news-tag.ETF     { background:rgba(163,113,247,.15); color:#a371f7; }
+.news-tag.DUMP    { background:rgba(248,81,73,.15); color:#f85149; }
+.news-tag.PUMP    { background:rgba(63,185,80,.15); color:#3fb950; }
+.news-tag.HACK    { background:rgba(219,109,40,.18); color:#db6d28; }
+.news-tag.COIN    { background:#21262d; color:#8b949e; }
 </style>
 </head>
 <body>
@@ -1235,6 +1428,22 @@ function renderDashboard(d) {
     </div>
     <div id="pnl-stats-section" style="margin-top:8px"><div style="color:#8b949e;font-size:13px">Đang tải PnL...</div></div>`;
 
+    // Tin tức thị trường — render riêng bởi renderNews(), không nằm trong refresh() 5s
+    html += `<div class="section" id="news-section">
+        <h2 style="display:flex;align-items:center;gap:8px">
+          &#x1F4F0; Tin Tức Thị Trường
+          <span id="news-updated" style="font-size:11px;color:#484f58;font-weight:400"></span>
+          <span style="flex:1"></span>
+          <button onclick="refreshNews()" id="news-refresh-btn"
+                  style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;
+                         padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit">
+            &#x21BB; Làm mới
+          </button>
+        </h2>
+        <div id="news-filters" class="news-filters"></div>
+        <div id="news-list"><div style="color:#8b949e;font-size:13px">Đang tải tin tức...</div></div>
+    </div>`;
+
     // Open Positions
     html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
         <button class="btn btn-green btn-sm" onclick="autoSetSlTpAll()" style="margin-bottom:8px">&#x1F6E1; Auto Set SL/TP ALL</button>
@@ -1655,6 +1864,8 @@ function renderDashboard(d) {
 // ── PNL STATISTICS ───────────────────────────────────────────
 let _pnlTab = 'daily';  // daily | weekly | monthly
 let _pnlData = null;
+let _pnlExpanded = false;        // false = chỉ hiện _PNL_ROW_LIMIT dòng gần nhất
+const _PNL_ROW_LIMIT = 7;
 
 async function fetchPnlStats() {
     try {
@@ -1674,7 +1885,12 @@ function renderPnlStats() {
 
     const rows = _pnlData[_pnlTab] || [];
     // Lọc ngày/tuần/tháng có trade
-    const activeRows = rows.filter(r => r.trades > 0);
+    const allActiveRows = rows.filter(r => r.trades > 0);
+    // Chỉ hiện _PNL_ROW_LIMIT dòng đầu, còn lại ẩn sau nút "Xem thêm".
+    // Trước đây render hết -> tab "Theo Ngày" dài cả 30 dòng, phải scroll mãi.
+    const _limit = _pnlExpanded ? allActiveRows.length : _PNL_ROW_LIMIT;
+    const activeRows = allActiveRows.slice(0, _limit);
+    const hiddenCount = allActiveRows.length - activeRows.length;
 
     const totalPnl    = rows.reduce((s,r) => s + r.pnl, 0);
     const totalTrades = rows.reduce((s,r) => s + r.trades, 0);
@@ -1733,13 +1949,49 @@ function renderPnlStats() {
             </div>`;
         });
         html += `</div>`;
+
+        // Nút mở rộng — chỉ hiện khi thật sự có dòng bị ẩn
+        if (hiddenCount > 0) {
+            const hidPnl = allActiveRows.slice(_PNL_ROW_LIMIT)
+                                        .reduce((s,r) => s + r.pnl, 0);
+            html += `
+            <div style="text-align:center;margin-top:8px">
+              <button onclick="togglePnlExpand()"
+                      style="background:#0d1117;border:1px solid #30363d;color:#8b949e;
+                             border-radius:6px;padding:5px 16px;font-size:12px;cursor:pointer;
+                             font-family:inherit;transition:all .2s"
+                      onmouseover="this.style.borderColor='#58a6ff';this.style.color='#58a6ff'"
+                      onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">
+                &#x25BE; Xem thêm ${hiddenCount} dòng
+                <span style="color:${pnlColor(hidPnl)}">(${hidPnl>=0?'+':''}$${hidPnl.toFixed(2)})</span>
+              </button>
+            </div>`;
+        } else if (_pnlExpanded && allActiveRows.length > _PNL_ROW_LIMIT) {
+            html += `
+            <div style="text-align:center;margin-top:8px">
+              <button onclick="togglePnlExpand()"
+                      style="background:#0d1117;border:1px solid #30363d;color:#8b949e;
+                             border-radius:6px;padding:5px 16px;font-size:12px;cursor:pointer;
+                             font-family:inherit;transition:all .2s"
+                      onmouseover="this.style.borderColor='#58a6ff';this.style.color='#58a6ff'"
+                      onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">
+                &#x25B4; Thu gọn
+              </button>
+            </div>`;
+        }
     }
 
     el.innerHTML = html;
 }
 
+function togglePnlExpand() {
+    _pnlExpanded = !_pnlExpanded;
+    renderPnlStats();
+}
+
 function setPnlTab(tab) {
     _pnlTab = tab;
+    _pnlExpanded = false;   // đổi tab thì thu gọn lại
     renderPnlStats();
 }
 
@@ -1754,6 +2006,152 @@ async function clearTradeHistory() {
             fetchPnlStats();
         }
     } catch(e) { alert('Lỗi: ' + e); }
+}
+
+// ── TIN TỨC THỊ TRƯỜNG ──────────────────────────────────────
+let _newsData = null;
+let _newsFilter = 'all';
+let _newsLimit = 12;
+
+// map nhãn từ backend -> class CSS + chữ hiển thị
+const _NEWS_TAG_MAP = {
+    'MACRO':      {cls:'MACRO', txt:'FED / MACRO'},
+    'QUY ĐỊNH':   {cls:'REG',   txt:'QUY ĐỊNH'},
+    'ETF':        {cls:'ETF',   txt:'ETF'},
+    'THANH LÝ':   {cls:'DUMP',  txt:'XẢ MẠNH'},
+    'TĂNG MẠNH':  {cls:'PUMP',  txt:'TĂNG MẠNH'},
+    'HACK':       {cls:'HACK',  txt:'HACK'},
+};
+
+function _newsAgo(ts) {
+    if (!ts) return '–';
+    const s = Math.max(0, Math.floor(Date.now()/1000 - ts));
+    if (s < 60)    return s + 'gi';
+    if (s < 3600)  return Math.floor(s/60) + 'p';
+    if (s < 86400) return Math.floor(s/3600) + 'h';
+    return Math.floor(s/86400) + 'ng';
+}
+
+async function fetchNews(force) {
+    try {
+        const r = await fetch('/api/news' + (force ? '?force=1' : ''));
+        const d = await r.json();
+        if (d && d.items) { _newsData = d; renderNews(); }
+    } catch(e) {
+        const el = document.getElementById('news-list');
+        if (el && !_newsData) el.innerHTML =
+            `<div style="color:#8b949e;font-size:13px">Không tải được tin tức</div>`;
+    }
+}
+
+async function refreshNews() {
+    const btn = document.getElementById('news-refresh-btn');
+    if (btn) { btn.textContent = '⏳ Đang tải...'; btn.disabled = true; }
+    await fetchNews(true);
+    if (btn) { btn.innerHTML = '&#x21BB; Làm mới'; btn.disabled = false; }
+}
+
+function setNewsFilter(f) {
+    _newsFilter = f;
+    _newsLimit = 12;
+    renderNews();
+}
+
+function moreNews() { _newsLimit += 15; renderNews(); }
+
+function renderNews() {
+    const el = document.getElementById('news-list');
+    if (!el || !_newsData) return;
+    const all = _newsData.items || [];
+
+    // Đếm cho từng filter
+    const cnt = {
+        all:   all.length,
+        MACRO: all.filter(n => n.tags.includes('MACRO')).length,
+        REG:   all.filter(n => n.tags.includes('QUY ĐỊNH')).length,
+        ETF:   all.filter(n => n.tags.includes('ETF')).length,
+        RISK:  all.filter(n => n.tags.includes('THANH LÝ') || n.tags.includes('HACK')).length,
+        BTC:   all.filter(n => n.coins.includes('BTC')).length,
+        ETH:   all.filter(n => n.coins.includes('ETH')).length,
+    };
+
+    const chips = [
+        ['all',   'Tất cả',       cnt.all],
+        ['MACRO', '🏛 Fed/Macro',  cnt.MACRO],
+        ['REG',   '⚖️ Quy định',   cnt.REG],
+        ['ETF',   '📊 ETF',        cnt.ETF],
+        ['RISK',  '⚠️ Rủi ro',     cnt.RISK],
+        ['BTC',   'BTC',          cnt.BTC],
+        ['ETH',   'ETH',          cnt.ETH],
+    ];
+    const fEl = document.getElementById('news-filters');
+    if (fEl) {
+        fEl.innerHTML = chips.map(([k,label,c]) =>
+            `<div class="news-chip ${_newsFilter===k?'active':''}"
+                  onclick="setNewsFilter('${k}')">${label} <span style="opacity:.6">${c}</span></div>`
+        ).join('');
+    }
+
+    // Lọc
+    let rows = all;
+    if (_newsFilter === 'MACRO')      rows = all.filter(n => n.tags.includes('MACRO'));
+    else if (_newsFilter === 'REG')   rows = all.filter(n => n.tags.includes('QUY ĐỊNH'));
+    else if (_newsFilter === 'ETF')   rows = all.filter(n => n.tags.includes('ETF'));
+    else if (_newsFilter === 'RISK')  rows = all.filter(n => n.tags.includes('THANH LÝ') || n.tags.includes('HACK'));
+    else if (_newsFilter === 'BTC' || _newsFilter === 'ETH')
+        rows = all.filter(n => n.coins.includes(_newsFilter));
+
+    // Cập nhật thời điểm + cảnh báo nguồn lỗi
+    const uEl = document.getElementById('news-updated');
+    if (uEl) {
+        let t = _newsData.updated ? ('cập nhật ' + _newsAgo(_newsData.updated) + ' trước') : '';
+        if (_newsData.errors && _newsData.errors.length)
+            t += ` · ⚠️ ${_newsData.errors.length} nguồn lỗi`;
+        uEl.textContent = t;
+    }
+
+    if (rows.length === 0) {
+        el.innerHTML = `<div style="color:#8b949e;font-size:13px;padding:10px 0">Không có tin nào khớp bộ lọc</div>`;
+        return;
+    }
+
+    const shown = rows.slice(0, _newsLimit);
+    let html = `<div class="news-list">`;
+    shown.forEach(n => {
+        const isMacro  = n.tags.includes('MACRO');
+        const isDanger = n.tags.includes('THANH LÝ') || n.tags.includes('HACK');
+        const cls = isDanger ? 'danger' : (isMacro ? 'macro' : '');
+        let badges = n.tags.map(t => {
+            const m = _NEWS_TAG_MAP[t];
+            return m ? `<span class="news-tag ${m.cls}">${m.txt}</span>` : '';
+        }).join('');
+        badges += n.coins.map(c => `<span class="news-tag COIN">${c}</span>`).join('');
+        const safeTitle = (n.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html += `
+        <div class="news-item ${cls}">
+            <div class="news-time">${_newsAgo(n.ts)}</div>
+            <div class="news-body">
+                <a class="news-title" href="${n.link}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
+                <div class="news-meta">
+                    <span class="news-src">${n.source}</span>
+                    ${badges}
+                </div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+
+    if (rows.length > shown.length) {
+        html += `
+        <div style="text-align:center;margin-top:8px">
+          <button onclick="moreNews()"
+                  style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;
+                         padding:5px 16px;font-size:12px;cursor:pointer;font-family:inherit">
+            &#x25BE; Xem thêm ${rows.length - shown.length} tin
+          </button>
+        </div>`;
+    }
+    el.innerHTML = html;
 }
 
 // ── PUMP NHẸ RADAR ──────────────────────────────────────────
@@ -2528,6 +2926,12 @@ fetchPump();
 setInterval(fetchPnlStats, 30000);
 fetchPnlStats();
 
+// Tin tức: 5 phút/lần — khớp TTL cache server, không thêm tải cho web.
+// Riêng nhãn thời gian ("5p trước") tự cập nhật mỗi 60s mà không gọi API.
+setInterval(() => fetchNews(false), 300000);
+fetchNews(false);
+setInterval(() => { if (_newsData) renderNews(); }, 60000);
+
 // TradingAgents — check kết quả cũ khi load trang
 taCheckLastResult();
 
@@ -2573,6 +2977,10 @@ async function refresh(){
             _pumpRendered = false;  // pump-radar-root vừa được tạo lại → cần render lại
             restoreInputs();
             _firstRender = false;
+            // Các section render riêng vừa bị dựng lại rỗng → vẽ lại từ data đã có,
+            // không gọi API lần nữa (tránh chờ và tránh thêm tải).
+            if (_newsData) renderNews();
+            if (_pnlData)  renderPnlStats();
         } else {
             _patchDashboard(d);
         }
@@ -4950,6 +5358,30 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     t.start()
     logger.info(f"Web dashboard started at http://localhost:{port}")
     return t
+
+
+@app.route("/api/news", methods=["GET"])
+@require_auth
+def api_news():
+    """
+    Tin tức crypto + macro (Fed, lãi suất, CPI...).
+    Query: ?force=1 để bỏ qua cache.
+    Trả: { items:[{title,link,source,summary,ts,tags,coins}], updated, errors }
+    """
+    try:
+        force = request.args.get("force") == "1"
+        items, ts, errors = get_market_news(force=force)
+        return jsonify({
+            "ok": True,
+            "items": items,
+            "updated": ts,
+            "age_secs": int(time.time() - ts) if ts else None,
+            "errors": errors,
+            "sources": [n for n, _ in NEWS_SOURCES],
+        })
+    except Exception as e:
+        logger.error(f"[News] api_news failed: {e}")
+        return jsonify({"ok": False, "items": [], "error": str(e)}), 200
 
 
 @app.route("/api/pnl_stats", methods=["GET"])
