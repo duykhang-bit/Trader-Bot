@@ -912,12 +912,22 @@ def score_coin(symbol: str, df: pd.DataFrame, config) -> Optional[CoinScore]:
         
         # Tính ATR để định khoảng cách cho phép
         atr_value = atr  # Already calculated above
-        atr_multiplier = 2.0  # Cho phép entry trong vòng 2 ATR từ swing point
+        # Cửa sổ entry quanh swing point. 2.0 quá hẹp (đo thực tế: SOL cách
+        # swing_low 0.70% mà giới hạn chỉ 0.63% → trượt vì 0.07%).
+        # Chất lượng entry giờ đã có thêm 3 gate bảo vệ (volume/location/confluence).
+        atr_multiplier = getattr(config, "SWING_ENTRY_ATR_MULT", 3.0)
         
-        # FIX: buffer "quá sát swing đối diện" phải scale theo ATR, KHÔNG dùng 3% cứng.
-        # Lý do: BTC/ETH swing range 15 nến chỉ ~0.5-2% → buffer 3% bao trùm toàn bộ
-        # → mọi lệnh majors bị return None. Alt ATR 3% thì 3% lại quá nhỏ.
-        opp_buffer = max(atr_value * 1.0, current_price * 0.004)   # tối thiểu 0.4%
+        # Buffer "quá sát swing đối diện".
+        # Trước: 3% cứng → BTC (swing range 0.5-2%) bị bao trùm hoàn toàn.
+        # Rồi thử theo ATR → vẫn lỗi cấu trúc: khi swing range hẹp (SOL đo được
+        # 0.78%) thì "gần swing_low" và "không gần swing_high" LOẠI TRỪ NHAU,
+        # vùng entry hợp lệ chỉ còn 0.38% → hầu như không coin nào vào được.
+        # Giải pháp: buffer tỷ lệ với ĐỘ RỘNG swing range, có chặn trên/dưới.
+        # Việc canh kháng cự/hỗ trợ thật đã do GATE B (location 1H) đảm nhiệm.
+        _swing_range = max(swing_high - swing_low, atr_value * 0.5)
+        _buf_ratio   = getattr(config, "SWING_OPP_BUFFER_RATIO", 0.25)
+        opp_buffer   = min(max(atr_value * 0.5, current_price * 0.002),
+                           _swing_range * _buf_ratio)
 
         if signal == "LONG":
             # LONG: giá phải gần swing low (trong vòng 2 ATR)

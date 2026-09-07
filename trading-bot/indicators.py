@@ -96,8 +96,12 @@ def get_signal_low_vol(df: pd.DataFrame, config) -> str:
     cur_upper  = bb_upper.iloc[-1]
     cur_lower  = bb_lower.iloc[-1]
     cur_rsi    = rsi.iloc[-1]
-    cur_vol    = volume.iloc[-1]
-    avg_vol    = vol_ma.iloc[-1]
+    # FIX QUAN TRỌNG: volume phải lấy nến ĐÃ ĐÓNG.
+    # volume.iloc[-1] là nến đang chạy → đầu nến volume mới tích lũy 1 phần
+    # → vol_surge luôn FAIL → trả HOLD bất kể thị trường thế nào.
+    # Hệ quả cũ: bot chỉ sinh tín hiệu nếu tình cờ scan vào cuối nến.
+    cur_vol    = volume.iloc[-2] if len(volume) >= 2 else volume.iloc[-1]
+    avg_vol    = vol_ma.iloc[-2] if len(vol_ma) >= 2 else vol_ma.iloc[-1]
     vol_surge  = cur_vol > avg_vol * 0.8  # volume tăng nhẹ là đủ
 
     # BB width — chỉ vào khi BB đủ rộng (không sideway quá)
@@ -152,8 +156,12 @@ def get_signal_high_vol(df: pd.DataFrame, config) -> str:
     cur_price= close.iloc[-1]
     cur_hist = hist.iloc[-1]
     prev_hist= hist.iloc[-2]
-    cur_vol  = volume.iloc[-1]
-    avg_vol  = vol_ma.iloc[-1]
+    # FIX QUAN TRỌNG: volume phải lấy nến ĐÃ ĐÓNG.
+    # volume.iloc[-1] là nến đang chạy → đầu nến volume mới tích lũy 1 phần
+    # → vol_ok luôn FAIL → trả HOLD cho MỌI coin bất kể điểm momentum bao nhiêu.
+    # Đo thực tế: nến chạy 33%, 46/46 coin bị HOLD; dùng nến đóng thì có tín hiệu.
+    cur_vol  = volume.iloc[-2] if len(volume) >= 2 else volume.iloc[-1]
+    avg_vol  = vol_ma.iloc[-2] if len(vol_ma) >= 2 else vol_ma.iloc[-1]
     vol_ok   = cur_vol > avg_vol * 0.7  # nới lỏng volume filter
 
     # ── LONG conditions ──
