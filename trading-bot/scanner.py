@@ -506,7 +506,8 @@ def get_btc_context(exchange, cfg=None) -> dict:
 
 
 def find_swing_highs_lows(high: "pd.Series", low: "pd.Series",
-                          lookback: int = 20) -> dict:
+                          lookback: int = 20,
+                          close: "pd.Series" = None) -> dict:
     """
     Tìm swing high/low thực sự (local peaks/troughs) trong lookback nến gần nhất.
     Swing high: high[i] > high[i-1] AND high[i] > high[i+1]
@@ -521,16 +522,17 @@ def find_swing_highs_lows(high: "pd.Series", low: "pd.Series",
         }
     """
     try:
-        n = min(lookback, len(high) - 2)
         h_vals = high.values
         l_vals = low.values
+        total  = len(h_vals)
+
+        # Window: lookback nến gần nhất, nhưng phải còn nến 2 bên để check pivot
+        start = max(1, total - lookback)
+        end   = total - 1          # exclusive: nến cuối không thể là pivot
 
         swing_highs = []
         swing_lows  = []
-        for i in range(1, n):
-            idx = len(h_vals) - n + i  # index trong series
-            if idx <= 0 or idx >= len(h_vals) - 1:
-                continue
+        for idx in range(start, end):
             if h_vals[idx] > h_vals[idx-1] and h_vals[idx] > h_vals[idx+1]:
                 swing_highs.append(float(h_vals[idx]))
             if l_vals[idx] < l_vals[idx-1] and l_vals[idx] < l_vals[idx+1]:
@@ -539,12 +541,19 @@ def find_swing_highs_lows(high: "pd.Series", low: "pd.Series",
         swing_highs.sort(reverse=True)
         swing_lows.sort()
 
-        cur_price = float(high.iloc[-1])
-        # Nearest resistance: swing high ngay trên giá hiện tại
-        nearest_res = next((h for h in swing_highs if h > cur_price), swing_highs[0] if swing_highs else cur_price * 1.05)
-        # Nearest support: swing low ngay dưới giá hiện tại
-        cur_low     = float(low.iloc[-1])
-        nearest_sup = next((l for l in reversed(swing_lows) if l < cur_low), swing_lows[-1] if swing_lows else cur_price * 0.95)
+        # FIX: dùng CLOSE làm giá hiện tại (trước đây dùng high cho res, low cho sup
+        # → lệch nhau, dễ rơi vào fallback sai)
+        if close is not None and len(close) > 0:
+            cur_price = float(close.iloc[-1])
+        else:
+            cur_price = (float(high.iloc[-1]) + float(low.iloc[-1])) / 2.0
+
+        # Nearest resistance: swing high ngay TRÊN giá hiện tại
+        nearest_res = next((h for h in reversed(swing_highs) if h > cur_price),
+                           swing_highs[0] if swing_highs else cur_price * 1.05)
+        # Nearest support: swing low ngay DƯỚI giá hiện tại
+        nearest_sup = next((l for l in reversed(swing_lows) if l < cur_price),
+                           swing_lows[0] if swing_lows else cur_price * 0.95)
 
         return {
             "swing_highs":        swing_highs,
@@ -580,7 +589,8 @@ def check_1h_location(df_1h: "pd.DataFrame", signal: str,
     lookback = getattr(cfg, "LOCATION_SWING_LOOKBACK", 20) if cfg else 20
 
     try:
-        swings  = find_swing_highs_lows(df_1h["high"], df_1h["low"], lookback)
+        swings  = find_swing_highs_lows(df_1h["high"], df_1h["low"], lookback,
+                                        close=df_1h["close"])
         if signal == "LONG":
             nearest = swings["nearest_resistance"]
             room    = (nearest - entry_price) / atr_1h if atr_1h > 0 else 99.0
@@ -620,7 +630,8 @@ def calc_structure_sl_tp(df_15m: "pd.DataFrame", signal: str,
     from indicators import calculate_atr
     try:
         atr     = float(calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1])
-        swings  = find_swing_highs_lows(df_15m["high"], df_15m["low"], lookback=20)
+        swings  = find_swing_highs_lows(df_15m["high"], df_15m["low"], lookback=20,
+                                        close=df_15m["close"])
 
         atr_buf   = getattr(cfg, "SL_ATR_BUFFER_MULT", 0.5) if cfg else 0.5
         sl_min    = getattr(cfg, "SL_MIN_PCT", 0.008)        if cfg else 0.008
@@ -1104,8 +1115,9 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             # ═══ BƯỚC 1: Xác định xu hướng từ 4h + 1h TRƯỚC ═══
             klines_4h = exchange.get_klines(symbol, "4h", limit=100)
             klines_1h = exchange.get_klines(symbol, "1h", limit=100)
-            df_4h = _klines_to_df(klines_4h)
-            df_1h = _klines_to_df(klines_1h)
+            # FIX REPAINT: trend tính trên nến ĐÃ ĐÓNG — tránh trend flip trong cùng nến
+            df_4h = _klines_to_df_closed(klines_4h)
+            df_1h = _klines_to_df_closed(klines_1h)
 
             close_4h = df_4h["close"]
             ema9_4h  = calculate_ema(close_4h, 9).iloc[-1]
@@ -1122,26 +1134,52 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             close_1h = df_1h["close"]
             ema9_1h  = calculate_ema(close_1h, 9).iloc[-1]
             ema21_1h = calculate_ema(close_1h, 21).iloc[-1]
+            ema50_1h = calculate_ema(close_1h, 50).iloc[-1]
+            price_1h = close_1h.iloc[-1]
 
+            # Trend 1H siết lại: cần EMA9/21 cross VÀ giá cùng phía EMA50
+            # (trước đây chỉ EMA9>EMA21 → quá lỏng, gần như là nhiễu)
             trend_1h = "NEUTRAL"
-            if ema9_1h > ema21_1h:
+            if ema9_1h > ema21_1h and price_1h > ema50_1h:
                 trend_1h = "LONG"
-            elif ema9_1h < ema21_1h:
+            elif ema9_1h < ema21_1h and price_1h < ema50_1h:
                 trend_1h = "SHORT"
 
-            # Bias chung
+            # ── Bias: KHÔNG vào lệnh khi 1H NGƯỢC CHIỀU 4H ──
             if trend_4h == trend_1h and trend_4h != "NEUTRAL":
                 bias = trend_4h
                 strength = "STRONG"
-            elif trend_4h != "NEUTRAL":
+            elif trend_4h != "NEUTRAL" and trend_1h == "NEUTRAL":
+                # 4h rõ, 1h chưa rõ → cho vào nhưng yếu hơn
                 bias = trend_4h
                 strength = "MEDIUM"
+            elif trend_4h != "NEUTRAL" and trend_1h != trend_4h:
+                # FIX: 4h và 1h NGƯỢC nhau → bỏ qua, không đánh nghịch khung nhỏ
+                logger.info(f"  ⏭  {symbol}: 4h={trend_4h} vs 1h={trend_1h} NGƯỢC CHIỀU → skip")
+                continue
             elif trend_1h != "NEUTRAL":
                 bias = trend_1h
                 strength = "MEDIUM"
             else:
                 logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
                 continue
+
+            # ── REGIME FILTER: skip RANGE (sideway) và CHAOS (ATR spike) ──
+            if getattr(config, "REGIME_FILTER_ENABLED", True):
+                try:
+                    regime_info = detect_regime(df_4h, config)
+                    _regime = regime_info.get("regime", "RANGE")
+                    if _regime in ("RANGE", "CHAOS"):
+                        logger.info(f"  ⏭  {symbol}: regime={_regime} "
+                                    f"({regime_info.get('reason','')}) → skip")
+                        continue
+                    # Regime bias ngược bias trend → skip (tránh đánh ngược regime)
+                    _rb = regime_info.get("bias", "NEUTRAL")
+                    if _rb != "NEUTRAL" and _rb != bias:
+                        logger.info(f"  ⏭  {symbol}: regime bias={_rb} ngược {bias} → skip")
+                        continue
+                except Exception as _re:
+                    logger.debug(f"  [Regime] {symbol}: {_re}")
 
             # BTC Filter — chỉ block ALT khi BTC strong ngược chiều
             is_btc_eth = symbol in ("BTCUSDT", "ETHUSDT")
@@ -1156,6 +1194,8 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             # ═══ BƯỚC 2: Tìm entry 15m THEO CHIỀU bias ═══
             klines_15m = exchange.get_klines(symbol, "15m", limit=100)
             df_15m = _klines_to_df(klines_15m)
+            # Bản nến ĐÃ ĐÓNG — dùng cho volume confirm (nến đang chạy volume chưa đủ)
+            df_15m_closed = _klines_to_df_closed(klines_15m)
 
             scored = score_coin(symbol, df_15m, config)
 
@@ -1165,18 +1205,59 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 if volatile:
                     pb_signal = get_pullback_signal(df_15m, config, bias)
                     if pb_signal == bias:
-                        rsi_val = calculate_rsi(df_15m["close"], 14).iloc[-1]
-                        atr_val = calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1]
-                        scored = CoinScore(
-                            symbol=symbol, signal=bias, score=55.0,
-                            rsi=round(rsi_val, 1),
-                            trend="BULLISH" if bias == "LONG" else "BEARISH",
-                            atr_pct=round(atr_val / df_15m["close"].iloc[-1] * 100, 2),
-                            reason=f"🔥PULLBACK {bias}"
-                        )
+                        # SIẾT PULLBACK: chỉ nhận khi có volume xác nhận trên nến đã đóng
+                        # (trước đây chỉ cần 1 nến xanh quanh EMA21 → quá lỏng)
+                        _pb_ok = True
+                        try:
+                            _v = df_15m_closed["volume"]
+                            _vma = _v.rolling(20).mean().iloc[-1]
+                            _vr  = _v.iloc[-1] / _vma if _vma > 0 else 0.0
+                            _pb_min_vol = getattr(config, "PULLBACK_MIN_VOL_RATIO", 1.0)
+                            if _vr < _pb_min_vol:
+                                _pb_ok = False
+                                logger.debug(f"  ⏭  {symbol}: PULLBACK vol {_vr:.2f}× < {_pb_min_vol}× → skip")
+                        except Exception:
+                            pass
+
+                        if _pb_ok:
+                            rsi_val = calculate_rsi(df_15m["close"], 14).iloc[-1]
+                            atr_val = calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1]
+                            scored = CoinScore(
+                                symbol=symbol, signal=bias, score=55.0,
+                                rsi=round(rsi_val, 1),
+                                trend="BULLISH" if bias == "LONG" else "BEARISH",
+                                atr_pct=round(atr_val / df_15m["close"].iloc[-1] * 100, 2),
+                                reason=f"🔥PULLBACK {bias}"
+                            )
                 if not scored or scored.signal != bias:
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
                     continue
+
+            # ═══ GATE A: VOLUME CONFIRM — chặn thật, không chỉ cộng điểm ═══
+            if getattr(config, "ENTRY_VOL_CONFIRM_ENABLED", True):
+                try:
+                    _v    = df_15m_closed["volume"]
+                    _vma  = _v.rolling(20).mean().iloc[-1]
+                    _vr   = _v.iloc[-1] / _vma if _vma > 0 else 0.0
+                    _vmin = getattr(config, "ENTRY_MIN_VOL_RATIO", 1.0)
+                    if _vr < _vmin:
+                        logger.info(f"  ⏭  {symbol}: volume {_vr:.2f}× < {_vmin}× (nến đã đóng) → skip")
+                        continue
+                except Exception as _ve:
+                    logger.debug(f"  [VolConfirm] {symbol}: {_ve}")
+
+            # ═══ GATE B: LOCATION — còn room tới S/R 1H hay đã sát kháng cự/hỗ trợ? ═══
+            if getattr(config, "LOCATION_FILTER_ENABLED", True):
+                try:
+                    _atr_1h = float(calculate_atr(df_1h["high"], df_1h["low"],
+                                                  df_1h["close"]).iloc[-1])
+                    _entry_now = float(df_15m["close"].iloc[-1])
+                    _loc = check_1h_location(df_1h, bias, _entry_now, _atr_1h, config)
+                    if not _loc.get("ok", True):
+                        logger.info(f"  ⏭  {symbol}: {_loc.get('reason','location fail')} → skip")
+                        continue
+                except Exception as _le:
+                    logger.debug(f"  [Location] {symbol}: {_le}")
 
             # Bonus MTF strength
             bonus = 15 if strength == "STRONG" else 8
@@ -1192,6 +1273,10 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             css_signal  = css["signal"]
             win_rate    = css["win_rate"]
             css_reasons = css["long_reasons"] if bias == "LONG" else css["short_reasons"]
+            # Số tín hiệu đồng thuận THẬT (không dùng win_rate vì nó = 50 + score×5,
+            # luôn >= 65 khi có signal → gate WR cũ không bao giờ chặn được gì)
+            css_score   = css["long_score"] if bias == "LONG" else css["short_score"]
+            css_opp     = css["short_score"] if bias == "LONG" else css["long_score"]
 
             if css_signal == "WAIT" or css_signal != bias:
                 _pending_watch[symbol] = {
@@ -1201,13 +1286,26 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 logger.info(f"  📋 PENDING {symbol}: css={css_signal} vs bias={bias} WR={win_rate:.0f}%")
                 continue
 
-            WIN_RATE_MIN = 60.0
-            if win_rate < WIN_RATE_MIN:
+            # ═══ GATE C: CONFLUENCE — cần đủ số tín hiệu đồng thuận ═══
+            # Lưu ý: EMA9/21 + price/EMA50 luôn tự cấp 2 điểm cho 1 bên → ngưỡng 3 quá dễ.
+            _min_conf = getattr(config, "ENTRY_MIN_CONFLUENCE", 5)
+            if css_score < _min_conf:
                 _pending_watch[symbol] = {
                     "signal": bias, "score": final_score, "bias": bias,
                     "win_rate": win_rate, "ts": time.time(), "retry": 0, "css": css,
                 }
-                logger.info(f"  📊 LOW WR {symbol}: {bias} WR={win_rate:.0f}% < {WIN_RATE_MIN:.0f}%")
+                logger.info(f"  📊 LOW CONFLUENCE {symbol}: {bias} {css_score}/{_min_conf} tín hiệu")
+                continue
+
+            # Cần vượt trội rõ so với chiều ngược (không chỉ hơn 1 điểm)
+            _min_edge = getattr(config, "ENTRY_MIN_CONFLUENCE_EDGE", 2)
+            if css_score - css_opp < _min_edge:
+                _pending_watch[symbol] = {
+                    "signal": bias, "score": final_score, "bias": bias,
+                    "win_rate": win_rate, "ts": time.time(), "retry": 0, "css": css,
+                }
+                logger.info(f"  📊 WEAK EDGE {symbol}: {bias} {css_score} vs {css_opp} "
+                            f"(cần cách ≥{_min_edge})")
                 continue
 
             # ═══ PASS — tạo candidate ═══
@@ -1298,6 +1396,23 @@ def _klines_to_df(klines: list) -> pd.DataFrame:
     ])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
+    return df
+
+
+def _klines_to_df_closed(klines: list) -> pd.DataFrame:
+    """
+    Giống _klines_to_df nhưng BỎ nến cuối (nến đang hình thành, chưa đóng).
+
+    Lý do: Binance trả về cả nến đang chạy. Nếu tính EMA/RSI/MACD/volume trên
+    nến chưa đóng → giá trị thay đổi liên tục trong cùng 1 nến (repaint),
+    trend có thể flip qua lại → tín hiệu không đáng tin.
+
+    Dùng cho: xác định TREND (4h/1h), tính volume trung bình.
+    KHÔNG dùng cho: entry timing cần giá realtime (patch WS price riêng).
+    """
+    df = _klines_to_df(klines)
+    if len(df) > 1:
+        df = df.iloc[:-1].reset_index(drop=True)
     return df
 # ///Copy paste 2 lệnh này vào Terminal:
 

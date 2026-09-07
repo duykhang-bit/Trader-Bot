@@ -219,8 +219,10 @@ class PumpDetector:
         if pump_high > 0 and current_price_check < pump_high * 0.80:
             return None
 
-        # Step 2: Kiểm tra volume surge
-        vol = df_1m["volume"]
+        # Step 2: Kiểm tra volume surge — dùng nến ĐÃ ĐÓNG
+        # (nến đang chạy volume chưa đủ → vol_ratio thấp giả → bỏ lỡ alert)
+        vol_live = df_1m["volume"]
+        vol      = vol_live.iloc[:-1] if len(vol_live) > 21 else vol_live
         vol_ma20 = calculate_volume_ma(vol, 20).iloc[-1]
         vol_cur  = vol.iloc[-1]
         vol_ratio = vol_cur / vol_ma20 if vol_ma20 > 0 else 1.0
@@ -352,8 +354,11 @@ class PumpDetector:
         current_price = df_1m["close"].iloc[-1]
         atr     = calculate_atr(df_1m["high"], df_1m["low"], df_1m["close"], 14).iloc[-1]
         rsi     = calculate_rsi(df_1m["close"], 14).iloc[-1]
-        vol_ma  = calculate_volume_ma(df_1m["volume"], 20).iloc[-1]
-        vol_ratio = df_1m["volume"].iloc[-1] / vol_ma if vol_ma > 0 else 1.0
+        # Volume ratio trên nến ĐÃ ĐÓNG (nến đang chạy volume chưa đủ → tỷ lệ sai)
+        _vol_live = df_1m["volume"]
+        _vol_cl   = _vol_live.iloc[:-1] if len(_vol_live) > 21 else _vol_live
+        vol_ma    = calculate_volume_ma(_vol_cl, 20).iloc[-1]
+        vol_ratio = _vol_cl.iloc[-1] / vol_ma if vol_ma > 0 else 1.0
 
         # ── Xác nhận đảo chiều — phải check trước khi quyết định entry type ──
         reversal_confirmed = self._confirm_reversal(df_1m, pump_high)
@@ -477,9 +482,17 @@ class PumpDetector:
         if len(df) < n + 5:
             return 0, ""
 
-        vol      = df["volume"]
+        # FIX QUAN TRỌNG: nến cuối (df[-1]) là nến ĐANG CHẠY, volume chưa đủ.
+        # Nếu dùng nó làm vol_cur → đầu nến volume ≈ 0 → ex_ratio ≈ 0
+        # → tự động +25đ "volume kiệt sức" = TÍN HIỆU GIẢ mỗi khi sang nến mới.
+        # Chỉ so sánh trên các nến ĐÃ ĐÓNG.
+        vol_all = df["volume"]
+        vol     = vol_all.iloc[:-1] if len(vol_all) > n + 5 else vol_all
+        if len(vol) < n + 1:
+            return 0, ""
+
         vol_peak = vol.iloc[-20:].max() if len(vol) >= 20 else vol.max()
-        vol_cur  = vol.iloc[-1]
+        vol_cur  = vol.iloc[-1]          # nến đã đóng gần nhất
         vol_avg  = vol.iloc[-n:].mean()
 
         ex_ratio = vol_cur  / vol_peak if vol_peak > 0 else 1.0
