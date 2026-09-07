@@ -1725,6 +1725,97 @@ function renderDashboard(d) {
 
         </div>
 
+        <!-- ══ GATE LỌC SCAN ══ -->
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px;margin-top:12px">
+          <div style="font-size:12px;color:#58a6ff;margin-bottom:4px;font-weight:600">
+            🔎 Gate lọc scan — điều kiện coin phải vượt để vào ARMED
+          </div>
+          <div style="font-size:10.5px;color:#484f58;margin-bottom:10px;line-height:1.5">
+            Đặt càng cao càng ít lệnh. Xem bảng "Đã quét N coin" phía trên để biết gate nào đang chặn nhiều nhất.
+          </div>
+
+          <!-- VOLUME -->
+          <div style="border-left:2px solid #db6d28;padding-left:10px;margin-bottom:12px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-vol-enabled" style="width:14px;height:14px">
+              <span style="color:#db6d28;font-weight:600">Volume confirm</span>
+            </label>
+            <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Entry — volume ≥ ? × MA20</div>
+                <input type="number" id="p0-vol-ratio" min="0" max="3" step="0.05"
+                       oninput="updateGateHints()"
+                       style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+                <span id="p0-vol-hint" style="font-size:10px;color:#484f58;margin-left:4px"></span>
+              </div>
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Pullback — volume ≥ ? × MA20</div>
+                <input type="number" id="p0-pb-vol-ratio" min="0" max="3" step="0.05"
+                       style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+              </div>
+            </div>
+            <div style="font-size:10px;color:#484f58;margin-top:6px;line-height:1.5">
+              Đo 8280 nến 15m / 46 coin: trung vị <b style="color:#8b949e">0.81×</b>, trung bình 1.03×.
+              Nến qua được: <b style="color:#8b949e">0.8→50%</b> · 1.0→36% · 1.2→26%.
+              Đặt 1.0 là đòi volume bùng nổ, không phải xác nhận.
+            </div>
+          </div>
+
+          <!-- LOCATION -->
+          <div style="border-left:2px solid #58a6ff;padding-left:10px;margin-bottom:12px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-loc-enabled" style="width:14px;height:14px">
+              <span style="color:#58a6ff;font-weight:600">Location — room tới kháng cự/hỗ trợ 1H</span>
+            </label>
+            <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Cần ít nhất ? × ATR 1H</div>
+            <input type="number" id="p0-loc-room" min="0" max="5" step="0.1"
+                   oninput="updateGateHints()"
+                   style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                          padding:4px 6px;color:#e6edf3;font-size:12px">
+            <span id="p0-loc-hint" style="font-size:10px;color:#484f58;margin-left:4px"></span>
+            <div style="font-size:10px;color:#484f58;margin-top:6px;line-height:1.5">
+              Đo thật 46 coin: room phân bố <b style="color:#8b949e">0.4–1.4× ATR</b>.
+              Đặt 1.5 từng loại 18/46 coin và cho 0 PASS.
+            </div>
+          </div>
+
+          <!-- CONFLUENCE -->
+          <div style="border-left:2px solid #f85149;padding-left:10px;margin-bottom:12px">
+            <div style="font-size:12px;color:#f85149;font-weight:600;margin-bottom:6px">Confluence — số tín hiệu đồng thuận</div>
+            <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Tối thiểu</div>
+                <input type="number" id="p0-conf-min" min="0" max="10" step="1"
+                       style="width:64px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+              </div>
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Cách chiều ngược ≥</div>
+                <input type="number" id="p0-conf-edge" min="0" max="6" step="1"
+                       style="width:64px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+              </div>
+            </div>
+          </div>
+
+          <!-- REGIME + TREND -->
+          <div style="border-left:2px solid #a371f7;padding-left:10px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-regime-enabled" style="width:14px;height:14px">
+              <span style="color:#a371f7;font-weight:600">Regime — skip khi sideway (RANGE) / chaos</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="p0-trend-conflict" style="width:14px;height:14px">
+              <span style="color:#c9d1d9">4H ngược 1H → bỏ coin luôn</span>
+            </label>
+            <div style="font-size:10px;color:#484f58;margin-top:6px;line-height:1.5">
+              Tắt = vẫn theo hướng 4H nhưng hạ xuống MEDIUM. Bật thì loại thêm ~7/46 coin.
+            </div>
+          </div>
+        </div>
+
         <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
           <button class="btn btn-green" onclick="saveP0Settings()" style="font-size:13px">
             💾 Lưu Settings
@@ -3460,8 +3551,43 @@ async function loadP0Settings() {
         set('p0-min-rr',         s.min_rr);
         set('p0-sl-struct',      s.sl_structure_enabled);
         set('p0-kill-chaos',     s.chaos_skip_enabled);
+        // Gate lọc scan
+        set('p0-vol-enabled',    s.entry_vol_confirm_enabled);
+        set('p0-vol-ratio',      s.entry_min_vol_ratio);
+        set('p0-pb-vol-ratio',   s.pullback_min_vol_ratio);
+        set('p0-loc-enabled',    s.location_filter_enabled);
+        set('p0-loc-room',       s.location_min_room_atr);
+        set('p0-regime-enabled', s.regime_filter_enabled);
+        set('p0-trend-conflict', s.trend_conflict_skip);
+        set('p0-conf-min',       s.entry_min_confluence);
+        set('p0-conf-edge',      s.entry_min_confluence_edge);
+        updateGateHints();
         updateRiskNote();
     } catch(e) {}
+}
+
+// Gợi ý theo số đo thật: đặt ngưỡng này thì bao nhiêu % nến / coin qua được
+function updateGateHints() {
+    // volume/MA20 — phân vị đo từ 8280 nến 15m trên 46 coin
+    const volTable = [[0.5,79],[0.6,69],[0.7,60],[0.8,50],[0.9,43],[1.0,36],[1.2,26]];
+    const v = parseFloat(document.getElementById('p0-vol-ratio')?.value);
+    const vh = document.getElementById('p0-vol-hint');
+    if (vh && !isNaN(v)) {
+        let best = volTable[0];
+        volTable.forEach(t => { if (Math.abs(t[0]-v) < Math.abs(best[0]-v)) best = t; });
+        const warn = v >= 1.0;
+        vh.innerHTML = `≈ <b style="color:${warn?'#d29922':'#3fb950'}">${best[1]}%</b> nến qua`
+                     + (warn ? ' <span style="color:#d29922">(chặt)</span>' : '');
+    }
+    // room tới S/R — phân bố đo thật 0.4-1.4×ATR
+    const rm = parseFloat(document.getElementById('p0-loc-room')?.value);
+    const rh = document.getElementById('p0-loc-hint');
+    if (rh && !isNaN(rm)) {
+        if (rm >= 1.5)      rh.innerHTML = '<span style="color:#f85149">quá chặt — từng cho 0 PASS</span>';
+        else if (rm >= 1.2) rh.innerHTML = '<span style="color:#d29922">chặt</span>';
+        else if (rm >= 0.6) rh.innerHTML = '<span style="color:#3fb950">hợp lý</span>';
+        else                rh.innerHTML = '<span style="color:#8b949e">lỏng</span>';
+    }
 }
 
 function updateRiskNote() {
@@ -3508,7 +3634,21 @@ async function saveP0Settings() {
         min_rr:                   parseFloat(get('p0-min-rr')),
         sl_structure_enabled:     get('p0-sl-struct'),
         chaos_skip_enabled:       get('p0-kill-chaos'),
+        // Gate lọc scan
+        entry_vol_confirm_enabled: get('p0-vol-enabled'),
+        entry_min_vol_ratio:       parseFloat(get('p0-vol-ratio')),
+        pullback_min_vol_ratio:    parseFloat(get('p0-pb-vol-ratio')),
+        location_filter_enabled:   get('p0-loc-enabled'),
+        location_min_room_atr:     parseFloat(get('p0-loc-room')),
+        regime_filter_enabled:     get('p0-regime-enabled'),
+        trend_conflict_skip:       get('p0-trend-conflict'),
+        entry_min_confluence:      parseInt(get('p0-conf-min')),
+        entry_min_confluence_edge: parseInt(get('p0-conf-edge')),
     };
+    // Bỏ field NaN để không ghi rác vào config khi input trống
+    Object.keys(payload).forEach(k => {
+        if (typeof payload[k] === 'number' && isNaN(payload[k])) delete payload[k];
+    });
     const r = await apiPost('/api/p0/settings', payload);
     const msg = document.getElementById('p0-save-msg');
     if (msg) {
@@ -3516,6 +3656,7 @@ async function saveP0Settings() {
         msg.style.color = r.ok ? '#3fb950' : '#f85149';
         setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
     }
+    if (r.ok) updateGateHints();
 }
 </script>
 </body>
@@ -4889,6 +5030,16 @@ def api_p0_settings_get():
             "min_rr":                    getattr(_cfg, "MIN_RR",                    1.5),
             "sl_structure_enabled":      getattr(_cfg, "SL_STRUCTURE_ENABLED",      True),
             "chaos_skip_enabled":        getattr(_cfg, "CHAOS_ATR_MULT",            2.5) > 0,
+            # ── Gate lọc scan (chỉnh được từ web) ──
+            "entry_vol_confirm_enabled": getattr(_cfg, "ENTRY_VOL_CONFIRM_ENABLED", True),
+            "entry_min_vol_ratio":       getattr(_cfg, "ENTRY_MIN_VOL_RATIO",       0.8),
+            "pullback_min_vol_ratio":    getattr(_cfg, "PULLBACK_MIN_VOL_RATIO",    0.8),
+            "location_filter_enabled":   getattr(_cfg, "LOCATION_FILTER_ENABLED",   True),
+            "location_min_room_atr":     getattr(_cfg, "LOCATION_MIN_ROOM_ATR",     0.8),
+            "regime_filter_enabled":     getattr(_cfg, "REGIME_FILTER_ENABLED",     True),
+            "trend_conflict_skip":       getattr(_cfg, "TREND_CONFLICT_SKIP",       False),
+            "entry_min_confluence":      getattr(_cfg, "ENTRY_MIN_CONFLUENCE",      5),
+            "entry_min_confluence_edge": getattr(_cfg, "ENTRY_MIN_CONFLUENCE_EDGE", 2),
         }})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
@@ -4925,6 +5076,26 @@ def api_p0_settings_save():
         if "chaos_skip_enabled" in data:
             _cfg.CHAOS_ATR_MULT = 2.5 if bool(data["chaos_skip_enabled"]) else 999.0
 
+        # ── Gate lọc scan ─────────────────────────────────────────────
+        if "entry_vol_confirm_enabled" in data:
+            _cfg.ENTRY_VOL_CONFIRM_ENABLED = bool(data["entry_vol_confirm_enabled"])
+        if "entry_min_vol_ratio" in data:
+            _cfg.ENTRY_MIN_VOL_RATIO    = max(0.0, min(3.0, float(data["entry_min_vol_ratio"])))
+        if "pullback_min_vol_ratio" in data:
+            _cfg.PULLBACK_MIN_VOL_RATIO = max(0.0, min(3.0, float(data["pullback_min_vol_ratio"])))
+        if "location_filter_enabled" in data:
+            _cfg.LOCATION_FILTER_ENABLED = bool(data["location_filter_enabled"])
+        if "location_min_room_atr" in data:
+            _cfg.LOCATION_MIN_ROOM_ATR  = max(0.0, min(5.0, float(data["location_min_room_atr"])))
+        if "regime_filter_enabled" in data:
+            _cfg.REGIME_FILTER_ENABLED  = bool(data["regime_filter_enabled"])
+        if "trend_conflict_skip" in data:
+            _cfg.TREND_CONFLICT_SKIP    = bool(data["trend_conflict_skip"])
+        if "entry_min_confluence" in data:
+            _cfg.ENTRY_MIN_CONFLUENCE   = max(0, min(10, int(data["entry_min_confluence"])))
+        if "entry_min_confluence_edge" in data:
+            _cfg.ENTRY_MIN_CONFLUENCE_EDGE = max(0, min(6, int(data["entry_min_confluence_edge"])))
+
         # ── Ghi persistent vào config.py ──────────────────────────────
         import os, re as _re
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
@@ -4940,6 +5111,16 @@ def api_p0_settings_save():
             "MIN_RR":                    str(round(_cfg.MIN_RR, 1)),
             "SL_STRUCTURE_ENABLED":      str(_cfg.SL_STRUCTURE_ENABLED),
             "CHAOS_ATR_MULT":            str(round(_cfg.CHAOS_ATR_MULT, 1)),
+            # Gate lọc scan
+            "ENTRY_VOL_CONFIRM_ENABLED": str(getattr(_cfg, "ENTRY_VOL_CONFIRM_ENABLED", True)),
+            "ENTRY_MIN_VOL_RATIO":       str(round(getattr(_cfg, "ENTRY_MIN_VOL_RATIO", 0.8), 2)),
+            "PULLBACK_MIN_VOL_RATIO":    str(round(getattr(_cfg, "PULLBACK_MIN_VOL_RATIO", 0.8), 2)),
+            "LOCATION_FILTER_ENABLED":   str(getattr(_cfg, "LOCATION_FILTER_ENABLED", True)),
+            "LOCATION_MIN_ROOM_ATR":     str(round(getattr(_cfg, "LOCATION_MIN_ROOM_ATR", 0.8), 2)),
+            "REGIME_FILTER_ENABLED":     str(getattr(_cfg, "REGIME_FILTER_ENABLED", True)),
+            "TREND_CONFLICT_SKIP":       str(getattr(_cfg, "TREND_CONFLICT_SKIP", False)),
+            "ENTRY_MIN_CONFLUENCE":      str(getattr(_cfg, "ENTRY_MIN_CONFLUENCE", 5)),
+            "ENTRY_MIN_CONFLUENCE_EDGE": str(getattr(_cfg, "ENTRY_MIN_CONFLUENCE_EDGE", 2)),
         }
         try:
             with open(config_path, "r", encoding="utf-8") as f:
