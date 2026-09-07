@@ -26,6 +26,7 @@ class BinanceFutures:
             "X-MBX-APIKEY": self.api_key,
             "Content-Type": "application/json"
         })
+        self._tick_cache: dict = {}   # symbol -> tick size (float), load 1 lần từ exchangeInfo
 
     def _sign(self, params: dict) -> dict:
         """Ký request với HMAC SHA256"""
@@ -326,21 +327,50 @@ class BinanceFutures:
         logger.info(f"Limit order placed: {side} {quantity} {symbol} @ ${price}")
         return result
 
-    def _round_price(self, price: float) -> float:
-        """Làm tròn giá đúng theo độ lớn của coin"""
+    def _round_price(self, price: float, symbol: str = "") -> float:
+        """Làm tròn giá đúng theo tick size thật của từng coin từ Binance exchangeInfo.
+        Cache lại sau lần đọc đầu để không gọi API mỗi lần.
+
+        Tại sao bậc thang cứng không đủ:
+          BANANA @ 3.6221 → price >= 1 → round(4) → 3.6221 (4 chữ số)
+          nhưng tick BANANA = 0.001 (3 chữ số) → Binance trả -4014
+          TUT @ 0.025284 → price < 0.1 → round(6) → 0.025284 (6 chữ số)
+          nhưng tick TUT = 0.00001 (5 chữ số) → Binance trả -4014
+        """
+        # Đọc tick size từ cache
+        tick = self._tick_cache.get(symbol) if symbol else None
+        if tick is None and symbol:
+            try:
+                info = self._get("/fapi/v1/exchangeInfo", signed=False)
+                for s in info.get("symbols", []):
+                    for f in s.get("filters", []):
+                        if f.get("filterType") == "PRICE_FILTER":
+                            ts = float(f.get("tickSize", 0))
+                            if ts > 0:
+                                self._tick_cache[s["symbol"]] = ts
+                tick = self._tick_cache.get(symbol)
+            except Exception:
+                tick = None
+
+        if tick and tick > 0:
+            # Làm tròn đúng theo tick: round tới bội số gần nhất
+            import math
+            decimals = max(0, -int(math.floor(math.log10(tick))))
+            return round(round(price / tick) * tick, decimals)
+
+        # Fallback nếu không lấy được tick (không gọi API được)
         if price >= 10000:
-            return round(price, 1)   # BTC: tick 0.1
+            return round(price, 1)
         elif price >= 1000:
-            return round(price, 2)   # ETH: tick 0.01
+            return round(price, 2)
         elif price >= 10:
-            return round(price, 2)   # SOL, BNB: tick 0.01
+            return round(price, 2)
         elif price >= 1:
-            return round(price, 4)
+            return round(price, 3)
         elif price >= 0.1:
             return round(price, 4)
         elif price >= 0.01:
-            return round(price, 5)   # FIX: coin 0.01-0.09 (TUT 0.025, SKYAI 0.058...) tick=0.00001 → cần 5 chữ số
-                                     # Cũ: round(price,6) → gửi 0.025284 → Binance trả -4014 "Price not increased by tick size"
+            return round(price, 5)
         else:
             return round(price, 6)
 
@@ -348,7 +378,7 @@ class BinanceFutures:
         """Đặt lệnh LIMIT — chờ giá về mức price mới khớp"""
         if quantity == int(quantity):
             quantity = int(quantity)
-        limit_price = self._round_price(price)
+        limit_price = self._round_price(price, symbol)
         result = self._post("/fapi/v1/order", {
             "symbol": symbol,
             "side": side,
@@ -362,7 +392,7 @@ class BinanceFutures:
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
         """SL — dùng Algo Conditional Order API, fallback sang order thường"""
-        price = self._round_price(stop_price)
+        price = self._round_price(stop_price, symbol)
         if quantity == int(quantity):
             quantity = int(quantity)
         try:
@@ -393,7 +423,7 @@ class BinanceFutures:
 
     def place_take_profit_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
         """TP — dùng Algo Conditional Order API, fallback sang order thường"""
-        price = self._round_price(stop_price)
+        price = self._round_price(stop_price, symbol)
         if quantity == int(quantity):
             quantity = int(quantity)
         try:
