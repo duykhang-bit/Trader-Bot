@@ -268,8 +268,14 @@ def _calc_adx(high: "pd.Series", low: "pd.Series", close: "pd.Series",
         mdi = 100 * mdm_w / np.where(atr_w > 0, atr_w, 1)
         dx  = 100 * np.abs(pdi - mdi) / np.where((pdi + mdi) > 0, pdi + mdi, 1)
 
+        # FIX: wilder() trả về TỔNG tích luỹ, không phải trung bình.
+        # Với pdi/mdi thì không sao vì hai accumulator chia nhau nên triệt tiêu,
+        # nhưng ADX cuối phải chia period mới ra thang 0-100 chuẩn.
+        # Trước fix: log ra ADX=166 / 280 / 388 (sai gấp đúng 14 lần) → nhánh
+        # "RANGE: ADX<25" trong detect_regime không bao giờ đúng → mọi coin
+        # rơi xuống nhánh else "WEAK" và bị skip oan.
         adx_arr = wilder(dx, period)
-        return float(adx_arr[-1])
+        return float(adx_arr[-1]) / period
     except Exception:
         return 25.0  # fallback — coi như đang TREND
 
@@ -354,10 +360,16 @@ def detect_regime(df_4h: "pd.DataFrame", cfg=None) -> dict:
             result["bias"]   = "SHORT"
             result["reason"] = f"TREND_DOWN: slope={slope:.3f}% EMA9<21 price<EMA50"
         else:
-            # Slope có nhưng EMA chưa align đủ → RANGE/WEAK
-            result["regime"] = "RANGE"
+            # Slope chưa đủ mạnh HOẶC EMA chưa align.
+            # FIX: trước đây dán nhãn "RANGE" ở đây → scan_market skip luôn,
+            # dù đây KHÔNG phải sideway thật (RANGE thật là nhánh ADX<25 ở trên).
+            # Điều kiện EMA align cũng đã được trend_4h kiểm trước đó rồi →
+            # dán RANGE ở đây là loại trùng, giết sạch coin.
+            # Giờ trả "WEAK" + bias NEUTRAL: không bị skip, chỉ là không có
+            # regime bias để cộng thêm.
+            result["regime"] = "WEAK"
             result["bias"]   = "NEUTRAL"
-            result["reason"] = f"WEAK: slope={slope:.3f}% ADX={adx:.1f} EMA not aligned"
+            result["reason"] = f"WEAK: slope={slope:.3f}% ADX={adx:.1f} EMA chưa align"
 
     except Exception as e:
         result["reason"] = f"detect_regime error: {e}"
@@ -1070,6 +1082,19 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
     logger.info(f"🔍 Scanning {len(active)} coins (trend-first)...")
     candidates = []
 
+    # ── Ghi nhận coin BỊ LOẠI để dashboard hiển thị được phễu lọc ──
+    # CHỈ để xem, KHÔNG dùng cho quyết định vào lệnh. Trước đây coin bị
+    # skip là mất hẳn khỏi web (candidates chỉ chứa coin đi hết vòng lọc),
+    # nên khi siết gate thì web trắng trơn, không biết coin chết ở đâu.
+    rejected = []
+
+    def _rej(sym, stage, reason, bias="", price=0.0, score=0.0):
+        rejected.append({
+            "symbol": sym, "stage": stage, "reason": str(reason)[:120],
+            "signal": bias or "-", "price": float(price or 0.0),
+            "score": float(score or 0.0),
+        })
+
     # ── BTC Context Filter (chỉ block khi STRONG 3TF đồng thuận) ────
     btc_block_long  = False
     btc_block_short = False
@@ -1188,14 +1213,23 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 bias = trend_4h
                 strength = "MEDIUM"
             elif trend_4h != "NEUTRAL" and trend_1h != trend_4h:
-                # FIX: 4h và 1h NGƯỢC nhau → bỏ qua, không đánh nghịch khung nhỏ
-                logger.info(f"  ⏭  {symbol}: 4h={trend_4h} vs 1h={trend_1h} NGƯỢC CHIỀU → skip")
-                continue
+                # 4h và 1h NGƯỢC nhau.
+                # TREND_CONFLICT_SKIP=True  -> bỏ qua hẳn (siết, dễ đói lệnh)
+                # TREND_CONFLICT_SKIP=False -> theo 4h nhưng hạ xuống MEDIUM (như cũ)
+                if getattr(config, "TREND_CONFLICT_SKIP", False):
+                    logger.info(f"  ⏭  {symbol}: 4h={trend_4h} vs 1h={trend_1h} NGƯỢC CHIỀU → skip")
+                    _rej(symbol, "TREND", f"4h={trend_4h} ngược 1h={trend_1h}",
+                         price=price_1h)
+                    continue
+                bias = trend_4h
+                strength = "MEDIUM"
             elif trend_1h != "NEUTRAL":
                 bias = trend_1h
                 strength = "MEDIUM"
             else:
                 logger.debug(f"  ⏭  {symbol}: 4h={trend_4h} 1h={trend_1h} → NEUTRAL")
+                _rej(symbol, "TREND", f"4h={trend_4h} 1h={trend_1h} chưa rõ hướng",
+                     price=price_1h)
                 continue
 
             # ── REGIME FILTER: skip RANGE (sideway) và CHAOS (ATR spike) ──
@@ -1206,11 +1240,16 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     if _regime in ("RANGE", "CHAOS"):
                         logger.info(f"  ⏭  {symbol}: regime={_regime} "
                                     f"({regime_info.get('reason','')}) → skip")
+                        _rej(symbol, "REGIME",
+                             f"{_regime}: {regime_info.get('reason','')}",
+                             bias, price_1h)
                         continue
                     # Regime bias ngược bias trend → skip (tránh đánh ngược regime)
                     _rb = regime_info.get("bias", "NEUTRAL")
                     if _rb != "NEUTRAL" and _rb != bias:
                         logger.info(f"  ⏭  {symbol}: regime bias={_rb} ngược {bias} → skip")
+                        _rej(symbol, "REGIME", f"regime bias={_rb} ngược {bias}",
+                             bias, price_1h)
                         continue
                 except Exception as _re:
                     logger.debug(f"  [Regime] {symbol}: {_re}")
@@ -1275,6 +1314,10 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                             )
                 if not scored or scored.signal != bias:
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
+                    _rej(symbol, "15m",
+                         f"trend {bias} nhưng 15m chưa có tín hiệu entry"
+                         + (f" (15m={scored.signal})" if scored else ""),
+                         bias, df_15m["close"].iloc[-1] if df_15m is not None else 0.0)
                     continue
 
             # ═══ GATE A: VOLUME CONFIRM — chặn thật, không chỉ cộng điểm ═══
@@ -1286,6 +1329,9 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     _vmin = getattr(config, "ENTRY_MIN_VOL_RATIO", 1.0)
                     if _vr < _vmin:
                         logger.info(f"  ⏭  {symbol}: volume {_vr:.2f}× < {_vmin}× (nến đã đóng) → skip")
+                        _rej(symbol, "VOLUME",
+                             f"volume {_vr:.2f}× < {_vmin}× (nến đã đóng)",
+                             bias, df_15m["close"].iloc[-1], scored.score)
                         continue
                 except Exception as _ve:
                     logger.debug(f"  [VolConfirm] {symbol}: {_ve}")
@@ -1299,6 +1345,8 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     _loc = check_1h_location(df_1h, bias, _entry_now, _atr_1h, config)
                     if not _loc.get("ok", True):
                         logger.info(f"  ⏭  {symbol}: {_loc.get('reason','location fail')} → skip")
+                        _rej(symbol, "LOCATION", _loc.get("reason", "location fail"),
+                             bias, _entry_now, scored.score)
                         continue
                 except Exception as _le:
                     logger.debug(f"  [Location] {symbol}: {_le}")
@@ -1328,6 +1376,8 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                     "win_rate": win_rate, "ts": time.time(), "retry": 0, "css": css,
                 }
                 logger.info(f"  📋 PENDING {symbol}: css={css_signal} vs bias={bias} WR={win_rate:.0f}%")
+                _rej(symbol, "PENDING", f"css={css_signal} chưa khớp bias={bias}",
+                     bias, df_15m["close"].iloc[-1], final_score)
                 continue
 
             # ═══ GATE C: CONFLUENCE — cần đủ số tín hiệu đồng thuận ═══
@@ -1371,8 +1421,20 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
         except Exception as e:
             logger.debug(f"  ⚠️  {symbol} skip: {e}")
 
+    # FIX TRÙNG: block PENDING→LIVE ở trên append trước, rồi vòng MAIN SCAN
+    # quét lại toàn bộ `active` nên cùng 1 coin bị thêm 2 lần → web hiện trùng
+    # (đo được: TLM, TLM | ASTER, ASTER | NEAR, NEAR | BMT, BMT).
+    # Giữ bản điểm CAO NHẤT cho mỗi symbol.
+    _best_by_sym = {}
+    for _c in candidates:
+        _old = _best_by_sym.get(_c.symbol)
+        if _old is None or _c.score > _old.score:
+            _best_by_sym[_c.symbol] = _c
+    candidates = list(_best_by_sym.values())
+
     # Lưu lại để dashboard hiển thị
     scan_market._last_candidates = sorted(candidates, key=lambda x: x.score, reverse=True)
+    scan_market._last_rejected   = rejected
 
     if not candidates:
         logger.info("  No strong signals found.")
@@ -1383,6 +1445,7 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
     return best
 
 scan_market._last_candidates = []
+scan_market._last_rejected   = []
 
 # ── Pending watch: coin pass MTF nhưng 1m chưa trigger ──────
 _pending_watch: dict = {}

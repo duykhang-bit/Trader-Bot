@@ -1513,6 +1513,57 @@ function renderDashboard(d) {
         html += `</table></div>`;
     }
 
+    // ── PHỄU LỌC SCAN — coin đã quét nhưng chưa đủ điều kiện ──
+    // Trước đây coin bị loại là mất hẳn khỏi web: khi siết gate thì bảng
+    // trắng trơn, không biết bot có quét hay không, coin chết ở đâu.
+    const rej = d.scan_rejected || [];
+    if (rej.length > 0) {
+        const byStage = {};
+        rej.forEach(r => { byStage[r.stage] = (byStage[r.stage] || 0) + 1; });
+        const stageInfo = {
+            'TREND':      ['#8b949e', 'Trend 4H/1H chưa rõ'],
+            'REGIME':     ['#a371f7', 'Sideway / chaos'],
+            '15m':        ['#d29922', '15m chưa có entry'],
+            'VOLUME':     ['#db6d28', 'Volume chưa xác nhận'],
+            'LOCATION':   ['#58a6ff', 'Sát kháng cự / hỗ trợ'],
+            'PENDING':    ['#3fb950', 'Chờ khớp đa khung'],
+            'CONFLUENCE': ['#f85149', 'Chưa đủ tín hiệu'],
+            'EDGE':       ['#f85149', 'Chưa vượt trội chiều ngược'],
+        };
+        const nPass = (d.candidates || []).length;
+        html += `<div class="section" style="border-color:#21262d">
+          <b style="font-size:12px;color:#8b949e">🔎 Đã quét ${rej.length + nPass} coin —
+            <span style="color:#3fb950">${nPass} đủ điều kiện</span>,
+            ${rej.length} chưa</b>
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin:8px 0">`;
+        Object.keys(byStage).sort((a,b) => byStage[b]-byStage[a]).forEach(st => {
+            const inf = stageInfo[st] || ['#6e7681', st];
+            html += `<span title="${inf[1]}" style="font-size:10px;font-weight:600;padding:2px 8px;
+                     border-radius:10px;background:#0d1117;border:1px solid ${inf[0]}44;color:${inf[0]}">
+                     ${st} ${byStage[st]}</span>`;
+        });
+        html += `</div>
+          <div id="scan-rej-wrap" style="display:${_rejOpen?'block':'none'}">
+          <table style="margin-top:4px"><tr><th>Coin</th><th>Hướng</th><th>Chặn ở</th><th>Lý do</th></tr>`;
+        rej.slice(0, 50).forEach(r => {
+            const inf = stageInfo[r.stage] || ['#6e7681', r.stage];
+            html += `<tr>
+                <td><b>${(r.symbol||'').replace('USDT','')}</b></td>
+                <td style="font-size:11px;color:${r.signal==='LONG'?'#3fb950':(r.signal==='SHORT'?'#f85149':'#6e7681')}">${r.signal||'-'}</td>
+                <td style="font-size:10px;font-weight:600;color:${inf[0]}">${r.stage}</td>
+                <td style="font-size:11px;color:#8b949e">${(r.reason||'').replace(/</g,'&lt;')}</td>
+            </tr>`;
+        });
+        html += `</table></div>
+          <div style="text-align:center;margin-top:6px">
+            <button onclick="toggleRej()" style="background:#0d1117;border:1px solid #30363d;color:#8b949e;
+                    border-radius:6px;padding:3px 12px;font-size:11px;cursor:pointer;font-family:inherit">
+              ${_rejOpen ? '▴ Ẩn chi tiết' : '▾ Xem chi tiết ' + rej.length + ' coin'}
+            </button>
+          </div>
+        </div>`;
+    }
+
     // Armed Entries — lệnh đang chờ giá tới zone
     const armed = d.armed_entries || {};
     const armedKeys = Object.keys(armed);
@@ -2955,6 +3006,19 @@ function restoreInputs() {
 let _firstRender = true;
 let _refreshPaused = false;  // dừng refresh khi bot tắt
 let _lastP0Load = 0;         // timestamp lần cuối load P0 settings
+let _rejOpen = false;        // bảng phễu lọc scan đang mở hay thu gọn
+
+// Đổi hiển thị bảng phễu lọc bằng DOM trực tiếp (không render lại cả dashboard)
+function toggleRej() {
+    _rejOpen = !_rejOpen;
+    const w = document.getElementById('scan-rej-wrap');
+    if (w) w.style.display = _rejOpen ? 'block' : 'none';
+    const b = w && w.parentElement ? w.parentElement.querySelector('button') : null;
+    if (b) {
+        const n = w ? w.querySelectorAll('tr').length - 1 : 0;
+        b.textContent = _rejOpen ? '▴ Ẩn chi tiết' : '▾ Xem chi tiết ' + n + ' coin';
+    }
+}
 
 async function refresh(){
     try{
@@ -3604,6 +3668,8 @@ def api_state():
                          "rsi": c.rsi, "trend": c.trend, "reason": c.reason,
                          "price": prices.get(c.symbol, 0)}
                         for c in candidates[:10]] if candidates else [],
+        # Phễu lọc: coin đã quét nhưng bị loại + lý do. Chỉ để xem.
+        "scan_rejected": list(_state.get("scan_rejected", []))[:60],
         "pending_watch": _get_pending_watch_safe(),
         "armed_entries": {sym: {"signal": v["signal"], "entry_price": v["entry_price"],
                                 "raw_entry": v.get("raw_entry", v["entry_price"]),

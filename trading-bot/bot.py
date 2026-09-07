@@ -3428,6 +3428,9 @@ def scan_engine(exchange, notifier):
             best = scan_market(exchange, config, min_score=config.MIN_SCORE, notifier=notifier)
             with lock:
                 state["candidates"] = list(getattr(scan_market, "_last_candidates", []))
+                # Coin bị loại + lý do — CHỈ để dashboard hiển thị phễu lọc.
+                # Không dùng cho bất kỳ quyết định vào lệnh nào.
+                state["scan_rejected"] = list(getattr(scan_market, "_last_rejected", []))
 
             # ── Liq Sweep Reversal — vào lệnh counter-trend khi liq đã bị quét ──
             # Bypass trend filter: khi giá sweep hết liq 1 phía → đảo chiều
