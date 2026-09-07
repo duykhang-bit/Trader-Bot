@@ -25,11 +25,22 @@ _exchange = None
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def require_auth(f):
-    """Decorator bảo vệ route — redirect về login nếu chưa đăng nhập."""
+    """
+    Decorator bảo vệ route — redirect về /login nếu chưa đăng nhập.
+
+    Trước đây hàm này TỰ set session["authenticated"] = True rồi cho qua
+    ("auto-authenticate"), nên dashboard mở cổng 5555 công khai không có
+    mật khẩu: ai biết IP:port là vào vào lệnh / đổi config / tắt bot được.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Auto-authenticate - không cần login
-        session["authenticated"] = True
+        if not session.get("authenticated"):
+            # Request từ JS (fetch) → trả 401 JSON để frontend tự redirect,
+            # không trả HTML login vào chỗ đang chờ JSON.
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": "unauthorized",
+                                "login_required": True}), 401
+            return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
 
@@ -521,6 +532,22 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 <div id="toast-container"></div>
 
 <script>
+// ── Session hết hạn → tự về trang login ─────────────────────
+// Bọc fetch một chỗ để mọi lời gọi API đều được xử lý, khỏi phải
+// sửa từng hàm fetch rải khắp file.
+(function(){
+    const _origFetch = window.fetch;
+    let _redirecting = false;
+    window.fetch = async function(...args) {
+        const res = await _origFetch.apply(this, args);
+        if (res.status === 401 && !_redirecting) {
+            _redirecting = true;
+            window.location.href = '/login';
+        }
+        return res;
+    };
+})();
+
 function fmt(n,d=2){return Number(n).toFixed(d)}
 function fmtUsd(n){return '$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function pnlColor(n){return n>=0?'green':'red'}
@@ -3497,9 +3524,22 @@ async function saveP0Settings() {
 
 @app.before_request
 def check_auth():
-    """Auto-authenticate mọi request."""
-    session["authenticated"] = True
-    return None
+    """
+    Chặn mọi request chưa đăng nhập (trừ /login, /logout, /static).
+
+    Trước đây hàm này set session["authenticated"] = True cho MỌI request
+    → mật khẩu vô hiệu hoàn toàn. Đây là lớp chặn chính, đặt ở đây để
+    route nào quên gắn @require_auth vẫn được bảo vệ.
+    """
+    if session.get("authenticated"):
+        return None
+    p = request.path or "/"
+    if p.startswith("/login") or p.startswith("/logout") or p.startswith("/static"):
+        return None
+    if p.startswith("/api/"):
+        return jsonify({"ok": False, "error": "unauthorized",
+                        "login_required": True}), 401
+    return redirect(url_for("login"))
 @app.route("/")
 @require_auth
 def index():
