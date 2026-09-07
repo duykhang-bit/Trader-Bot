@@ -338,6 +338,9 @@ class BinanceFutures:
             return round(price, 4)
         elif price >= 0.1:
             return round(price, 4)
+        elif price >= 0.01:
+            return round(price, 5)   # FIX: coin 0.01-0.09 (TUT 0.025, SKYAI 0.058...) tick=0.00001 → cần 5 chữ số
+                                     # Cũ: round(price,6) → gửi 0.025284 → Binance trả -4014 "Price not increased by tick size"
         else:
             return round(price, 6)
 
