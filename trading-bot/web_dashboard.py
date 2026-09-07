@@ -1800,6 +1800,35 @@ function renderDashboard(d) {
             </div>
           </div>
 
+          <!-- PULLBACK ELIGIBILITY -->
+          <div style="border-left:2px solid #3fb950;padding-left:10px;margin-bottom:12px">
+            <div style="font-size:12px;color:#3fb950;font-weight:600;margin-bottom:6px">
+              Đường pullback — coin nào được phép dùng
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+              <input type="checkbox" id="p0-pb-self" style="width:14px;height:14px"
+                     onchange="updateGateHints()">
+              <span style="color:#c9d1d9">So với chính coin đó (khuyên dùng)</span>
+            </label>
+            <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">ATR ≥ ? × trung vị riêng</div>
+                <input type="number" id="p0-pb-self-ratio" min="0" max="2" step="0.05"
+                       oninput="updateGateHints()"
+                       style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+              </div>
+              <div>
+                <div style="font-size:10px;color:#8b949e;margin-bottom:2px">Ngưỡng tuyệt đối (cách cũ)</div>
+                <input type="number" id="p0-pb-abs" min="0" max="20" step="0.5"
+                       style="width:74px;background:#161b22;border:1px solid #30363d;border-radius:4px;
+                              padding:4px 6px;color:#e6edf3;font-size:12px">
+                <span style="font-size:10px;color:#484f58;margin-left:2px">%</span>
+              </div>
+            </div>
+            <div id="p0-pb-hint" style="font-size:10px;color:#484f58;margin-top:6px;line-height:1.5"></div>
+          </div>
+
           <!-- REGIME + TREND -->
           <div style="border-left:2px solid #a371f7;padding-left:10px">
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
@@ -3561,6 +3590,9 @@ async function loadP0Settings() {
         set('p0-trend-conflict', s.trend_conflict_skip);
         set('p0-conf-min',       s.entry_min_confluence);
         set('p0-conf-edge',      s.entry_min_confluence_edge);
+        set('p0-pb-self',        s.pullback_self_relative);
+        set('p0-pb-self-ratio',  s.pullback_self_min_ratio);
+        set('p0-pb-abs',         s.pullback_vol_threshold);
         updateGateHints();
         updateRiskNote();
     } catch(e) {}
@@ -3587,6 +3619,23 @@ function updateGateHints() {
         else if (rm >= 1.2) rh.innerHTML = '<span style="color:#d29922">chặt</span>';
         else if (rm >= 0.6) rh.innerHTML = '<span style="color:#3fb950">hợp lý</span>';
         else                rh.innerHTML = '<span style="color:#8b949e">lỏng</span>';
+    }
+    // pullback: giải thích chế độ đang chọn
+    const selfOn = document.getElementById('p0-pb-self')?.checked;
+    const ratio  = parseFloat(document.getElementById('p0-pb-self-ratio')?.value);
+    const absv   = parseFloat(document.getElementById('p0-pb-abs')?.value);
+    const ph = document.getElementById('p0-pb-hint');
+    if (ph) {
+        if (selfOn) {
+            ph.innerHTML = `Đang so với <b style="color:#3fb950">chính coin đó</b>: `
+              + `coin được dùng pullback nếu ATR hiện tại ≥ <b>${isNaN(ratio)?'?':ratio}</b>× `
+              + `trung vị ATR riêng của nó. Ô tuyệt đối bên cạnh không dùng.<br>`
+              + `Coin biến động thấp (TSLA 0.8%, XAU 1.1%, SPCX 1.2%) không còn bị khoá vĩnh viễn.`;
+        } else {
+            ph.innerHTML = `<span style="color:#d29922">Đang dùng ngưỡng tuyệt đối ${isNaN(absv)?'?':absv}%</span> `
+              + `(cách cũ). Đo thật: khoá 8 coin, <b>5 con trong đó CÓ setup pullback hợp lệ</b>. `
+              + `Coin ATR thấp bị khoá vĩnh viễn vì không bao giờ chạm nổi ngưỡng.`;
+        }
     }
 }
 
@@ -3644,6 +3693,9 @@ async function saveP0Settings() {
         trend_conflict_skip:       get('p0-trend-conflict'),
         entry_min_confluence:      parseInt(get('p0-conf-min')),
         entry_min_confluence_edge: parseInt(get('p0-conf-edge')),
+        pullback_self_relative:    get('p0-pb-self'),
+        pullback_self_min_ratio:   parseFloat(get('p0-pb-self-ratio')),
+        pullback_vol_threshold:    parseFloat(get('p0-pb-abs')),
     };
     // Bỏ field NaN để không ghi rác vào config khi input trống
     Object.keys(payload).forEach(k => {
@@ -5040,6 +5092,10 @@ def api_p0_settings_get():
             "trend_conflict_skip":       getattr(_cfg, "TREND_CONFLICT_SKIP",       False),
             "entry_min_confluence":      getattr(_cfg, "ENTRY_MIN_CONFLUENCE",      5),
             "entry_min_confluence_edge": getattr(_cfg, "ENTRY_MIN_CONFLUENCE_EDGE", 2),
+            # Điều kiện mở đường pullback
+            "pullback_self_relative":    getattr(_cfg, "PULLBACK_SELF_RELATIVE",   True),
+            "pullback_self_min_ratio":   getattr(_cfg, "PULLBACK_SELF_MIN_RATIO",  0.7),
+            "pullback_vol_threshold":    getattr(_cfg, "PULLBACK_VOL_THRESHOLD",   4.0),
         }})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
@@ -5095,6 +5151,12 @@ def api_p0_settings_save():
             _cfg.ENTRY_MIN_CONFLUENCE   = max(0, min(10, int(data["entry_min_confluence"])))
         if "entry_min_confluence_edge" in data:
             _cfg.ENTRY_MIN_CONFLUENCE_EDGE = max(0, min(6, int(data["entry_min_confluence_edge"])))
+        if "pullback_self_relative" in data:
+            _cfg.PULLBACK_SELF_RELATIVE  = bool(data["pullback_self_relative"])
+        if "pullback_self_min_ratio" in data:
+            _cfg.PULLBACK_SELF_MIN_RATIO = max(0.0, min(2.0, float(data["pullback_self_min_ratio"])))
+        if "pullback_vol_threshold" in data:
+            _cfg.PULLBACK_VOL_THRESHOLD  = max(0.0, min(20.0, float(data["pullback_vol_threshold"])))
 
         # ── Ghi persistent vào config.py ──────────────────────────────
         import os, re as _re
@@ -5121,6 +5183,9 @@ def api_p0_settings_save():
             "TREND_CONFLICT_SKIP":       str(getattr(_cfg, "TREND_CONFLICT_SKIP", False)),
             "ENTRY_MIN_CONFLUENCE":      str(getattr(_cfg, "ENTRY_MIN_CONFLUENCE", 5)),
             "ENTRY_MIN_CONFLUENCE_EDGE": str(getattr(_cfg, "ENTRY_MIN_CONFLUENCE_EDGE", 2)),
+            "PULLBACK_SELF_RELATIVE":    str(getattr(_cfg, "PULLBACK_SELF_RELATIVE", True)),
+            "PULLBACK_SELF_MIN_RATIO":   str(round(getattr(_cfg, "PULLBACK_SELF_MIN_RATIO", 0.7), 2)),
+            "PULLBACK_VOL_THRESHOLD":    str(round(getattr(_cfg, "PULLBACK_VOL_THRESHOLD", 4.0), 2)),
         }
         try:
             with open(config_path, "r", encoding="utf-8") as f:

@@ -583,6 +583,77 @@ def find_swing_highs_lows(high: "pd.Series", low: "pd.Series",
         }
 
 
+def is_pullback_eligible(df_1h: "pd.DataFrame", symbol: str, cfg=None) -> dict:
+    """
+    Coin có đủ động để đường PULLBACK có nghĩa hay không.
+
+    VẤN ĐỀ CỦA CÁCH CŨ (is_volatile_coin, ngưỡng tuyệt đối 4%):
+      Đem một thước đo tuyệt đối áp cho mọi coin. BTC ATR ~0.5%, memecoin
+      ATR ~10% — cùng vạch 4% thì coin biến động thấp bị khoá VĨNH VIỄN
+      khỏi đường pullback, không phải hôm nay mà mãi mãi.
+      Đo thật 46 coin: 8 coin bị khoá, 5 con trong đó CÓ setup pullback
+      khớp đúng hướng (XRP, BOT, HOME, SKHYNIX, TSLA). Riêng TSLA 0.8%,
+      XAU 1.1%, SPCX 1.2% thì không bao giờ chạm nổi 4%.
+      Nghịch lý: pullback là để mua nhịp chỉnh trong xu hướng — đúng dáng
+      của coin trending ÊM — mà lại chỉ mở cho coin động mạnh.
+
+    CÁCH MỚI: so với CHÍNH coin đó.
+      Hỏi "coin này có đang chết lặng so với bình thường của nó không",
+      thay vì "coin này có động bằng memecoin không".
+      eligible khi atr_pct hiện tại >= trung vị atr_pct của chính nó × ratio.
+
+    Đặt PULLBACK_SELF_RELATIVE=False để quay lại cách cũ (ngưỡng tuyệt đối).
+    """
+    out = {"ok": False, "atr_pct": 0.0, "ref": 0.0, "mode": "abs", "reason": ""}
+    try:
+        from indicators import calculate_atr, is_volatile_coin, LOW_VOL_COINS
+
+        if df_1h is None or len(df_1h) < 30:
+            out["reason"] = "không đủ data 1H"
+            return out
+
+        atr_s = calculate_atr(df_1h["high"], df_1h["low"], df_1h["close"], 14)
+        close = df_1h["close"]
+        # ước lượng daily range từ 1h ATR — giữ đúng công thức cũ (×4)
+        atr_pct_series = (atr_s / close * 100 * 4).dropna()
+        if len(atr_pct_series) < 20:
+            out["reason"] = "không đủ ATR"
+            return out
+        atr_pct = float(atr_pct_series.iloc[-1])
+        out["atr_pct"] = round(atr_pct, 2)
+
+        self_rel = getattr(cfg, "PULLBACK_SELF_RELATIVE", True) if cfg else True
+
+        if not self_rel:
+            # ── Cách CŨ: ngưỡng tuyệt đối ──
+            thr = (getattr(cfg, "PULLBACK_VOL_THRESHOLD_MAJOR", 1.5)
+                   if symbol in LOW_VOL_COINS
+                   else getattr(cfg, "PULLBACK_VOL_THRESHOLD", 4.0)) if cfg else 4.0
+            out.update(ok=is_volatile_coin(df_1h, threshold_pct=thr),
+                       ref=thr, mode="abs",
+                       reason=f"tuyệt đối {atr_pct:.1f}% vs {thr:.1f}%")
+            return out
+
+        # ── Cách MỚI: so với chính coin đó ──
+        ratio = getattr(cfg, "PULLBACK_SELF_MIN_RATIO", 0.7) if cfg else 0.7
+        # trung vị ATR% của chính coin trong cửa sổ gần đây
+        med = float(atr_pct_series.tail(100).median())
+        need = med * ratio
+        # sàn tuyệt đối rất thấp: chặn coin gần như không nhúc nhích
+        floor = getattr(cfg, "PULLBACK_ABS_FLOOR", 0.3) if cfg else 0.3
+        ok = atr_pct >= need and atr_pct >= floor
+        out.update(ok=ok, ref=round(need, 2), mode="self",
+                   reason=(f"{atr_pct:.2f}% vs trung vị riêng {med:.2f}%"
+                           f"×{ratio:.2f}={need:.2f}%"
+                           + ("" if atr_pct >= floor else f" (dưới sàn {floor}%)")))
+        return out
+
+    except Exception as e:
+        # Lỗi thì CHO QUA để không tự chặn đường vào lệnh
+        out.update(ok=True, reason=f"lỗi check, cho qua: {e}")
+        return out
+
+
 def check_1h_location(df_1h: "pd.DataFrame", signal: str,
                       entry_price: float, atr_1h: float,
                       cfg=None) -> dict:
@@ -1277,14 +1348,14 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 # FIX: ngưỡng volatile 4.0 (≈ ATR 1h ≥ 1%) khiến BTC/ETH/BNB luôn FAIL
                 # → majors mất đường vào thứ 2 mà alt dùng nhiều nhất.
                 # Majors dùng ngưỡng thấp hơn tương ứng biến động thật của chúng.
-                try:
-                    from indicators import LOW_VOL_COINS as _LV
-                    _is_lv = symbol in _LV
-                except Exception:
-                    _is_lv = symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
-                _vol_thr = getattr(config, "PULLBACK_VOL_THRESHOLD_MAJOR", 1.5) if _is_lv \
-                           else getattr(config, "PULLBACK_VOL_THRESHOLD", 4.0)
-                volatile = is_volatile_coin(df_1h, threshold_pct=_vol_thr)
+                # FIX: ngưỡng tuyệt đối 4% khoá vĩnh viễn coin biến động thấp
+                # (TSLA 0.8%, XAU 1.1%, SPCX 1.2% không bao giờ chạm nổi) khỏi
+                # đường pullback. Đo thật: 8 coin bị khoá, 5 con CÓ setup hợp lệ.
+                # Giờ so với chính coin đó — xem is_pullback_eligible().
+                _pbe = is_pullback_eligible(df_1h, symbol, config)
+                volatile = _pbe["ok"]
+                if not volatile:
+                    logger.debug(f"  ⏭  {symbol}: pullback bị khoá — {_pbe['reason']}")
                 if volatile:
                     pb_signal = get_pullback_signal(df_15m, config, bias)
                     if pb_signal == bias:
@@ -1314,10 +1385,15 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                             )
                 if not scored or scored.signal != bias:
                     logger.debug(f"  ⏭  {symbol}: bias={bias} nhưng 15m không có entry")
-                    _rej(symbol, "15m",
-                         f"trend {bias} nhưng 15m chưa có tín hiệu entry"
-                         + (f" (15m={scored.signal})" if scored else ""),
-                         bias, df_15m["close"].iloc[-1] if df_15m is not None else 0.0)
+                    _r15 = (f"trend {bias} nhưng 15m chưa có tín hiệu entry"
+                            + (f" (15m={scored.signal})" if scored else ""))
+                    try:
+                        if not _pbe["ok"]:
+                            _r15 += f" | pullback khoá: {_pbe['reason']}"
+                    except Exception:
+                        pass
+                    _rej(symbol, "15m", _r15, bias,
+                         df_15m["close"].iloc[-1] if df_15m is not None else 0.0)
                     continue
 
             # ═══ GATE A: VOLUME CONFIRM — chặn thật, không chỉ cộng điểm ═══
