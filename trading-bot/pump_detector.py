@@ -517,11 +517,20 @@ class PumpDetector:
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             body  = abs(c - o)
             upper = h - max(c, o)
+            lower = min(c, o) - l          # bóng DƯỚI
             total = h - l if h > l else 0.0001
 
-            # Bỏ doji
+            # FIX: phân biệt DOJI THẬT với PIN BAR.
+            # Cũ: chỉ xét thân (body < 5% range → bỏ) → loại luôn pin bar,
+            # trong khi pin bar thân nhỏ + bóng trên dài là tín hiệu rejection
+            # MẠNH NHẤT. Đo được: bóng gấp 49× thân, chiếm 93% range → 0 điểm.
+            # Mới: thân nhỏ mà bóng DƯỚI cũng dài → doji thật (do dự) → bỏ.
+            #      thân nhỏ mà bóng TRÊN áp đảo → pin bar → nhận.
             if body < total * 0.05:
-                continue
+                if lower >= upper * 0.5:
+                    continue               # doji thật: bóng 2 bên cân → bỏ
+                # pin bar: kẹp thân tối thiểu 5% range để ratio không vô cực
+                body = total * 0.05
 
             ratio     = upper / body      if body  > 0 else 0
             upper_pct = upper / total * 100
@@ -597,9 +606,18 @@ class PumpDetector:
         decelerating = all(changes[i] > changes[i+1] for i in range(len(changes)-1))
         last_positive = changes[-1] > 0
         slowing = changes[0] > 0 and changes[-1] < changes[0] * 0.4
+        # FIX: đà đã TẮT HẲN (từ tăng chuyển sang giảm) là bằng chứng kiệt sức
+        # MẠNH HƠN "còn tăng nhưng chậm", nhưng code cũ cho 0 điểm vì đòi
+        # last_positive. Hệ quả: đúng lúc _confirm_reversal cho phép vào MARKET
+        # (giá đã giảm từ đỉnh) thì tín hiệu này mất trọn 15 điểm.
+        turned_down = changes[0] > 0 and changes[-1] <= 0
 
         if decelerating and last_positive:
             return 15, f"🔴 Đà tăng chậm dần rõ ({changes[0]:.2f}%→{changes[-1]:.2f}%)"
+        elif decelerating and turned_down:
+            return 15, f"🔴 Đà tăng đã tắt, chuyển giảm ({changes[0]:.2f}%→{changes[-1]:.2f}%)"
+        elif turned_down:
+            return 12, f"🟠 Đà tăng chuyển sang giảm ({changes[0]:.2f}%→{changes[-1]:.2f}%)"
         elif slowing:
             return 8,  f"🟠 Đà tăng giảm mạnh ({changes[0]:.2f}%→{changes[-1]:.2f}%)"
         return 0, ""
