@@ -1396,22 +1396,6 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                          df_15m["close"].iloc[-1] if df_15m is not None else 0.0)
                     continue
 
-            # ═══ GATE A: VOLUME CONFIRM — chặn thật, không chỉ cộng điểm ═══
-            if getattr(config, "ENTRY_VOL_CONFIRM_ENABLED", True):
-                try:
-                    _v    = df_15m_closed["volume"]
-                    _vma  = _v.rolling(20).mean().iloc[-1]
-                    _vr   = _v.iloc[-1] / _vma if _vma > 0 else 0.0
-                    _vmin = getattr(config, "ENTRY_MIN_VOL_RATIO", 1.0)
-                    if _vr < _vmin:
-                        logger.info(f"  ⏭  {symbol}: volume {_vr:.2f}× < {_vmin}× (nến đã đóng) → skip")
-                        _rej(symbol, "VOLUME",
-                             f"volume {_vr:.2f}× < {_vmin}× (nến đã đóng)",
-                             bias, df_15m["close"].iloc[-1], scored.score)
-                        continue
-                except Exception as _ve:
-                    logger.debug(f"  [VolConfirm] {symbol}: {_ve}")
-
             # ═══ GATE B: LOCATION — còn room tới S/R 1H hay đã sát kháng cự/hỗ trợ? ═══
             if getattr(config, "LOCATION_FILTER_ENABLED", True):
                 try:
