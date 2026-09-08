@@ -4709,9 +4709,10 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                         # Đặt SL + TP sau khi lệnh 2 khớp
                         total_qty = sp.qty1 + sp.qty2
                         try:
-                            exchange.cancel_all_orders(sym)
-                            exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
-                            exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
+                            with _sl_lock:
+                                exchange.cancel_all_orders(sym)
+                                exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
+                                exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
                             with lock:
                                 state["split_positions"][sym].sl_placed = True
                                 state["split_positions"][sym].tp_placed = True
