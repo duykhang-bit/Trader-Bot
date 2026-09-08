@@ -100,6 +100,10 @@ state = {
 }
 lock = threading.Lock()
 
+# Lock riêng cho thao tác SL — tránh race condition giữa PP / TrailingLock / PartialTP
+# chạy đồng thời cancel + đặt SL → nhiều SL active cùng lúc
+_sl_lock = threading.Lock()
+
 # Guard chống double entry — set các symbol đang trong quá trình xử lý order
 _executing_symbols: set = set()
 
@@ -2622,14 +2626,15 @@ def trailing_profit_lock(exchange, notifier):
 
                 # Dời SL
                 try:
-                    # Cancel SL cũ
-                    for o in sl_orders:
-                        exchange._delete("/fapi/v1/order",
-                                        {"symbol": sym, "orderId": o["orderId"]})
+                    with _sl_lock:
+                        # Cancel SL cũ
+                        for o in sl_orders:
+                            exchange._delete("/fapi/v1/order",
+                                            {"symbol": sym, "orderId": o["orderId"]})
 
-                    # Đặt SL mới
-                    close_side = "SELL" if is_long else "BUY"
-                    exchange.place_stop_loss_order(sym, close_side, qty, new_sl)
+                        # Đặt SL mới
+                        close_side = "SELL" if is_long else "BUY"
+                        exchange.place_stop_loss_order(sym, close_side, qty, new_sl)
 
                     logger.info(
                         f"[TrailingLock] {sym} {'LONG' if is_long else 'SHORT'} | "
@@ -5352,27 +5357,29 @@ def profit_protection_monitor(exchange, notifier):
 def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> bool:
     """
     Update SL trên Binance — cancel SL cũ rồi đặt SL mới.
+    Dùng _sl_lock để tránh race condition với TrailingLock / PartialTP.
     Returns True nếu thành công.
     """
-    try:
-        close_side = "SELL" if side == "LONG" else "BUY"
-        # Cancel SL cũ
-        orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
-        sl_orders = [o for o in orders
-                     if o.get("type") in ("STOP_MARKET", "STOP")
-                     and o.get("reduceOnly", False)]
-        for o in sl_orders:
-            try:
-                exchange._delete("/fapi/v1/order",
-                                 {"symbol": symbol, "orderId": o["orderId"]})
-            except Exception:
-                pass
-        # Đặt SL mới
-        exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
-        return True
-    except Exception as e:
-        logger.debug(f"[PP] _update_sl {symbol} failed: {e}")
-        return False
+    with _sl_lock:
+        try:
+            close_side = "SELL" if side == "LONG" else "BUY"
+            # Cancel tất cả SL cũ
+            orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+            sl_orders = [o for o in orders
+                         if o.get("type") in ("STOP_MARKET", "STOP")
+                         and o.get("reduceOnly", False)]
+            for o in sl_orders:
+                try:
+                    exchange._delete("/fapi/v1/order",
+                                     {"symbol": symbol, "orderId": o["orderId"]})
+                except Exception:
+                    pass
+            # Đặt SL mới
+            exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
+            return True
+        except Exception as e:
+            logger.debug(f"[PP] _update_sl {symbol} failed: {e}")
+            return False
 
 
 def partial_tp_monitor(exchange, notifier):
@@ -5469,21 +5476,22 @@ def partial_tp_monitor(exchange, notifier):
                             # Dời SL về breakeven
                             if move_sl_be:
                                 try:
-                                    # Cancel SL cũ
-                                    all_orders = exchange._get("/fapi/v1/openOrders",
-                                                              {"symbol": symbol}, signed=True)
-                                    sl_orders = [o for o in all_orders
-                                                 if o.get("type") in ("STOP_MARKET", "STOP")
-                                                 and o.get("reduceOnly", False)]
-                                    for o in sl_orders:
-                                        exchange._delete("/fapi/v1/order",
-                                                        {"symbol": symbol, "orderId": o["orderId"]})
-                                    # Đặt SL mới tại entry
-                                    be_sl = round(entry * (1.001 if is_long else 0.999), 8)
-                                    exchange.place_stop_loss_order(symbol, close_side,
-                                                                   round(qty_total - qty_close, 8),
-                                                                   be_sl)
-                                    logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
+                                    with _sl_lock:
+                                        # Cancel SL cũ
+                                        all_orders = exchange._get("/fapi/v1/openOrders",
+                                                                  {"symbol": symbol}, signed=True)
+                                        sl_orders = [o for o in all_orders
+                                                     if o.get("type") in ("STOP_MARKET", "STOP")
+                                                     and o.get("reduceOnly", False)]
+                                        for o in sl_orders:
+                                            exchange._delete("/fapi/v1/order",
+                                                            {"symbol": symbol, "orderId": o["orderId"]})
+                                        # Đặt SL mới tại entry
+                                        be_sl = round(entry * (1.001 if is_long else 0.999), 8)
+                                        exchange.place_stop_loss_order(symbol, close_side,
+                                                                       round(qty_total - qty_close, 8),
+                                                                       be_sl)
+                                        logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
                                 except Exception as _e:
                                     logger.debug(f"[PartialTP] Move SL BE {symbol}: {_e}")
 
