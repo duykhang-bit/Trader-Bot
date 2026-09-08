@@ -104,6 +104,15 @@ lock = threading.Lock()
 # chạy đồng thời cancel + đặt SL → nhiều SL active cùng lúc
 _sl_lock = threading.Lock()
 
+
+def _append_trade(trade: dict):
+    """Append trade vào trade_log và save_history ngay — đảm bảo không mất khi restart."""
+    from trade_history import save_history
+    with lock:
+        state["trade_log"].append(trade)
+        _log = list(state["trade_log"])
+    save_history(_log)
+
 # Guard chống double entry — set các symbol đang trong quá trình xử lý order
 _executing_symbols: set = set()
 
@@ -525,7 +534,7 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
 
                         rr = abs(cur_price - tp_price) / abs(sl_price - cur_price)
                         with lock:
-                            state["trade_log"].append({
+                            _append_trade({
                                 "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": sym, "side": "SHORT",
                                 "entry":  cur_price, "sl": sl_price, "tp": tp_price,
@@ -710,7 +719,7 @@ def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: in
 
         rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
         with lock:
-            state["trade_log"].append({
+            _append_trade({
                 "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": sym, "side": "SHORT",
                 "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
@@ -822,7 +831,7 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
             logger.error(f"[CTD] TP failed {sym}: {e}")
 
         with lock:
-            state["trade_log"].append({
+            _append_trade({
                 "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": sym, "side": "SHORT",
                 "entry":  sig.entry_price,
@@ -965,7 +974,7 @@ def _armed_execute(sym, info, trigger_price):
             pass
 
         with lock:
-            state["trade_log"].append({
+            _append_trade({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": sym, "side": info["signal"],
                 "entry": trigger_price, "sl": actual_sl, "tp": info["tp"],
@@ -2826,7 +2835,7 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
             logger.warning(f"[PumpShort] SL failed for {symbol} — keeping position, auto_sltp will retry")
 
         with lock:
-            state["trade_log"].append({
+            _append_trade({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": symbol, "side": "SHORT",
                 "entry": cur_price, "sl": sig.sl_price, "tp": sig.tp1_price,
@@ -2887,7 +2896,7 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
 
         rr = (tp - cur_price) / (cur_price - sl) if (cur_price - sl) > 0 else 0
         with lock:
-            state["trade_log"].append({
+            _append_trade({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": symbol, "side": "LONG",
                 "entry": cur_price, "sl": sl, "tp": tp,
@@ -3279,7 +3288,7 @@ def scan_engine(exchange, notifier):
 
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
-                                state["trade_log"].append({
+                                _append_trade({
                                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     "symbol": a_sym, "side": a_info["signal"],
                                     "entry": cur_p, "sl": a_info["sl"], "tp": a_info["tp"],
@@ -4131,7 +4140,7 @@ def pump_scan_engine(exchange, notifier):
                                                     if abs(cur_p_nhe - sig.sl_price) > 0 else 0
                                                 )
                                                 with lock:
-                                                    state["trade_log"].append({
+                                                    _append_trade({
                                                         "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                                         "symbol": symbol, "side": "SHORT",
                                                         "entry":  cur_p_nhe,
@@ -4476,7 +4485,7 @@ def pump_scan_engine(exchange, notifier):
 
                         rr = abs(current_price - sig.tp1_price) / abs(current_price - sig.sl_price) if abs(current_price - sig.sl_price) > 0 else 0
                         with lock:
-                            state["trade_log"].append({
+                            _append_trade({
                                 "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": symbol, "side": "SHORT",
                                 "entry":  sig.entry_price,
@@ -4660,7 +4669,7 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                     if not limit_orders and hasattr(sp, 'limit1_placed') and sp.limit1_placed:
                         with lock:
                             state["split_positions"][sym].filled1 = True
-                            state["trade_log"].append({
+                            _append_trade({
                                 "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": sym, "side": sp.direction,
                                 "entry" : sp.entry1, "sl": sp.sl, "tp": sp.tp,
@@ -4699,7 +4708,7 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                     if not limit_orders and hasattr(sp, 'limit2_placed') and sp.limit2_placed:
                         with lock:
                             state["split_positions"][sym].filled2 = True
-                            state["trade_log"].append({
+                            _append_trade({
                                 "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": sym, "side": sp.direction,
                                 "entry" : sp.entry2, "sl": sp.sl, "tp": sp.tp,
@@ -4883,7 +4892,7 @@ def limit_order_monitor(exchange, notifier):
                             )
                             with lock:
                                 state.get("pump_limit_orders", {}).pop(sym, None)
-                                state["trade_log"].append({
+                                _append_trade({
                                     "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     "symbol": sym, "side": "SHORT",
                                     "entry":  fill_price,
