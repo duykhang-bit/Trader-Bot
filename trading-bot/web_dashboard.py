@@ -6129,6 +6129,28 @@ def api_ta_analyze():
     return jsonify({"ok": True, "msg": f"Bắt đầu phân tích {ticker} ({date})..."})
 
 
+@app.route("/api/trade_history_file", methods=["GET"])
+@require_auth
+def api_trade_history_file():
+    """Đọc trực tiếp file trade_history.json từ disk."""
+    try:
+        from trade_history import HISTORY_FILE
+        import json
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+            return jsonify({
+                "ok": True,
+                "count": len(history),
+                "trades": history,
+                "file": HISTORY_FILE
+            })
+        else:
+            return jsonify({"ok": False, "msg": "File không tồn tại", "file": HISTORY_FILE})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
 @app.route("/api/ta/status", methods=["GET"])
 @require_auth
 def api_ta_status():
