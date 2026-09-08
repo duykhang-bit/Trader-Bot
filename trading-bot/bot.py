@@ -5303,7 +5303,7 @@ def profit_protection_monitor(exchange, notifier):
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
                             if new_trail_sl > ps["current_sl"]:
-                                min_change = ps["current_sl"] * 0.0005
+                                min_change = ps["current_sl"] * 0.003  # min 0.3% mới update tránh spam SL
                                 if new_trail_sl - ps["current_sl"] >= min_change:
                                     if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                         prev_tier = ps["tier"]
@@ -5321,7 +5321,7 @@ def profit_protection_monitor(exchange, notifier):
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                min_change = ps["current_sl"] * 0.0005
+                                min_change = ps["current_sl"] * 0.003  # min 0.3% mới update tránh spam SL
                                 if ps["current_sl"] == 0 or ps["current_sl"] - new_trail_sl >= min_change:
                                     if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                         prev_tier = ps["tier"]
