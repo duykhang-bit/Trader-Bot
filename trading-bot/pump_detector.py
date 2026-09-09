@@ -388,15 +388,27 @@ class PumpDetector:
 
         # ── TP: Fibonacci retracement từ ENTRY → đáy pump ───────────
         tp1_price = final_entry - (final_entry - pump_low) * 0.618
-        tp2_price = final_entry - (final_entry - pump_low) * 0.618
+        tp2_price = final_entry - (final_entry - pump_low) * 0.786
 
-        # Validate RR tối thiểu 1.5 — nếu không đủ thì không vào
+        # Validate RR tối thiểu 1.5
         risk   = abs(sl_price - final_entry)
         reward = abs(final_entry - tp1_price)
         rr     = reward / risk if risk > 0 else 0
+
+        # Fix: Nếu RR < 1.5 do pump_low không đúng (coin đang đi ngang sau pump)
+        # → dùng TP fallback = entry - risk * 1.5 (đảm bảo RR luôn đủ)
         if rr < 1.5:
-            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
-            return None
+            tp1_fallback = final_entry - risk * 1.5
+            reward_fb    = abs(final_entry - tp1_fallback)
+            rr_fb        = reward_fb / risk if risk > 0 else 0
+            if rr_fb >= 1.5:
+                logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5 → dùng TP fallback ATR×1.5, RR={rr_fb:.1f}")
+                tp1_price = tp1_fallback
+                tp2_price = final_entry - risk * 2.0
+                rr        = rr_fb
+            else:
+                logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
+                return None
 
         is_top = (
             score >= self.cfg["PUMP_TOP_MIN_SCORE"]
