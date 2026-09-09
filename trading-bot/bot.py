@@ -98,21 +98,7 @@ state = {
     "liq_data":       {},
     "pending_smart_orders": {},
 }
-lock = threading.RLock()  # RLock: tránh deadlock khi _append_trade gọi trong with lock
-
-# Lock riêng cho thao tác SL — tránh race condition giữa PP / TrailingLock / PartialTP
-# chạy đồng thời cancel + đặt SL → nhiều SL active cùng lúc
-_sl_lock = threading.Lock()
-
-
-def _append_trade(trade: dict):
-    """Append trade vào trade_log và save_history ngay — đảm bảo không mất khi restart."""
-    from trade_history import save_history
-    with lock:
-        state["trade_log"].append(trade)
-        _log = list(state["trade_log"])
-    # save NGOÀI lock — tránh deadlock với Flask
-    save_history(_log)
+lock = threading.Lock()
 
 # Guard chống double entry — set các symbol đang trong quá trình xử lý order
 _executing_symbols: set = set()
@@ -534,14 +520,14 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
                         except Exception as e: logger.error(f"[FastShort] TP {sym}: {e}")
 
                         rr = abs(cur_price - tp_price) / abs(sl_price - cur_price)
-                        _append_trade({
-                            "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "symbol": sym, "side": "SHORT",
-                            "entry":  cur_price, "sl": sl_price, "tp": tp_price,
-                            "qty":    qty, "status": "OPEN",
-                            "note":   f"fast_spike_{spike_pct:.1f}pct",
-                            })
                         with lock:
+                            state["trade_log"].append({
+                                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": "SHORT",
+                                "entry":  cur_price, "sl": sl_price, "tp": tp_price,
+                                "qty":    qty, "status": "OPEN",
+                                "note":   f"fast_spike_{spike_pct:.1f}pct",
+                            })
                             state.setdefault("pump_trade_symbols", set()).add(sym)
 
                         notifier_ref.telegram.send(
@@ -719,12 +705,13 @@ def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: in
         except Exception as e: logger.error(f"[WS-Spike] TP {sym}: {e}")
 
         rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
-        _append_trade({
-            "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": sym, "side": "SHORT",
-            "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
-            "qty":    qty, "status": "OPEN",
-            "note":   f"ws_spike_s{sig.score}_c{confidence}",
+        with lock:
+            state["trade_log"].append({
+                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": "SHORT",
+                "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
+                "qty":    qty, "status": "OPEN",
+                "note":   f"ws_spike_s{sig.score}_c{confidence}",
             })
 
         notifier_ref.telegram.send(
@@ -830,14 +817,15 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
         except Exception as e:
             logger.error(f"[CTD] TP failed {sym}: {e}")
 
-        _append_trade({
-            "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": sym, "side": "SHORT",
-            "entry":  sig.entry_price,
-            "sl":     sig.sl_price,
-            "tp":     sig.tp_price,
-            "qty":    qty, "status": "OPEN",
-            "note":   f"confirmed_top_c{sig.conditions_passed}",
+        with lock:
+            state["trade_log"].append({
+                "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": "SHORT",
+                "entry":  sig.entry_price,
+                "sl":     sig.sl_price,
+                "tp":     sig.tp_price,
+                "qty":    qty, "status": "OPEN",
+                "note":   f"confirmed_top_c{sig.conditions_passed}",
             })
 
         notifier_ref.telegram.send(
@@ -972,11 +960,12 @@ def _armed_execute(sym, info, trigger_price):
         except Exception:
             pass
 
-        _append_trade({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": sym, "side": info["signal"],
-            "entry": trigger_price, "sl": actual_sl, "tp": info["tp"],
-            "qty": qty, "status": "OPEN", "note": "armed_ws_trigger"
+        with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym, "side": info["signal"],
+                "entry": trigger_price, "sl": actual_sl, "tp": info["tp"],
+                "qty": qty, "status": "OPEN", "note": "armed_ws_trigger"
             })
 
         icon = "🟢" if info["signal"] == "LONG" else "🔴"
@@ -2633,14 +2622,14 @@ def trailing_profit_lock(exchange, notifier):
 
                 # Dời SL
                 try:
-                    with _sl_lock:
-                        # ĐẶT SL MỚI TRƯỚC — luôn có SL bảo vệ
-                        close_side = "SELL" if is_long else "BUY"
-                        exchange.place_stop_loss_order(sym, close_side, qty, new_sl)
-                        # Sau đó mới CANCEL SL CŨ
-                        for o in sl_orders:
-                            exchange._delete("/fapi/v1/order",
-                                            {"symbol": sym, "orderId": o["orderId"]})
+                    # Cancel SL cũ
+                    for o in sl_orders:
+                        exchange._delete("/fapi/v1/order",
+                                        {"symbol": sym, "orderId": o["orderId"]})
+
+                    # Đặt SL mới
+                    close_side = "SELL" if is_long else "BUY"
+                    exchange.place_stop_loss_order(sym, close_side, qty, new_sl)
 
                     logger.info(
                         f"[TrailingLock] {sym} {'LONG' if is_long else 'SHORT'} | "
@@ -2832,13 +2821,13 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
         if not sl_ok:
             logger.warning(f"[PumpShort] SL failed for {symbol} — keeping position, auto_sltp will retry")
 
-        _append_trade({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": symbol, "side": "SHORT",
-            "entry": cur_price, "sl": sig.sl_price, "tp": sig.tp1_price,
-            "qty": qty, "status": "OPEN", "note": f"spike_short_s{sig.score}",
-            })
         with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": "SHORT",
+                "entry": cur_price, "sl": sig.sl_price, "tp": sig.tp1_price,
+                "qty": qty, "status": "OPEN", "note": f"spike_short_s{sig.score}",
+            })
             state.setdefault("pump_trade_symbols", set()).add(symbol)
 
         notifier.telegram.send(
@@ -2893,11 +2882,12 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
             pass
 
         rr = (tp - cur_price) / (cur_price - sl) if (cur_price - sl) > 0 else 0
-        _append_trade({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": symbol, "side": "LONG",
-            "entry": cur_price, "sl": sl, "tp": tp,
-            "qty": qty, "status": "OPEN", "note": f"spike_long_s{score}",
+        with lock:
+            state["trade_log"].append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": "LONG",
+                "entry": cur_price, "sl": sl, "tp": tp,
+                "qty": qty, "status": "OPEN", "note": f"spike_long_s{score}",
             })
 
         notifier.telegram.send(
@@ -3285,11 +3275,11 @@ def scan_engine(exchange, notifier):
 
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
-                            _append_trade({
-                                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "symbol": a_sym, "side": a_info["signal"],
-                                "entry": cur_p, "sl": a_info["sl"], "tp": a_info["tp"],
-                                "qty": qty, "status": "OPEN", "note": "armed_liq_entry"
+                                state["trade_log"].append({
+                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "symbol": a_sym, "side": a_info["signal"],
+                                    "entry": cur_p, "sl": a_info["sl"], "tp": a_info["tp"],
+                                    "qty": qty, "status": "OPEN", "note": "armed_liq_entry"
                                 })
 
                             notifier.telegram.send(
@@ -4136,15 +4126,15 @@ def pump_scan_engine(exchange, notifier):
                                                     / abs(cur_p_nhe - sig.sl_price)
                                                     if abs(cur_p_nhe - sig.sl_price) > 0 else 0
                                                 )
-                                                _append_trade({
-                                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                    "symbol": symbol, "side": "SHORT",
-                                                    "entry":  cur_p_nhe,
-                                                    "sl": sig.sl_price, "tp": sig.tp1_price,
-                                                    "qty": qty_nhe, "status": "OPEN",
-                                                    "note": f"pump_nhe_short_s{sig.score}",
-                                                    })
                                                 with lock:
+                                                    state["trade_log"].append({
+                                                        "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                        "symbol": symbol, "side": "SHORT",
+                                                        "entry":  cur_p_nhe,
+                                                        "sl": sig.sl_price, "tp": sig.tp1_price,
+                                                        "qty": qty_nhe, "status": "OPEN",
+                                                        "note": f"pump_nhe_short_s{sig.score}",
+                                                    })
                                                     state.setdefault("pump_trade_symbols", set()).add(symbol)
 
                                                 notifier.telegram.send(
@@ -4481,15 +4471,16 @@ def pump_scan_engine(exchange, notifier):
                         _set_sltp_cooldown(symbol)
 
                         rr = abs(current_price - sig.tp1_price) / abs(current_price - sig.sl_price) if abs(current_price - sig.sl_price) > 0 else 0
-                        _append_trade({
-                            "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "symbol": symbol, "side": "SHORT",
-                            "entry":  sig.entry_price,
-                            "sl": sig.sl_price, "tp": sig.tp1_price,
-                            "qty": qty, "status": "OPEN",
-                            "note": f"pump_short_s{sig.score}",
-                        })
                         with lock:
+                            state["trade_log"].append({
+                                "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": symbol, "side": "SHORT",
+                                "entry":  sig.entry_price,
+                                "sl": sig.sl_price, "tp": sig.tp1_price,
+                                "qty": qty, "status": "OPEN",
+                                "note": f"pump_short_s{sig.score}",
+                            })
+                            # Track lệnh này là do pump engine vào → dùng cho reversal exit
                             pump_trades = state.setdefault("pump_trade_symbols", set())
                             pump_trades.add(symbol)
 
@@ -4665,12 +4656,12 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                     if not limit_orders and hasattr(sp, 'limit1_placed') and sp.limit1_placed:
                         with lock:
                             state["split_positions"][sym].filled1 = True
-                        _append_trade({
-                            "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "symbol": sym, "side": sp.direction,
-                            "entry" : sp.entry1, "sl": sp.sl, "tp": sp.tp,
-                            "qty"   : sp.qty1, "status": "OPEN",
-                            "note"  : "liq_order1"
+                            state["trade_log"].append({
+                                "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": sp.direction,
+                                "entry" : sp.entry1, "sl": sp.sl, "tp": sp.tp,
+                                "qty"   : sp.qty1, "status": "OPEN",
+                                "note"  : "liq_order1"
                             })
                         icon = "🟢" if sp.direction == "LONG" else "🔴"
                         notifier.telegram.send(
@@ -4704,20 +4695,19 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                     if not limit_orders and hasattr(sp, 'limit2_placed') and sp.limit2_placed:
                         with lock:
                             state["split_positions"][sym].filled2 = True
-                        _append_trade({
-                            "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "symbol": sym, "side": sp.direction,
-                            "entry" : sp.entry2, "sl": sp.sl, "tp": sp.tp,
-                            "qty"   : sp.qty2, "status": "OPEN",
-                            "note"  : "liq_order2"
+                            state["trade_log"].append({
+                                "time"  : __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": sym, "side": sp.direction,
+                                "entry" : sp.entry2, "sl": sp.sl, "tp": sp.tp,
+                                "qty"   : sp.qty2, "status": "OPEN",
+                                "note"  : "liq_order2"
                             })
                         # Đặt SL + TP sau khi lệnh 2 khớp
                         total_qty = sp.qty1 + sp.qty2
                         try:
-                            with _sl_lock:
-                                exchange.cancel_all_orders(sym)
-                                exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
-                                exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
+                            exchange.cancel_all_orders(sym)
+                            exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
+                            exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
                             with lock:
                                 state["split_positions"][sym].sl_placed = True
                                 state["split_positions"][sym].tp_placed = True
@@ -4888,13 +4878,13 @@ def limit_order_monitor(exchange, notifier):
                             )
                             with lock:
                                 state.get("pump_limit_orders", {}).pop(sym, None)
-                            _append_trade({
-                                "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "symbol": sym, "side": "SHORT",
-                                "entry":  fill_price,
-                                "sl":     sl_price, "tp": tp_price,
-                                "qty":    qty, "status": "OPEN",
-                                "note":   "pump_limit_filled",
+                                state["trade_log"].append({
+                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "symbol": sym, "side": "SHORT",
+                                    "entry":  fill_price,
+                                    "sl":     sl_price, "tp": tp_price,
+                                    "qty":    qty, "status": "OPEN",
+                                    "note":   "pump_limit_filled",
                                 })
 
                     except Exception as e:
@@ -5075,8 +5065,8 @@ def profit_protection_monitor(exchange, notifier):
     # }}
     _pp_state: dict = {}
 
-    logger.info("[PP] sleeping 3s for bot warmup...")
-    time.sleep(3)
+    logger.info("[PP] sleeping 20s for bot warmup...")
+    time.sleep(20)
     logger.info("[PP] warmup complete, initializing state")
     
     try:
@@ -5155,15 +5145,13 @@ def profit_protection_monitor(exchange, notifier):
 
             for pos in open_pos:
                 sym    = pos["symbol"]
-                amt    = float(pos.get("positionAmt", 0) or pos.get("_amt", 0) or (1 if pos.get("side") == "LONG" else -1))
-                entry  = float(pos.get("entryPrice", 0) or pos.get("entry", 0))
-                if entry <= 0:
+                amt    = float(pos.get("positionAmt", 0))
+                entry  = float(pos.get("entryPrice", 0))
+                if entry <= 0 or amt == 0:
                     continue
-                if amt == 0:
-                    amt = 1 if pos.get("side") == "LONG" else -1
 
-                is_long = amt > 0 if amt != 1 and amt != -1 else pos.get("side") == "LONG"
-                side    = pos.get("side") or ("LONG" if is_long else "SHORT")
+                is_long = amt > 0
+                side    = "LONG" if is_long else "SHORT"
                 is_pump = sym in pump_syms
 
                 # Check apply
@@ -5210,14 +5198,9 @@ def profit_protection_monitor(exchange, notifier):
                         "peak_price":    mark,
                         "trailing_sl":   0.0,
                         "notified":      False,
-                        "tp":            0.0,
-                        "sl_last_update_ts": 0.0,
+                        "tp":            0.0,   # sẽ được fill từ open orders
+                        "sl_last_update_ts": 0.0,  # throttle SL update
                     }
-                    # Nếu đã lời hơn trigger → skip timer, xử lý ngay vòng sau
-                    if profit_pct >= pp_trigger:
-                        _pp_state[sym]["protection_ts"] = now - pp_timer - 1  # timer đã hết
-                    if profit_pct >= trail_trigger:
-                        _pp_state[sym]["trailing_ts"] = now - trail_timer - 1  # timer đã hết
                     # Lấy TP từ Binance open orders
                     try:
                         orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
@@ -5320,7 +5303,7 @@ def profit_protection_monitor(exchange, notifier):
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
                             if new_trail_sl > ps["current_sl"]:
-                                min_change = ps["current_sl"] * 0.003  # min 0.3% mới update tránh spam SL
+                                min_change = ps["current_sl"] * 0.0005
                                 if new_trail_sl - ps["current_sl"] >= min_change:
                                     if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                         prev_tier = ps["tier"]
@@ -5338,7 +5321,7 @@ def profit_protection_monitor(exchange, notifier):
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                min_change = ps["current_sl"] * 0.003  # min 0.3% mới update tránh spam SL
+                                min_change = ps["current_sl"] * 0.0005
                                 if ps["current_sl"] == 0 or ps["current_sl"] - new_trail_sl >= min_change:
                                     if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                         prev_tier = ps["tier"]
@@ -5368,32 +5351,28 @@ def profit_protection_monitor(exchange, notifier):
 
 def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> bool:
     """
-    Update SL trên Binance — ĐẶT MỚI TRƯỚC rồi mới CANCEL CŨ.
-    Tránh khoảng trống không có SL bảo vệ.
-    Dùng _sl_lock để tránh race condition với TrailingLock / PartialTP.
+    Update SL trên Binance — cancel SL cũ rồi đặt SL mới.
     Returns True nếu thành công.
     """
-    with _sl_lock:
-        try:
-            close_side = "SELL" if side == "LONG" else "BUY"
-            # Lấy SL cũ trước
-            orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
-            sl_orders = [o for o in orders
-                         if o.get("type") in ("STOP_MARKET", "STOP")
-                         and o.get("reduceOnly", False)]
-            # ĐẶT SL MỚI TRƯỚC — luôn có SL bảo vệ
-            exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
-            # Sau đó mới CANCEL SL CŨ
-            for o in sl_orders:
-                try:
-                    exchange._delete("/fapi/v1/order",
-                                     {"symbol": symbol, "orderId": o["orderId"]})
-                except Exception:
-                    pass
-            return True
-        except Exception as e:
-            logger.debug(f"[PP] _update_sl {symbol} failed: {e}")
-            return False
+    try:
+        close_side = "SELL" if side == "LONG" else "BUY"
+        # Cancel SL cũ
+        orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+        sl_orders = [o for o in orders
+                     if o.get("type") in ("STOP_MARKET", "STOP")
+                     and o.get("reduceOnly", False)]
+        for o in sl_orders:
+            try:
+                exchange._delete("/fapi/v1/order",
+                                 {"symbol": symbol, "orderId": o["orderId"]})
+            except Exception:
+                pass
+        # Đặt SL mới
+        exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
+        return True
+    except Exception as e:
+        logger.debug(f"[PP] _update_sl {symbol} failed: {e}")
+        return False
 
 
 def partial_tp_monitor(exchange, notifier):
@@ -5490,22 +5469,21 @@ def partial_tp_monitor(exchange, notifier):
                             # Dời SL về breakeven
                             if move_sl_be:
                                 try:
-                                    with _sl_lock:
-                                        all_orders = exchange._get("/fapi/v1/openOrders",
-                                                                  {"symbol": symbol}, signed=True)
-                                        sl_orders = [o for o in all_orders
-                                                     if o.get("type") in ("STOP_MARKET", "STOP")
-                                                     and o.get("reduceOnly", False)]
-                                        be_sl = round(entry * (1.001 if is_long else 0.999), 8)
-                                        # ĐẶT SL MỚI TRƯỚC
-                                        exchange.place_stop_loss_order(symbol, close_side,
-                                                                       round(qty_total - qty_close, 8),
-                                                                       be_sl)
-                                        # Sau đó mới CANCEL SL CŨ
-                                        for o in sl_orders:
-                                            exchange._delete("/fapi/v1/order",
-                                                            {"symbol": symbol, "orderId": o["orderId"]})
-                                        logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
+                                    # Cancel SL cũ
+                                    all_orders = exchange._get("/fapi/v1/openOrders",
+                                                              {"symbol": symbol}, signed=True)
+                                    sl_orders = [o for o in all_orders
+                                                 if o.get("type") in ("STOP_MARKET", "STOP")
+                                                 and o.get("reduceOnly", False)]
+                                    for o in sl_orders:
+                                        exchange._delete("/fapi/v1/order",
+                                                        {"symbol": symbol, "orderId": o["orderId"]})
+                                    # Đặt SL mới tại entry
+                                    be_sl = round(entry * (1.001 if is_long else 0.999), 8)
+                                    exchange.place_stop_loss_order(symbol, close_side,
+                                                                   round(qty_total - qty_close, 8),
+                                                                   be_sl)
+                                    logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
                                 except Exception as _e:
                                     logger.debug(f"[PartialTP] Move SL BE {symbol}: {_e}")
 
