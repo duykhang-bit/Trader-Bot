@@ -23,6 +23,17 @@ _lock = None
 _config = None
 _exchange = None
 
+
+def _web_append_trade(trade: dict):
+    """Append trade vào _state trade_log và save ngay — tránh mất khi restart."""
+    from trade_history import save_history
+    if _state is None or _lock is None:
+        return
+    with _lock:
+        _state.setdefault("trade_log", []).append(trade)
+        snapshot = list(_state["trade_log"])
+    save_history(snapshot)
+
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def require_auth(f):
     """
@@ -4164,6 +4175,8 @@ def api_quick_trade():
                 "entry": price, "sl": sl, "tp": tp,
                 "qty": qty, "status": "OPEN", "note": "quick_trade",
             })
+        from trade_history import save_history
+        save_history(list(_state.get("trade_log", [])))
 
         msg = f"{'🔴' if side=='SHORT' else '🟢'} {side} {symbol} @ ${price:.6g} qty={qty} lev={leverage}x"
         logger.info(f"[QuickTrade] {msg}")
@@ -4228,6 +4241,8 @@ def api_place_order():
                 "qty": qty, "status": "OPEN",
                 "note": f"web_{result['type'].lower()}"
             })
+        from trade_history import save_history
+        save_history(list(_state.get("trade_log", [])))
 
         sl_tp_msg = ""
         if entry_info["sl"]: sl_tp_msg += f" SL=${entry_info['sl']:.4f}"
@@ -4357,7 +4372,6 @@ def api_close_position():
                     found = True
                     break
             if not found:
-                # Thêm mới nếu không tìm thấy (lệnh mở từ trước khi bot chạy)
                 _state.setdefault("trade_log", []).append({
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "symbol": symbol, "side": side_pos,
@@ -4367,6 +4381,8 @@ def api_close_position():
                     "pnl_pct": round(pnl_pct, 2),
                     "note": "closed_web"
                 })
+                from trade_history import save_history
+                save_history(list(_state.get("trade_log", [])))
 
         # Save to file
         try:
@@ -4781,6 +4797,8 @@ def api_pump_manual_long():
                 "qty":    qty, "status": "OPEN",
                 "note":   f"pump_manual_long_{result['type'].lower()}",
             })
+        from trade_history import save_history
+        save_history(list(_state.get("trade_log", [])))
 
         order_type = "LIMIT (chờ khớp)" if result["type"] == "LIMIT" else "MARKET"
         sl_str = f" SL=${entry_info['sl']:.4f}" if entry_info.get("sl") else ""
