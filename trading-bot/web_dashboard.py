@@ -2120,8 +2120,15 @@ function renderPnlStats() {
 
     // ── EQUITY CURVE TAB ─────────────────────────────────────
     if (_pnlTab === 'equity') {
-        el.innerHTML = html + '<div id="equity-curve-wrap"><div style="color:#8b949e;font-size:13px;padding:12px 0">Đang tải equity curve...</div></div>';
-        fetchEquityCurve(_equityRange);
+        // Chỉ set innerHTML nếu chưa có wrap (tránh giật khi renderPnlStats gọi lại)
+        if (!document.getElementById('equity-curve-wrap')) {
+            el.innerHTML = html + '<div id="equity-curve-wrap"><div style="color:#8b949e;font-size:13px;padding:12px 0">Đang tải equity curve...</div></div>';
+            fetchEquityCurve(_equityRange);
+        } else {
+            // Chỉ update tabs (active state) mà không xóa chart
+            const tabsEl = el.querySelector('.pnl-stats-tabs');
+            if (tabsEl) tabsEl.outerHTML = html.match(/<div class="pnl-stats-tabs">[\s\S]*?<\/div>/)?.[0] || tabsEl.outerHTML;
+        }
         return;
     }
 
