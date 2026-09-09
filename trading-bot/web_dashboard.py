@@ -2277,7 +2277,7 @@ function renderEquityCurve() {
     });
     rangeHtml += '</div>';
 
-    if (!points || points.length < 2) {
+    if (!points || points.length < 1) {
         wrap.innerHTML = rangeHtml + '<div style="color:#8b949e;font-size:13px;padding:20px 0;text-align:center">📭 Chưa có đủ dữ liệu</div>';
         return;
     }
@@ -6111,6 +6111,15 @@ def api_equity_curve():
     # Build equity curve: cộng dần PnL
     points = []
     running = start_balance
+
+    # Luôn thêm điểm bắt đầu
+    first_time = closed[0].get("time", now.strftime("%Y-%m-%d %H:%M:%S"))
+    points.append({
+        "time":    first_time,
+        "balance": round(start_balance, 2),
+        "pnl":     0, "symbol": "", "side": "", "pnl_pct": 0,
+    })
+
     for t in closed:
         running += t.get("pnl_usdt", 0)
         points.append({
@@ -6122,15 +6131,12 @@ def api_equity_curve():
             "pnl_pct": round(t.get("pnl_pct", 0), 2),
         })
 
-    # Thêm điểm hiện tại (balance thực)
+    # Thêm điểm hiện tại (balance thực) nếu khác
     if current_balance > 0 and abs(current_balance - running) > 0.01:
         points.append({
             "time":    now.strftime("%Y-%m-%d %H:%M:%S"),
             "balance": round(current_balance, 2),
-            "pnl":     0,
-            "symbol":  "",
-            "side":    "",
-            "pnl_pct": 0,
+            "pnl":     0, "symbol": "", "side": "", "pnl_pct": 0,
         })
 
     end_balance   = points[-1]["balance"] if points else current_balance
