@@ -324,10 +324,10 @@ class PumpDetector:
         if pump_pct < self.cfg["PUMP_PRICE_RISE_PCT"]:
             return None
 
-        # Giá phải còn trong 20% của đỉnh pump
-        # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang pump
-        current_price = df_1m["close"].iloc[-1]   # define sớm, dùng cho check bên dưới
-        if pump_high > 0 and current_price < pump_high * 0.80:
+        # Giá phải còn trong 10% của đỉnh pump
+        # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang ở đỉnh
+        current_price = df_1m["close"].iloc[-1]
+        if pump_high > 0 and current_price < pump_high * 0.90:
             return None
 
         logger.info(f"[PumpDetector] {symbol}: pump +{pump_pct:.1f}% | checking top...")
@@ -390,25 +390,13 @@ class PumpDetector:
         tp1_price = final_entry - (final_entry - pump_low) * 0.618
         tp2_price = final_entry - (final_entry - pump_low) * 0.786
 
-        # Validate RR tối thiểu 1.5
+        # Validate RR tối thiểu 1.5 — nếu không đủ thì không vào
         risk   = abs(sl_price - final_entry)
         reward = abs(final_entry - tp1_price)
         rr     = reward / risk if risk > 0 else 0
-
-        # Fix: Nếu RR < 1.5 do pump_low không đúng (coin đang đi ngang sau pump)
-        # → dùng TP fallback = entry - risk * 1.5 (đảm bảo RR luôn đủ)
         if rr < 1.5:
-            tp1_fallback = final_entry - risk * 1.5
-            reward_fb    = abs(final_entry - tp1_fallback)
-            rr_fb        = reward_fb / risk if risk > 0 else 0
-            if rr_fb >= 1.5:
-                logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5 → dùng TP fallback ATR×1.5, RR={rr_fb:.1f}")
-                tp1_price = tp1_fallback
-                tp2_price = final_entry - risk * 2.0
-                rr        = rr_fb
-            else:
-                logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
-                return None
+            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
+            return None
 
         is_top = (
             score >= self.cfg["PUMP_TOP_MIN_SCORE"]
