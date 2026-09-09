@@ -1239,7 +1239,7 @@ def price_updater(exchange):
 
                 # ── Detect positions closed externally (app/web Binance) ──
                 prev_positions = {p["symbol"] for p in state.get("open_positions", [])
-                                  if abs(float(p.get("positionAmt", 0))) > 0}
+                                  if p.get("symbol")}  # dùng symbol thay vì positionAmt vì state dùng key "entry"/"side"
                 curr_positions = {p["symbol"] for p in open_pos}
                 closed_externally = prev_positions - curr_positions
 
