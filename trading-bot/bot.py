@@ -5309,7 +5309,14 @@ def profit_protection_monitor(exchange, notifier):
                 if ps["tier"] >= 2 and profit_pct >= trail_trigger:
                     if ps["trailing_ts"] == 0.0:
                         ps["trailing_ts"] = now
-                        ps["peak_price"]  = mark
+                        # Fix 1: KHÔNG reset peak_price — giữ giá trị đã init từ klines
+                        # Chỉ update peak nếu mark tốt hơn peak hiện tại
+                        if is_long:
+                            if mark > ps["peak_price"]:
+                                ps["peak_price"] = mark
+                        else:
+                            if mark < ps["peak_price"] or ps["peak_price"] == 0:
+                                ps["peak_price"] = mark
                         logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {trail_trigger}% → trailing timer")
                     elif now - ps["trailing_ts"] >= trail_timer:
                         peak = ps["peak_price"]
@@ -5338,10 +5345,23 @@ def profit_protection_monitor(exchange, notifier):
                             active_dist  = trail_dist
                             target_tier  = 3
 
+                        # Fix 3: active_dist luôn dùng dist của tier CAO NHẤT đã đạt
+                        # Tránh tình trạng tier giữ T4 nhưng dist dùng T3 khi tp_progress giảm
+                        reached_tier = max(ps["tier"], target_tier)
+                        if reached_tier >= 5:
+                            active_dist = tier5_dist
+                        elif reached_tier >= 4:
+                            active_dist = tier4_dist
+                        # T3 giữ nguyên trail_dist
+
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
                             if new_trail_sl > ps["current_sl"]:
-                                min_change = ps["current_sl"] * 0.0005
+                                # Fix 2: tránh min_change = 0 khi current_sl = 0
+                                if ps["current_sl"] > 0:
+                                    min_change = ps["current_sl"] * 0.0005
+                                else:
+                                    min_change = 0.0
                                 if new_trail_sl - ps["current_sl"] >= min_change:
                                     if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                         prev_tier = ps["tier"]
@@ -5359,21 +5379,24 @@ def profit_protection_monitor(exchange, notifier):
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                min_change = ps["current_sl"] * 0.0005
-                                if ps["current_sl"] == 0 or ps["current_sl"] - new_trail_sl >= min_change:
-                                    if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
-                                        prev_tier = ps["tier"]
-                                        ps["tier"] = max(ps["tier"], target_tier)
-                                        if ps["tier"] > prev_tier:
-                                            logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} "
-                                                        f"peak={peak:.6f} sl={new_trail_sl:.6f} "
-                                                        f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
-                                        else:
-                                            logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE "
-                                                        f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
-                                        ps["current_sl"]  = new_trail_sl
-                                        ps["trailing_sl"] = new_trail_sl
-                                        ps["sl_last_update_ts"] = now
+                                # Fix 2: tránh min_change = 0 khi current_sl = 0
+                                if ps["current_sl"] > 0:
+                                    min_change = ps["current_sl"] * 0.0005
+                                    if ps["current_sl"] - new_trail_sl < min_change:
+                                        continue  # thay vì check lại ở dưới
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                    prev_tier = ps["tier"]
+                                    ps["tier"] = max(ps["tier"], target_tier)
+                                    if ps["tier"] > prev_tier:
+                                        logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} "
+                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f} "
+                                                    f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
+                                    else:
+                                        logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE "
+                                                    f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                    ps["current_sl"]  = new_trail_sl
+                                    ps["trailing_sl"] = new_trail_sl
+                                    ps["sl_last_update_ts"] = now
 
         except Exception as e:
             logger.error(f"[PP] ========== LOOP EXCEPTION ========== {e}", exc_info=True)
