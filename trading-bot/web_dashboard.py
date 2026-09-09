@@ -2109,14 +2109,23 @@ function renderPnlStats() {
 
     let html = `
     <div class="pnl-stats-tabs">
+        <div class="pnl-tab ${_pnlTab==='equity'?'active':''}" onclick="setPnlTab('equity')">📈 Equity</div>
         <div class="pnl-tab ${_pnlTab==='daily'?'active':''}" onclick="setPnlTab('daily')">Theo Ngày</div>
         <div class="pnl-tab ${_pnlTab==='weekly'?'active':''}" onclick="setPnlTab('weekly')">Theo Tuần</div>
         <div class="pnl-tab ${_pnlTab==='monthly'?'active':''}" onclick="setPnlTab('monthly')">Theo Tháng</div>
         <div class="pnl-tab ${_pnlTab==='by_coin'?'active':''}" onclick="setPnlTab('by_coin')">Theo Coin</div>
         <div style="flex:1"></div>
         <button onclick="clearTradeHistory()" style="padding:5px 14px;border-radius:6px;border:1px solid #f85149;background:transparent;color:#f85149;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s;" onmouseover="this.style.background='#f85149';this.style.color='#fff'" onmouseout="this.style.background='transparent';this.style.color='#f85149'">🗑 Clear Data</button>
-    </div>
-    <div class="pnl-summary-row">
+    </div>`;
+
+    // ── EQUITY CURVE TAB ─────────────────────────────────────
+    if (_pnlTab === 'equity') {
+        el.innerHTML = html + '<div id="equity-curve-wrap"><div style="color:#8b949e;font-size:13px;padding:12px 0">Đang tải equity curve...</div></div>';
+        fetchEquityCurve(_equityRange);
+        return;
+    }
+
+    html += `<div class="pnl-summary-row">
         <div class="pnl-summary-card">
             <div class="lbl">Tổng PnL</div>
             <div class="val" style="color:${pnlColor(totalPnl)}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</div>
@@ -2200,8 +2209,13 @@ function togglePnlExpand() {
 
 function setPnlTab(tab) {
     _pnlTab = tab;
-    _pnlExpanded = false;   // đổi tab thì thu gọn lại
-    renderPnlStats();
+    _pnlExpanded = false;
+    if (tab === 'equity') {
+        fetchEquityCurve(_equityRange);
+        renderPnlStats();  // render tabs + placeholder
+    } else {
+        renderPnlStats();
+    }
 }
 
 async function clearTradeHistory() {
@@ -2217,8 +2231,189 @@ async function clearTradeHistory() {
     } catch(e) { alert('Lỗi: ' + e); }
 }
 
+// ── EQUITY CURVE ─────────────────────────────────────────────
+let _equityRange = '30d';
+let _equityData  = null;
+
+async function fetchEquityCurve(range) {
+    _equityRange = range || _equityRange;
+    try {
+        const r = await fetch('/api/equity_curve?range=' + _equityRange);
+        _equityData = await r.json();
+        renderEquityCurve();
+    } catch(e) {
+        const w = document.getElementById('equity-curve-wrap');
+        if (w) w.innerHTML = '<div style="color:#f85149;font-size:12px">Lỗi tải equity curve</div>';
+    }
+}
+
+function renderEquityCurve() {
+    const wrap = document.getElementById('equity-curve-wrap');
+    if (!wrap || !_equityData) return;
+    const { points, start_balance, end_balance, change_usd, change_pct } = _equityData;
+
+    const isUp    = change_usd >= 0;
+    const clrLine = isUp ? '#3fb950' : '#f85149';
+    const clrText = isUp ? '#3fb950' : '#f85149';
+    const sign    = change_usd >= 0 ? '+' : '';
+    const fmtMoney = v => v >= 1000 ? '$' + v.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : '$' + v.toFixed(2);
+
+    // Range selector
+    let rangeHtml = '<div style="display:flex;gap:6px;margin-bottom:12px">';
+    ['7d','30d','90d','all'].forEach(r => {
+        const active = r === _equityRange;
+        const label  = r === 'all' ? 'Tất cả' : r === '7d' ? '7 ngày' : r === '30d' ? '30 ngày' : '90 ngày';
+        rangeHtml += `<div onclick="fetchEquityCurve('${r}')"
+            style="padding:4px 14px;border-radius:6px;border:1px solid ${active?'#3fb950':'#30363d'};
+                   background:${active?'rgba(63,185,80,0.12)':'transparent'};
+                   color:${active?'#3fb950':'#8b949e'};cursor:pointer;font-size:12px;font-weight:${active?600:400};transition:all .2s">${label}</div>`;
+    });
+    rangeHtml += '</div>';
+
+    if (!points || points.length < 2) {
+        wrap.innerHTML = rangeHtml + '<div style="color:#8b949e;font-size:13px;padding:20px 0;text-align:center">📭 Chưa có đủ dữ liệu</div>';
+        return;
+    }
+
+    const firstTime = points[0].time.substring(0, 10);
+    const lastTime  = points[points.length-1].time.substring(0, 10);
+    const fmt10 = s => s.substring(5).replace('-','/');
+
+    // Header
+    const headerHtml = `<div style="margin-bottom:12px">
+        <div style="font-size:30px;font-weight:700;color:${clrText};line-height:1.1">${sign}${fmtMoney(change_usd)}</div>
+        <div style="font-size:15px;color:${clrText};font-weight:600;margin-top:2px">${sign}${change_pct.toFixed(2)}%</div>
+    </div>`;
+
+    // SVG
+    const W = 500, H = 160, PT = 16, PB = 28, PL = 8, PR = 48;
+    const cW = W - PL - PR, cH = H - PT - PB;
+    const vals = points.map(p => p.balance);
+    const minV = Math.min(...vals), maxV = Math.max(...vals);
+    const rng  = maxV - minV || 1;
+    const xs   = points.map((_, i) => PL + (i / (points.length - 1)) * cW);
+    const ys   = vals.map(v => PT + cH - ((v - minV) / rng) * cH);
+
+    function bpath(xa, ya) {
+        let d = 'M ' + xa[0].toFixed(1) + ' ' + ya[0].toFixed(1);
+        for (let i = 1; i < xa.length; i++) {
+            const cx = (xa[i-1] + xa[i]) / 2;
+            d += ' C ' + cx.toFixed(1)+' '+ya[i-1].toFixed(1)+', '+cx.toFixed(1)+' '+ya[i].toFixed(1)+', '+xa[i].toFixed(1)+' '+ya[i].toFixed(1);
+        }
+        return d;
+    }
+
+    const linePath = bpath(xs, ys);
+    const fillPath = linePath + ' L ' + xs[xs.length-1].toFixed(1) + ' ' + (PT+cH) + ' L ' + xs[0].toFixed(1) + ' ' + (PT+cH) + ' Z';
+
+    let grid = '';
+    for (let i = 0; i <= 2; i++) {
+        const gy  = PT + (i / 2) * cH;
+        const gv  = maxV - (i / 2) * rng;
+        const gLbl = gv >= 1000 ? '$'+(gv/1000).toFixed(1)+'k' : '$'+gv.toFixed(0);
+        grid += `<line x1="${PL}" y1="${gy.toFixed(1)}" x2="${W-PR}" y2="${gy.toFixed(1)}" stroke="#21262d" stroke-width="1" stroke-dasharray="3,3"/>
+                 <text x="${W-PR+4}" y="${(gy+4).toFixed(1)}" fill="#484f58" font-size="9">${gLbl}</text>`;
+    }
+
+    const xLbl = `<text x="${xs[0].toFixed(1)}" y="${(PT+cH+14).toFixed(1)}" fill="#484f58" font-size="9" text-anchor="middle">${fmt10(firstTime)}</text>
+                  <text x="${xs[xs.length-1].toFixed(1)}" y="${(PT+cH+14).toFixed(1)}" fill="#484f58" font-size="9" text-anchor="middle">${fmt10(lastTime)}</text>`;
+
+    const uid = 'ec' + Date.now();
+    const ptData = JSON.stringify(points.map((p,i) => ({x:xs[i],y:ys[i],balance:p.balance,pnl:p.pnl,pnl_pct:p.pnl_pct,symbol:p.symbol,side:p.side,time:p.time})));
+
+    const svgHtml = `
+    <div style="position:relative" id="${uid}wrap">
+    <svg id="${uid}" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;cursor:crosshair"
+         onmousemove="eqMM(event,'${uid}')" onmouseleave="eqML('${uid}')">
+      <defs>
+        <linearGradient id="${uid}g" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${clrLine}" stop-opacity="0.22"/>
+          <stop offset="100%" stop-color="${clrLine}" stop-opacity="0.01"/>
+        </linearGradient>
+      </defs>
+      ${grid}${xLbl}
+      <path d="${fillPath}" fill="url(#${uid}g)" stroke="none"/>
+      <path d="${linePath}" fill="none" stroke="${clrLine}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${xs[0].toFixed(1)}" cy="${ys[0].toFixed(1)}" r="5" fill="#0d1117" stroke="${clrLine}" stroke-width="2"/>
+      <circle cx="${xs[xs.length-1].toFixed(1)}" cy="${ys[ys.length-1].toFixed(1)}" r="5.5" fill="${clrLine}" stroke="${clrLine}" stroke-width="2"/>
+      <line id="${uid}x" x1="0" y1="${PT}" x2="0" y2="${PT+cH}" stroke="#484f58" stroke-width="1" stroke-dasharray="3,2" opacity="0"/>
+      <circle id="${uid}d" r="5" fill="#0d1117" stroke="${clrLine}" stroke-width="2" opacity="0"/>
+    </svg>
+    <div style="position:absolute;left:${PL}px;top:2px;font-size:10px;color:#8b949e;line-height:1.4;pointer-events:none">
+        <div>${fmt10(firstTime)}</div><div style="color:#c9d1d9;font-weight:600">${fmtMoney(start_balance)}</div>
+    </div>
+    <div style="position:absolute;right:${PR}px;top:2px;font-size:10px;color:#8b949e;text-align:right;line-height:1.4;pointer-events:none">
+        <div>${fmt10(lastTime)}</div><div style="color:${clrLine};font-weight:700">${fmtMoney(end_balance)}</div>
+    </div>
+    <div id="${uid}t" style="position:absolute;display:none;background:#1c2128;border:1px solid #30363d;border-radius:8px;padding:8px 12px;font-size:12px;pointer-events:none;min-width:148px;box-shadow:0 4px 16px rgba(0,0,0,.5)"></div>
+    </div>
+    <script>(function(){var d=${ptData};window.__eq=window.__eq||{};window.__eq['${uid}']={pts:d,clr:'${clrLine}',W:${W},H:${H},PT:${PT},PB:${PB},PL:${PL},PR:${PR}};})();<\/script>`;
+
+    const statsHtml = `<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:70px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
+            <div style="font-size:10px;color:#8b949e">Số lệnh</div>
+            <div style="font-size:18px;font-weight:700;color:#c9d1d9">${points.length}</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
+            <div style="font-size:10px;color:#8b949e">Balance đầu</div>
+            <div style="font-size:13px;font-weight:700;color:#c9d1d9">${fmtMoney(start_balance)}</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
+            <div style="font-size:10px;color:#8b949e">Hiện tại</div>
+            <div style="font-size:13px;font-weight:700;color:${clrLine}">${fmtMoney(end_balance)}</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
+            <div style="font-size:10px;color:#8b949e">Lợi nhuận</div>
+            <div style="font-size:13px;font-weight:700;color:${clrText}">${sign}${fmtMoney(change_usd)}</div>
+        </div>
+    </div>`;
+
+    wrap.innerHTML = rangeHtml + headerHtml + svgHtml + statsHtml;
+}
+
+function eqMM(e, uid) {
+    const info = window.__eq && window.__eq[uid];
+    if (!info) return;
+    const svg  = document.getElementById(uid);
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const mx   = (e.clientX - rect.left) * (info.W / rect.width);
+    let closest = 0, minD = Infinity;
+    info.pts.forEach((p, i) => { const d = Math.abs(p.x - mx); if (d < minD) { minD = d; closest = i; } });
+    const pt = info.pts[closest];
+    const xh = document.getElementById(uid + 'x');
+    const hd = document.getElementById(uid + 'd');
+    if (xh) { xh.setAttribute('x1', pt.x); xh.setAttribute('x2', pt.x); xh.setAttribute('opacity', '1'); }
+    if (hd) { hd.setAttribute('cx', pt.x); hd.setAttribute('cy', pt.y); hd.setAttribute('opacity', '1'); }
+    const tip = document.getElementById(uid + 't');
+    if (!tip) return;
+    const fm  = v => v >= 1000 ? '$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '$'+v.toFixed(2);
+    const pc  = pt.pnl >= 0 ? '#3fb950' : '#f85149';
+    const sg  = pt.pnl >= 0 ? '+' : '';
+    let inner = `<div style="color:#8b949e;font-size:10px;margin-bottom:4px">${pt.time.substring(0,16)}</div>
+        <div style="font-size:15px;font-weight:700;color:#c9d1d9;margin-bottom:4px">${fm(pt.balance)}</div>`;
+    if (pt.symbol) inner += `<div style="font-size:11px;color:${pc}">${sg}${fm(pt.pnl)} (${sg}${pt.pnl_pct.toFixed(2)}%)</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:2px">${pt.symbol} ${pt.side}</div>`;
+    tip.innerHTML = inner;
+    const wEl = document.getElementById(uid + 'wrap');
+    const wR  = wEl ? wEl.getBoundingClientRect() : rect;
+    let tl = e.clientX - wR.left + 14;
+    if (tl + 160 > wR.width) tl = e.clientX - wR.left - 162;
+    tip.style.left = tl + 'px';
+    tip.style.top  = (e.clientY - wR.top - 20) + 'px';
+    tip.style.display = 'block';
+}
+
+function eqML(uid) {
+    const xh = document.getElementById(uid + 'x');
+    const hd = document.getElementById(uid + 'd');
+    const tip = document.getElementById(uid + 't');
+    if (xh) xh.setAttribute('opacity','0');
+    if (hd) hd.setAttribute('opacity','0');
+    if (tip) tip.style.display = 'none';
+}
+
 // ── TIN TỨC THỊ TRƯỜNG ──────────────────────────────────────
-let _newsData = null;
 let _newsFilter = 'all';
 let _newsLimit = 12;
 
@@ -3134,7 +3329,6 @@ fetchPump();
 // PnL stats refresh mỗi 30s (không cần nhanh)
 setInterval(fetchPnlStats, 30000);
 fetchPnlStats();
-
 // Tin tức: 5 phút/lần — khớp TTL cache server, không thêm tải cho web.
 // Riêng nhãn thời gian ("5p trước") tự cập nhật mỗi 60s mà không gọi API.
 setInterval(() => fetchNews(false), 300000);
@@ -5863,6 +6057,86 @@ def api_pnl_stats():
                         "trades": v["trades"], "wins": v["wins"]})
 
     return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly, "by_coin": by_coin})
+
+
+@app.route("/api/equity_curve", methods=["GET"])
+def api_equity_curve():
+    """
+    Trả về equity curve: balance tích lũy theo từng lệnh đã đóng.
+    Query param: range = 7d | 30d | 90d | all (default: 30d)
+    Response: { points: [{time, balance, pnl, symbol, side}], start_balance, end_balance, change_pct, change_usd }
+    """
+    from datetime import datetime, timedelta
+
+    range_param = request.args.get("range", "30d")
+
+    with _lock:
+        tlog = list(_state.get("trade_log", []))
+        current_balance = float(_state.get("balance", 0))
+
+    closed = sorted(
+        [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001],
+        key=lambda t: t.get("time", "")
+    )
+
+    # Filter theo range
+    now = datetime.now()
+    if range_param == "7d":
+        cutoff = now - timedelta(days=7)
+    elif range_param == "30d":
+        cutoff = now - timedelta(days=30)
+    elif range_param == "90d":
+        cutoff = now - timedelta(days=90)
+    else:
+        cutoff = None
+
+    if cutoff:
+        closed = [t for t in closed if t.get("time", "") >= cutoff.strftime("%Y-%m-%d %H:%M:%S")]
+
+    if not closed:
+        return jsonify({"points": [], "start_balance": current_balance,
+                        "end_balance": current_balance, "change_pct": 0, "change_usd": 0})
+
+    # Tính balance ngược từ hiện tại: balance hiện tại - tổng PnL từ range = start balance
+    total_pnl_in_range = sum(t.get("pnl_usdt", 0) for t in closed)
+    start_balance = current_balance - total_pnl_in_range
+
+    # Build equity curve: cộng dần PnL
+    points = []
+    running = start_balance
+    for t in closed:
+        running += t.get("pnl_usdt", 0)
+        points.append({
+            "time":    t.get("time", ""),
+            "balance": round(running, 2),
+            "pnl":     round(t.get("pnl_usdt", 0), 2),
+            "symbol":  t.get("symbol", "").replace("USDT", ""),
+            "side":    t.get("side", ""),
+            "pnl_pct": round(t.get("pnl_pct", 0), 2),
+        })
+
+    # Thêm điểm hiện tại (balance thực)
+    if current_balance > 0 and abs(current_balance - running) > 0.01:
+        points.append({
+            "time":    now.strftime("%Y-%m-%d %H:%M:%S"),
+            "balance": round(current_balance, 2),
+            "pnl":     0,
+            "symbol":  "",
+            "side":    "",
+            "pnl_pct": 0,
+        })
+
+    end_balance   = points[-1]["balance"] if points else current_balance
+    change_usd    = round(end_balance - start_balance, 2)
+    change_pct    = round(change_usd / start_balance * 100, 2) if start_balance > 0 else 0
+
+    return jsonify({
+        "points":          points,
+        "start_balance":   round(start_balance, 2),
+        "end_balance":     round(end_balance, 2),
+        "change_usd":      change_usd,
+        "change_pct":      change_pct,
+    })
 
 
 @app.route("/api/clear_trade_history", methods=["POST"])
