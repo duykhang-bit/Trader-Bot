@@ -5210,9 +5210,14 @@ def profit_protection_monitor(exchange, notifier):
                         "peak_price":    mark,
                         "trailing_sl":   0.0,
                         "notified":      False,
-                        "tp":            0.0,   # sẽ được fill từ open orders
-                        "sl_last_update_ts": 0.0,  # throttle SL update
+                        "tp":            0.0,
+                        "sl_last_update_ts": 0.0,
                     }
+                    # Nếu đã lời hơn trigger → skip timer, xử lý ngay vòng sau
+                    if profit_pct >= pp_trigger:
+                        _pp_state[sym]["protection_ts"] = now - pp_timer - 1  # timer đã hết
+                    if profit_pct >= trail_trigger:
+                        _pp_state[sym]["trailing_ts"] = now - trail_timer - 1  # timer đã hết
                     # Lấy TP từ Binance open orders
                     try:
                         orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
