@@ -1944,6 +1944,8 @@ def position_reversal_monitor(exchange, notifier):
                                     "pnl_pct":  round(pnl_pct, 2),
                                 })
                                 break
+                        from trade_history import save_history
+                        save_history(state["trade_log"])
                         # Reset price tracker
                         _min_price.pop(symbol, None)
                         _max_price.pop(symbol, None)
@@ -2123,6 +2125,8 @@ def scan_position_protector(exchange, notifier):
                                             "pnl_pct":  round(pnl_pct, 2),
                                         })
                                         break
+                                from trade_history import save_history
+                                save_history(state["trade_log"])
                                 _max_price.pop(symbol, None)
                                 _min_price.pop(symbol, None)
 
@@ -2212,6 +2216,8 @@ def scan_position_protector(exchange, notifier):
                                     "pnl_pct":  round(pnl_pct, 2),
                                 })
                                 break
+                        from trade_history import save_history
+                        save_history(state["trade_log"])
                         _max_price.pop(symbol, None)
                         _min_price.pop(symbol, None)
 
@@ -2350,8 +2356,8 @@ def auto_profit_lock(exchange, notifier):
                                     "pnl_pct":  round(pnl_pct, 2),
                                 })
                                 break
-
-                    icon = "✅" if pnl >= 0 else "⚠️"
+                        from trade_history import save_history
+                        save_history(state["trade_log"])
                     notifier.telegram.send(
                         f"🔒 <b>PROFIT LOCK — Chốt lời</b>\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
@@ -4330,6 +4336,8 @@ def pump_scan_engine(exchange, notifier):
                                             "pnl_pct": round((entry - close_price) / entry * 100, 2),
                                         })
                                         break
+                                from trade_history import save_history
+                                save_history(state["trade_log"])
                                 # Xóa khỏi pump_trade_symbols sau khi đã đóng
                                 state.get("pump_trade_symbols", set()).discard(symbol)
                                 # Reset cooldown để có thể SHORT lại ngay nếu pump tiếp
