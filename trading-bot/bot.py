@@ -5065,8 +5065,8 @@ def profit_protection_monitor(exchange, notifier):
     # }}
     _pp_state: dict = {}
 
-    logger.info("[PP] sleeping 20s for bot warmup...")
-    time.sleep(20)
+    logger.info("[PP] sleeping 3s for bot warmup...")
+    time.sleep(3)
     logger.info("[PP] warmup complete, initializing state")
     
     try:
@@ -5145,13 +5145,13 @@ def profit_protection_monitor(exchange, notifier):
 
             for pos in open_pos:
                 sym    = pos["symbol"]
-                amt    = float(pos.get("positionAmt", 0))
-                entry  = float(pos.get("entryPrice", 0))
-                if entry <= 0 or amt == 0:
+                amt    = float(pos.get("positionAmt", 0) or (1 if pos.get("side") == "LONG" else -1))
+                entry  = float(pos.get("entryPrice", 0) or pos.get("entry", 0))
+                if entry <= 0:
                     continue
 
-                is_long = amt > 0
-                side    = "LONG" if is_long else "SHORT"
+                is_long = amt > 0 if pos.get("positionAmt") is not None else pos.get("side") == "LONG"
+                side    = pos.get("side") or ("LONG" if is_long else "SHORT")
                 is_pump = sym in pump_syms
 
                 # Check apply
