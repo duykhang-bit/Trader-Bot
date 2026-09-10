@@ -6137,7 +6137,51 @@ if __name__ == "__main__":
     with lock:
         state["trade_log"] = saved_history
 
-    # [DISABLED] Sync trade history từ Binance API — đã tắt để clear lịch sử cũ
+    # Startup sync: check lệnh OPEN trong file vs positions thực tế trên Binance
+    # Lệnh nào đã đóng (không còn trên Binance) → update CLOSED + lấy PnL
+    try:
+        real_positions = exchange._get("/fapi/v2/positionRisk", signed=True)
+        real_syms = {p["symbol"] for p in real_positions if abs(float(p.get("positionAmt", 0))) > 0}
+        needs_save = False
+        with lock:
+            for t in state["trade_log"]:
+                if t.get("status") != "OPEN":
+                    continue
+                sym = t.get("symbol", "")
+                if sym not in real_syms:
+                    # Lệnh đã đóng trên Binance — lấy PnL thật
+                    pnl_usd = 0.0
+                    try:
+                        entry = t.get("entry", 0)
+                        qty   = t.get("qty", 0)
+                        open_time_str = t.get("time", "")
+                        from datetime import datetime as _dtp
+                        open_ms = int(_dtp.strptime(open_time_str, "%Y-%m-%d %H:%M:%S").timestamp() * 1000) if open_time_str else 0
+                        start_ms = open_ms if open_ms > 0 else int(time.time() * 1000) - 86_400_000
+                        realized = exchange.get_realized_pnl(sym, start_ms)
+                        if realized != 0:
+                            pnl_usd = realized
+                        elif entry > 0 and qty > 0:
+                            # Fallback: lấy giá đóng từ Binance trades
+                            try:
+                                trades = exchange._get("/fapi/v1/userTrades", {"symbol": sym, "startTime": start_ms, "limit": 50}, signed=True)
+                                if trades:
+                                    close_price = float(trades[-1].get("price", entry))
+                                    side = t.get("side", "LONG")
+                                    pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
+                            except Exception:
+                                pass
+                    except Exception as _e:
+                        logger.debug(f"[Startup] get_pnl {sym}: {_e}")
+
+                    t.update({"status": "CLOSED", "pnl_usdt": round(pnl_usd, 2), "note": "closed_startup_sync"})
+                    logger.info(f"[Startup] Sync closed: {sym} pnl=${pnl_usd:+.2f}")
+                    needs_save = True
+        if needs_save:
+            save_history(state["trade_log"])
+            logger.info("[Startup] Saved synced trade history")
+    except Exception as _se:
+        logger.warning(f"[Startup] Sync positions failed: {_se}")
     # Nếu muốn bật lại, uncomment block bên dưới
     """
     try:
