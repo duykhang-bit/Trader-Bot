@@ -1169,12 +1169,16 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
     # ── BTC Context Filter (chỉ block khi STRONG 3TF đồng thuận) ────
     btc_block_long  = False
     btc_block_short = False
+    btc_adj_long    = 0.0
+    btc_adj_short   = 0.0
     if getattr(config, "BTC_FILTER_ENABLED", False):
         try:
             btc_ctx = get_btc_context(exchange, config)
             btc_block_long  = btc_ctx.get("block_long",  False)
             btc_block_short = btc_ctx.get("block_short", False)
-            logger.debug(f"[BTC] {btc_ctx.get('reason','')} block_long={btc_block_long} block_short={btc_block_short}")
+            btc_adj_long    = btc_ctx.get("score_adj_long",  0.0)
+            btc_adj_short   = btc_ctx.get("score_adj_short", 0.0)
+            logger.debug(f"[BTC] {btc_ctx.get('reason','')} block_long={btc_block_long} block_short={btc_block_short} adj_long={btc_adj_long:+.0f} adj_short={btc_adj_short:+.0f}")
         except Exception as _e:
             logger.debug(f"[BTC] context error: {_e}")
 
@@ -1482,6 +1486,14 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
             _pending_watch.pop(symbol, None)
             wr_bonus    = 10 if win_rate >= 80 else (5 if win_rate >= 70 else 0)
             final_score = min(final_score + wr_bonus, 100)
+
+            # BTC score adjustment — cộng/trừ theo context BTC (chỉ cho ALT)
+            if symbol not in ("BTCUSDT", "ETHUSDT") and getattr(config, "BTC_FILTER_ENABLED", False):
+                btc_adj = btc_adj_long if bias == "LONG" else btc_adj_short
+                if btc_adj != 0:
+                    old_score = final_score
+                    final_score = max(0, min(final_score + btc_adj, 100))
+                    logger.debug(f"  [BTC] {symbol} score {old_score:.0f} → {final_score:.0f} (adj={btc_adj:+.0f})")
             mtf_tag = "MTF✅" if strength == "STRONG" else "MTF⚡"
 
             final = CoinScore(
