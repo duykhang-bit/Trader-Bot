@@ -203,7 +203,9 @@ NEWS_SOURCES = [
     # Nguồn macro kinh tế — không cần API key
     ("ForexLive",      "https://www.forexlive.com/feed/news"),
     ("Reuters Mkts",   "https://feeds.reuters.com/reuters/businessNews"),
-    ("Investing.com",  "https://www.investing.com/rss/news.rss"),
+    ("MarketWatch",    "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines"),
+    ("CNBC Markets",   "https://www.cnbc.com/id/100727362/device/rss/rss.html"),
+    ("BBC Business",   "https://feeds.bbci.co.uk/news/business/rss.xml"),
 ]
 
 # Từ khoá gắn nhãn. Ưu tiên theo thứ tự trong list (khớp trước thắng).
