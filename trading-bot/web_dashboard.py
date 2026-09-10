@@ -200,12 +200,12 @@ NEWS_SOURCES = [
     ("Cointelegraph",  "https://cointelegraph.com/rss"),
     ("Decrypt",        "https://decrypt.co/feed"),
     ("NewsBTC",        "https://www.newsbtc.com/feed/"),
-    # Nguồn macro kinh tế — không cần API key
+    # Nguồn macro kinh tế — free, link vào được
     ("ForexLive",      "https://www.forexlive.com/feed/news"),
     ("Reuters Mkts",   "https://feeds.reuters.com/reuters/businessNews"),
+    ("Yahoo Finance",  "https://finance.yahoo.com/news/rssindex"),
     ("MarketWatch",    "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines"),
     ("CNBC Markets",   "https://www.cnbc.com/id/100727362/device/rss/rss.html"),
-    ("BBC Business",   "https://feeds.bbci.co.uk/news/business/rss.xml"),
 ]
 
 # Từ khoá gắn nhãn. Ưu tiên theo thứ tự trong list (khớp trước thắng).
