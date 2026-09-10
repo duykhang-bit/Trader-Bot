@@ -322,12 +322,15 @@ class PumpDetector:
                 pump_pct = round((pump_high - pump_low) / pump_low * 100, 2)
 
         if pump_pct < self.cfg["PUMP_PRICE_RISE_PCT"]:
+            logger.debug(f"[PumpDetector] {symbol}: pump {pump_pct:.1f}% < {self.cfg['PUMP_PRICE_RISE_PCT']:.0f}% → skip")
             return None
 
         # Giá phải còn trong 10% của đỉnh pump
         # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang ở đỉnh
         current_price = df_1m["close"].iloc[-1]
         if pump_high > 0 and current_price < pump_high * 0.90:
+            drop_pct = (pump_high - current_price) / pump_high * 100
+            logger.info(f"[PumpDetector] {symbol}: pump {pump_pct:.1f}% but dropped {drop_pct:.1f}% from top (${current_price:.6g} < ${pump_high:.6g}×0.90) → skip")
             return None
 
         logger.info(f"[PumpDetector] {symbol}: pump +{pump_pct:.1f}% | checking top...")
@@ -395,7 +398,7 @@ class PumpDetector:
         reward = abs(final_entry - tp1_price)
         rr     = reward / risk if risk > 0 else 0
         if rr < 1.5:
-            logger.info(f"[PumpDetector] {symbol}: RR={rr:.1f} < 1.5, skip")
+            logger.info(f"[PumpDetector] {symbol}: RR={rr:.2f} < 1.5 (risk=${risk:.4g} reward=${reward:.4g}) → skip")
             return None
 
         is_top = (
@@ -412,6 +415,16 @@ class PumpDetector:
                 f"entry={final_entry_type}@{final_entry:.6g} "
                 f"SL={sl_price:.6g} (+{sl_buffer_pct:.1f}%) RR=1:{rr:.1f} | {signals}"
             )
+        else:
+            # Log lý do KHÔNG xác nhận để debug
+            reasons = []
+            if score < self.cfg["PUMP_TOP_MIN_SCORE"]:
+                reasons.append(f"score={score}<{self.cfg['PUMP_TOP_MIN_SCORE']}")
+            if rsi < 72:
+                reasons.append(f"RSI={rsi:.0f}<72")
+            if not (use_limit_top or use_market):
+                reasons.append(f"no_entry_signal")
+            logger.info(f"[PumpDetector] {symbol}: NOT confirmed ({', '.join(reasons)}) | {signals}")
 
         return PumpSignal(
             symbol       = symbol,
