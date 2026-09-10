@@ -1125,18 +1125,21 @@ def price_ws_streamer():
                 # Chỉ forward tick cho monitor, không chạy indicators ở đây
                 _scan_monitor.on_price_tick(sym, mark)
 
-                # ── PUMP SPIKE CHECK — coin trong pump_watch_coins VÀ pump_nhe_coins ──
-                with lock:
-                    pump_watch     = set(state.get("pump_watch_coins", []))
-                    pump_nhe_watch = set(state.get("pump_nhe_coins", []))
-                all_pump_coins = pump_watch | pump_nhe_watch
-                if sym in all_pump_coins:
-                    exc  = _ws_exchange_ref[0]
-                    noti = _ws_notifier_ref[0]
-                    if exc and noti:
-                        # 1. Spike detector — detect pump đang xảy ra
-                        _ws_pump_spike_check(sym, mark, exc, noti)
-                        # 2. Confirmed top detector — detect đỉnh đã xác nhận
+                # ── PUMP SPIKE CHECK — track TOÀN BỘ watchlist, không chỉ pump_watch ──
+                # Fix: trước chỉ check coin trong pump_watch_coins → miss pump ngoài list.
+                # Giờ check TẤT CẢ coin trong FIXED_COINS → bắt pump realtime < 1s.
+                exc  = _ws_exchange_ref[0]
+                noti = _ws_notifier_ref[0]
+                if exc and noti:
+                    # 1. Spike detector — detect pump đang xảy ra (< 1s)
+                    _ws_pump_spike_check(sym, mark, exc, noti)
+                    
+                    # 2. Confirmed top detector — chỉ chạy cho coin ĐANG PUMP (đã track)
+                    with lock:
+                        pump_watch     = set(state.get("pump_watch_coins", []))
+                        pump_nhe_watch = set(state.get("pump_nhe_coins", []))
+                    all_pump_coins = pump_watch | pump_nhe_watch
+                    if sym in all_pump_coins:
                         try:
                             from confirmed_top_detector import get_ctd
                             from orderbook_detector import get_ob_tracker

@@ -325,12 +325,12 @@ class PumpDetector:
             logger.debug(f"[PumpDetector] {symbol}: pump {pump_pct:.1f}% < {self.cfg['PUMP_PRICE_RISE_PCT']:.0f}% → skip")
             return None
 
-        # Giá phải còn trong 10% của đỉnh pump
-        # Nếu đã rớt xa khỏi đỉnh → đây là pump CŨ, không phải đang ở đỉnh
+        # Giá phải còn trong 20% của đỉnh pump (0.80)
+        # WS spike detector đã bắt realtime < 1s, klines scan là backup → nới rộng hơn
         current_price = df_1m["close"].iloc[-1]
-        if pump_high > 0 and current_price < pump_high * 0.90:
+        if pump_high > 0 and current_price < pump_high * 0.80:
             drop_pct = (pump_high - current_price) / pump_high * 100
-            logger.info(f"[PumpDetector] {symbol}: pump {pump_pct:.1f}% but dropped {drop_pct:.1f}% from top (${current_price:.6g} < ${pump_high:.6g}×0.90) → skip")
+            logger.info(f"[PumpDetector] {symbol}: pump {pump_pct:.1f}% but dropped {drop_pct:.1f}% from top (${current_price:.6g} < ${pump_high:.6g}×0.80) → skip")
             return None
 
         logger.info(f"[PumpDetector] {symbol}: pump +{pump_pct:.1f}% | checking top...")
