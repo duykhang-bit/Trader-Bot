@@ -200,6 +200,10 @@ NEWS_SOURCES = [
     ("Cointelegraph",  "https://cointelegraph.com/rss"),
     ("Decrypt",        "https://decrypt.co/feed"),
     ("NewsBTC",        "https://www.newsbtc.com/feed/"),
+    # Nguồn macro kinh tế — không cần API key
+    ("ForexLive",      "https://www.forexlive.com/feed/news"),
+    ("Reuters Mkts",   "https://feeds.reuters.com/reuters/businessNews"),
+    ("Investing.com",  "https://www.investing.com/rss/news.rss"),
 ]
 
 # Từ khoá gắn nhãn. Ưu tiên theo thứ tự trong list (khớp trước thắng).
@@ -228,6 +232,51 @@ NEWS_TAG_RULES = [
               "scam", "phishing", "vulnerability"]),
 ]
 
+# ── IMPACT SCORING ───────────────────────────────────────────
+# HIGH  = sự kiện di chuyển thị trường ngay lập tức (CPI, FOMC, NFP...)
+# MEDIUM = quan trọng nhưng không ngay lập tức
+# LOW   = mặc định
+_IMPACT_HIGH = [
+    "cpi", "consumer price index",
+    "fomc", "fed decision", "rate decision", "rate cut", "rate hike",
+    "nonfarm", "nfp", "jobs report", "unemployment rate",
+    "pce", "core pce",
+    "gdp", "gross domestic product",
+    "ppi", "producer price",
+    "powell speech", "fed chair", "jerome powell",
+    "ecb decision", "boj decision", "bank of england",
+    "emergency", "flash crash", "black swan",
+    "liquidat", "wipeout", "capitulat",
+    "hack", "exploit", "stolen", "drained",
+    "rug pull", "scam alert",
+    "sec charges", "sec sues", "sec approves",
+    "etf approved", "spot etf",
+]
+
+_IMPACT_MEDIUM = [
+    "inflation", "interest rate", "monetary policy", "stimulus",
+    "treasury yield", "dollar index", "dxy", "tariff",
+    "retail sales", "ism ", "pmi ", "consumer confidence",
+    "earnings", "revenue", "profit", "quarterly",
+    "regulation", "congress", "legislation", "senate bill",
+    "whale", "large transfer", "exchange outflow", "exchange inflow",
+    "all-time high", "ath", "breakout", "record high",
+    "etf", "grayscale", "blackrock", "fidelity",
+]
+
+
+def _news_impact(title: str, summary: str = "") -> str:
+    """Tính mức impact: HIGH / MEDIUM / LOW dựa trên từ khoá."""
+    blob = (title + " " + summary).lower()
+    for kw in _IMPACT_HIGH:
+        if kw in blob:
+            return "HIGH"
+    for kw in _IMPACT_MEDIUM:
+        if kw in blob:
+            return "MEDIUM"
+    return "LOW"
+
+
 # Coin phổ biến — để lọc theo coin
 NEWS_COIN_WORDS = {
     "BTC": ["bitcoin", "btc"],
@@ -241,7 +290,7 @@ NEWS_COIN_WORDS = {
 _news_cache = {"items": [], "ts": 0, "errors": []}
 _news_lock = threading.Lock()
 _NEWS_TTL = 300          # 5 phút — tin tức không cần realtime
-_NEWS_MAX_ITEMS = 60
+_NEWS_MAX_ITEMS = 80     # tăng lên vì thêm nguồn macro
 
 
 def _news_parse_date(s):
@@ -308,9 +357,11 @@ def _news_fetch_one(name, url, out, errors):
                    or it.findtext("{http://www.w3.org/2005/Atom}updated") or "")
             ts = _news_parse_date(pub)
             tags, coins = _news_tag(title, desc)
+            impact = _news_impact(title, desc)
             out.append({
                 "title": title, "link": link, "source": name,
                 "summary": desc, "ts": ts, "tags": tags, "coins": coins,
+                "impact": impact,
             })
     except Exception as e:
         errors.append(f"{name}: {type(e).__name__}")
@@ -496,12 +547,47 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
              user-select:none; }
 .news-chip:hover { border-color:#58a6ff; color:#58a6ff; }
 .news-chip.active { background:#1f3a5a; border-color:#58a6ff; color:#58a6ff; }
+.news-chip.impact-chip { border-color:rgba(248,81,73,.5); color:#f85149; }
+.news-chip.impact-chip.active { background:rgba(248,81,73,.15); border-color:#f85149; color:#f85149; }
 .news-list { display:flex; flex-direction:column; gap:1px; }
 .news-item { display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border-radius:6px;
              border-left:2px solid #21262d; background:#0d1117; transition:background .15s; }
 .news-item:hover { background:#161b22; }
-.news-item.macro { border-left-color:#d29922; background:rgba(210,153,34,.05); }
+.news-item.macro  { border-left-color:#d29922; background:rgba(210,153,34,.05); }
 .news-item.danger { border-left-color:#f85149; background:rgba(248,81,73,.05); }
+/* HIGH IMPACT — nổi bật, có pulse border */
+.news-item.high-impact {
+    border-left: 3px solid #f85149;
+    background: rgba(248,81,73,.08);
+    box-shadow: inset 0 0 0 1px rgba(248,81,73,.2);
+    animation: newsHighPulse 2.5s ease-in-out infinite;
+}
+.news-item.high-impact .news-title { color:#e6edf3; font-weight:600; }
+@keyframes newsHighPulse {
+    0%,100% { box-shadow: inset 0 0 0 1px rgba(248,81,73,.2); }
+    50%      { box-shadow: inset 0 0 0 1px rgba(248,81,73,.55), 0 0 8px rgba(248,81,73,.15); }
+}
+/* HIGH IMPACT badge */
+.news-impact-badge {
+    display:inline-flex; align-items:center; gap:3px;
+    font-size:9px; font-weight:800; padding:2px 7px;
+    border-radius:4px; letter-spacing:.6px; text-transform:uppercase;
+    flex-shrink:0;
+}
+.news-impact-badge.HIGH   { background:rgba(248,81,73,.2); color:#f85149;
+                             border:1px solid rgba(248,81,73,.4); }
+.news-impact-badge.MEDIUM { background:rgba(210,153,34,.15); color:#d29922;
+                             border:1px solid rgba(210,153,34,.3); }
+/* Pulse dot cho HIGH impact */
+.impact-dot {
+    width:6px; height:6px; border-radius:50%; background:#f85149;
+    animation: impactDotPulse 1.2s ease-in-out infinite;
+    flex-shrink:0;
+}
+@keyframes impactDotPulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:.4; transform:scale(1.4); }
+}
 .news-time { font-size:11px; color:#484f58; min-width:44px; text-align:right; flex-shrink:0;
              padding-top:2px; font-variant-numeric:tabular-nums; }
 .news-body { flex:1; min-width:0; }
@@ -2434,6 +2520,9 @@ const _NEWS_TAG_MAP = {
     'HACK':       {cls:'HACK',  txt:'HACK'},
 };
 
+// Thứ tự ưu tiên sort: HIGH trước MEDIUM trước LOW, cùng impact thì mới nhất trước
+const _IMPACT_ORDER = {HIGH: 0, MEDIUM: 1, LOW: 2};
+
 function _newsAgo(ts) {
     if (!ts) return '–';
     const s = Math.max(0, Math.floor(Date.now()/1000 - ts));
@@ -2477,40 +2566,51 @@ function renderNews() {
 
     // Đếm cho từng filter
     const cnt = {
-        all:   all.length,
-        MACRO: all.filter(n => n.tags.includes('MACRO')).length,
-        REG:   all.filter(n => n.tags.includes('QUY ĐỊNH')).length,
-        ETF:   all.filter(n => n.tags.includes('ETF')).length,
-        RISK:  all.filter(n => n.tags.includes('THANH LÝ') || n.tags.includes('HACK')).length,
-        BTC:   all.filter(n => n.coins.includes('BTC')).length,
-        ETH:   all.filter(n => n.coins.includes('ETH')).length,
+        all:    all.length,
+        HIGH:   all.filter(n => n.impact === 'HIGH').length,
+        MACRO:  all.filter(n => n.tags.includes('MACRO')).length,
+        REG:    all.filter(n => n.tags.includes('QUY ĐỊNH')).length,
+        ETF:    all.filter(n => n.tags.includes('ETF')).length,
+        RISK:   all.filter(n => n.tags.includes('THANH LÝ') || n.tags.includes('HACK')).length,
+        BTC:    all.filter(n => n.coins.includes('BTC')).length,
+        ETH:    all.filter(n => n.coins.includes('ETH')).length,
     };
 
     const chips = [
-        ['all',   'Tất cả',       cnt.all],
-        ['MACRO', '🏛 Fed/Macro',  cnt.MACRO],
-        ['REG',   '⚖️ Quy định',   cnt.REG],
-        ['ETF',   '📊 ETF',        cnt.ETF],
-        ['RISK',  '⚠️ Rủi ro',     cnt.RISK],
-        ['BTC',   'BTC',          cnt.BTC],
-        ['ETH',   'ETH',          cnt.ETH],
+        ['all',   'Tất cả',            cnt.all,   ''],
+        ['HIGH',  '🔴 High Impact',     cnt.HIGH,  'impact-chip'],
+        ['MACRO', '🏛 Fed/Macro',       cnt.MACRO, ''],
+        ['REG',   '⚖️ Quy định',        cnt.REG,   ''],
+        ['ETF',   '📊 ETF',             cnt.ETF,   ''],
+        ['RISK',  '⚠️ Rủi ro',          cnt.RISK,  ''],
+        ['BTC',   'BTC',               cnt.BTC,   ''],
+        ['ETH',   'ETH',               cnt.ETH,   ''],
     ];
     const fEl = document.getElementById('news-filters');
     if (fEl) {
-        fEl.innerHTML = chips.map(([k,label,c]) =>
-            `<div class="news-chip ${_newsFilter===k?'active':''}"
+        fEl.innerHTML = chips.map(([k, label, c, extra]) =>
+            `<div class="news-chip ${extra} ${_newsFilter===k?'active':''}"
                   onclick="setNewsFilter('${k}')">${label} <span style="opacity:.6">${c}</span></div>`
         ).join('');
     }
 
     // Lọc
     let rows = all;
-    if (_newsFilter === 'MACRO')      rows = all.filter(n => n.tags.includes('MACRO'));
+    if      (_newsFilter === 'HIGH')  rows = all.filter(n => n.impact === 'HIGH');
+    else if (_newsFilter === 'MACRO') rows = all.filter(n => n.tags.includes('MACRO'));
     else if (_newsFilter === 'REG')   rows = all.filter(n => n.tags.includes('QUY ĐỊNH'));
     else if (_newsFilter === 'ETF')   rows = all.filter(n => n.tags.includes('ETF'));
     else if (_newsFilter === 'RISK')  rows = all.filter(n => n.tags.includes('THANH LÝ') || n.tags.includes('HACK'));
     else if (_newsFilter === 'BTC' || _newsFilter === 'ETH')
         rows = all.filter(n => n.coins.includes(_newsFilter));
+
+    // Sort: HIGH impact luôn lên đầu, cùng level thì mới nhất trước
+    rows = [...rows].sort((a, b) => {
+        const ia = _IMPACT_ORDER[a.impact] ?? 2;
+        const ib = _IMPACT_ORDER[b.impact] ?? 2;
+        if (ia !== ib) return ia - ib;
+        return (b.ts || 0) - (a.ts || 0);
+    });
 
     // Cập nhật thời điểm + cảnh báo nguồn lỗi
     const uEl = document.getElementById('news-updated');
@@ -2529,14 +2629,28 @@ function renderNews() {
     const shown = rows.slice(0, _newsLimit);
     let html = `<div class="news-list">`;
     shown.forEach(n => {
+        const impact   = n.impact || 'LOW';
         const isMacro  = n.tags.includes('MACRO');
         const isDanger = n.tags.includes('THANH LÝ') || n.tags.includes('HACK');
-        const cls = isDanger ? 'danger' : (isMacro ? 'macro' : '');
+        const isHigh   = impact === 'HIGH';
+
+        // Class cho news-item: high-impact > danger > macro
+        const cls = isHigh ? 'high-impact' : (isDanger ? 'danger' : (isMacro ? 'macro' : ''));
+
+        // Impact badge — chỉ hiện HIGH và MEDIUM
+        let impactBadge = '';
+        if (impact === 'HIGH') {
+            impactBadge = `<span class="news-impact-badge HIGH"><span class="impact-dot"></span>HIGH</span>`;
+        } else if (impact === 'MEDIUM') {
+            impactBadge = `<span class="news-impact-badge MEDIUM">MED</span>`;
+        }
+
         let badges = n.tags.map(t => {
             const m = _NEWS_TAG_MAP[t];
             return m ? `<span class="news-tag ${m.cls}">${m.txt}</span>` : '';
         }).join('');
         badges += n.coins.map(c => `<span class="news-tag COIN">${c}</span>`).join('');
+
         const safeTitle = (n.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         html += `
         <div class="news-item ${cls}">
@@ -2545,6 +2659,7 @@ function renderNews() {
                 <a class="news-title" href="${n.link}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
                 <div class="news-meta">
                     <span class="news-src">${n.source}</span>
+                    ${impactBadge}
                     ${badges}
                 </div>
             </div>
