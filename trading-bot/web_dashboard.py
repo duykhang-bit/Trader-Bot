@@ -4089,8 +4089,9 @@ def api_state():
         _lock.release()
 
     today = datetime.now().strftime("%Y-%m-%d")
-    closed = [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001]
-    today_closed = [t for t in closed if t.get("time", "").startswith(today)]
+    all_closed = [t for t in tlog if t.get("status") == "CLOSED"]
+    closed = [t for t in all_closed if abs(t.get("pnl_usdt", 0)) > 0.001]
+    today_closed = [t for t in all_closed if t.get("time", "").startswith(today)]
     today_pnl = sum(t.get("pnl_usdt", 0) for t in today_closed)
     total_pnl = sum(t.get("pnl_usdt", 0) for t in closed)
     wins = sum(1 for t in closed if t.get("pnl_usdt", 0) > 0)
@@ -4177,7 +4178,7 @@ def api_state():
         "auto_cancel_orphan": s.get("auto_cancel_orphan", False),
         "balance": s.get("balance", 0),
         "today_pnl": today_pnl, "total_pnl": total_pnl, "unrealized": unrealized,
-        "win_rate": wr, "total_trades": len(closed),
+        "win_rate": wr, "total_trades": len(all_closed),
         "scan_no": s.get("scan_no", 0), "last_scan": s.get("last_scan", "--:--"),
         "liq_connected": s.get("liq_connected", False),
         "ai_analyzing": s.get("ai_analyzing", False),
