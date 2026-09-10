@@ -200,9 +200,7 @@ NEWS_SOURCES = [
     ("Cointelegraph",  "https://cointelegraph.com/rss"),
     ("Decrypt",        "https://decrypt.co/feed"),
     ("NewsBTC",        "https://www.newsbtc.com/feed/"),
-    # Nguồn macro kinh tế — free, link vào được
-    ("ForexLive",      "https://www.forexlive.com/feed/news"),
-    ("Reuters Mkts",   "https://feeds.reuters.com/reuters/businessNews"),
+    # Nguồn macro kinh tế — đã test OK trên VPS (ForexLive/Reuters bị block CloudFront)
     ("Yahoo Finance",  "https://finance.yahoo.com/news/rssindex"),
     ("MarketWatch",    "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines"),
     ("CNBC Markets",   "https://www.cnbc.com/id/100727362/device/rss/rss.html"),
