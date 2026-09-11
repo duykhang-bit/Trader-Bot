@@ -3710,6 +3710,7 @@ setInterval(updateClock,1000);
 setInterval(refresh, 5000);  // 5s - đủ nhanh, giảm tải browser
 updateClock();
 refresh();
+updateTVChart();  // Init chart + realtime price
 
 // ── P0 SETTINGS ──────────────────────────────────────────────
 function toggleP0Settings() {
