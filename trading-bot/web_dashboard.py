@@ -767,10 +767,10 @@ function initTVChart(watchlist) {
         <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
         <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
-      <div style="height:500px;border-radius:6px;overflow:hidden">
-        <iframe id="binance-chart-frame"
-          src="https://www.binance.com/en/trade/${chartSym}?theme=dark&type=spot"
-          style="width:100%;height:500px;border:none" allowtransparency="true" scrolling="no"></iframe>
+      <div style="height:500px;border-radius:6px;overflow:hidden;background:#0d1117">
+        <iframe id="chart-frame"
+          src="https://s.tradingview.com/widgetembed/?frameElementId=chart-frame&symbol=BINANCE:${chartSym}&interval=15&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=0d1117&studies=[]&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&showpopupbutton=1&studies_overrides={}&overrides={}&enabled_features=[]&disabled_features=[]&locale=en&utm_source=&utm_medium=widget_new&utm_campaign=chart&utm_term=BINANCE:${chartSym}"
+          style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
       </div>`;
 }
 async function toggleEntryOffset(enabled) {
@@ -807,10 +807,11 @@ async function setProfitLock() {
 function updateTVChart() {
     const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
-    const frame = document.getElementById('binance-chart-frame');
+    const frame = document.getElementById('chart-frame');
     if (frame) {
-        // Binance chart URL: https://www.binance.com/en/trade/BTCUSDT?theme=dark&type=spot
-        frame.src = `https://www.binance.com/en/trade/${sym}?theme=dark&type=spot`;
+        // TradingView simple embed - lightweight, realtime
+        const tvSym = sym.replace('USDT', 'USDTPERP');
+        frame.src = `https://s.tradingview.com/widgetembed/?frameElementId=chart-frame&symbol=BINANCE:${tvSym}&interval=${interval}&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=0d1117&studies=[]&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&showpopupbutton=1&locale=en`;
     }
 }
 async function toggleBreakevenExit(enabled) {
