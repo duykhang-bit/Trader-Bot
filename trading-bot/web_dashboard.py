@@ -767,35 +767,10 @@ function initTVChart(watchlist) {
         <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
         <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 280px;gap:16px;margin-bottom:20px">
-        <!-- TradingView Chart -->
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden">
-          <iframe id="tv-chart-frame"
-            src="https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:BTCUSDTPERP&interval=15&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en"
-            style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
-        </div>
-        
-        <!-- Realtime Price Box -->
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:20px">
-          <div style="font-size:11px;color:#58a6ff;font-weight:600;margin-bottom:12px">⚡ REALTIME</div>
-          <div id="rt-symbol" style="font-size:18px;font-weight:700;color:#e6edf3;margin-bottom:12px">BTC/USDT</div>
-          <div id="rt-price" style="font-size:36px;font-weight:800;color:#3fb950;margin-bottom:6px;letter-spacing:-1px">$0.00</div>
-          <div id="rt-change" style="font-size:16px;font-weight:600;margin-bottom:20px">+0.00%</div>
-          <div style="border-top:1px solid #21262d;padding-top:16px;font-size:11px">
-            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-              <span style="color:#6e7681">24h High:</span>
-              <span id="rt-high" style="color:#3fb950;font-weight:700">-</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-              <span style="color:#6e7681">24h Low:</span>
-              <span id="rt-low" style="color:#f85149;font-weight:700">-</span>
-            </div>
-            <div style="display:flex;justify-content:space-between">
-              <span style="color:#6e7681">Volume:</span>
-              <span id="rt-vol" style="color:#e6edf3;font-weight:700">-</span>
-            </div>
-          </div>
-        </div>
+      <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:20px">
+        <iframe id="tv-chart-frame"
+          src="https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:BTCUSDTPERP&interval=15&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en"
+          style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
       </div>`;
 }
 async function toggleEntryOffset(enabled) {
@@ -833,70 +808,14 @@ function updateTVChart() {
     const symRaw = document.getElementById('tv-symbol-select')?.value || 'BTCUSDTPERP';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
     
-    // Convert BTCUSDTPERP -> BTCUSDT for WebSocket
-    const sym = symRaw.replace('USDTPERP', 'USDT').replace('.P', '');
-    
-    // Update TradingView iframe
     const tvFrame = document.getElementById('tv-chart-frame');
     if (tvFrame) {
         const tvInterval = interval.replace('m', '').replace('h', '');
         tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${symRaw}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
     }
-    
-    // Update realtime price
-    const rtSym = document.getElementById('rt-symbol');
-    if (rtSym) rtSym.textContent = sym.replace('USDT', '/USDT');
-    updateRealtimePrice(sym);
 }
 
 // ══════════════════════════════════════════════════════════════════
-// BINANCE WEBSOCKET REALTIME PRICE
-// ══════════════════════════════════════════════════════════════════
-let _rtWs = null;
-let _rtSym = null;
-
-function updateRealtimePrice(sym) {
-    if (_rtSym === sym && _rtWs) return;
-    if (_rtWs) { _rtWs.close(); _rtWs = null; }
-    
-    _rtSym = sym;
-    const stream = sym.toLowerCase() + '@ticker';
-    _rtWs = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
-    
-    _rtWs.onmessage = (e) => {
-        const d = JSON.parse(e.data);
-        const price = parseFloat(d.c);
-        const change = parseFloat(d.P);
-        const high = parseFloat(d.h);
-        const low = parseFloat(d.l);
-        const vol = parseFloat(d.v);
-        
-        const priceEl = document.getElementById('rt-price');
-        const changeEl = document.getElementById('rt-change');
-        const highEl = document.getElementById('rt-high');
-        const lowEl = document.getElementById('rt-low');
-        const volEl = document.getElementById('rt-vol');
-        
-        if (priceEl) {
-            priceEl.textContent = '$' + (price >= 1 ? price.toFixed(2) : price.toFixed(6));
-            priceEl.style.color = change >= 0 ? '#3fb950' : '#f85149';
-        }
-        if (changeEl) {
-            const sign = change >= 0 ? '+' : '';
-            changeEl.textContent = sign + change.toFixed(2) + '%';
-            changeEl.style.color = change >= 0 ? '#3fb950' : '#f85149';
-        }
-        if (highEl) highEl.textContent = '$' + (high >= 1 ? high.toFixed(2) : high.toFixed(6));
-        if (lowEl) lowEl.textContent = '$' + (low >= 1 ? low.toFixed(2) : low.toFixed(6));
-        if (volEl) {
-            const volM = vol >= 1e6 ? (vol/1e6).toFixed(1) + 'M' : (vol >= 1e3 ? (vol/1e3).toFixed(1) + 'K' : vol.toFixed(0));
-            volEl.textContent = volM;
-        }
-    };
-    
-    _rtWs.onerror = () => setTimeout(() => updateRealtimePrice(sym), 5000);
-}
-
 async function toggleBreakevenExit(enabled) {
     const r = await apiPost('/api/breakeven_exit', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
@@ -3714,17 +3633,11 @@ setInterval(refresh, 5000);  // 5s - đủ nhanh, giảm tải browser
 updateClock();
 refresh();
 
-// Init chart + WebSocket after DOM loaded
+// Init chart after DOM loaded
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        updateTVChart();
-        // Force init WebSocket with BTCUSDT
-        setTimeout(() => updateRealtimePrice('BTCUSDT'), 500);
-    });
+    document.addEventListener('DOMContentLoaded', () => updateTVChart());
 } else {
     updateTVChart();
-    // Force init WebSocket with BTCUSDT
-    setTimeout(() => updateRealtimePrice('BTCUSDT'), 500);
 }
 
 // ── P0 SETTINGS ──────────────────────────────────────────────
