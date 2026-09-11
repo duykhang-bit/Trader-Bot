@@ -5397,50 +5397,30 @@ def profit_protection_monitor(exchange, notifier):
                             force_first_tier3 = (ps["tier"] == 2 and target_tier == 3)
                             
                             if force_first_tier3 or new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                # Fix 2: tránh min_change = 0 khi current_sl = 0
-                                # Fix: lần ĐẦU lên tier 3 (tier=2) → skip min_change check
-                                if ps["current_sl"] > 0 and ps["tier"] >= 3:
+                                # Quyết định có check min_change không
+                                skip_min_change = (ps["current_sl"] == 0 or ps["tier"] < 3)
+                                
+                                if not skip_min_change:
+                                    # Đã tier>=3, check min_change
                                     min_change = ps["current_sl"] * 0.0005
                                     if ps["current_sl"] - new_trail_sl < min_change:
-                                        logger.debug(f"[PP] {sym} SHORT skip: change too small {ps['current_sl'] - new_trail_sl:.6f} < {min_change:.6f}")
-                                        # Không continue - để xử lý các position khác
-                                        pass
+                                        logger.debug(f"[PP] {sym} SHORT skip: change {ps['current_sl'] - new_trail_sl:.6f} < min {min_change:.6f}")
+                                        continue  # skip position này, xử lý position khác
+                                
+                                # Update SL
+                                update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
+                                if update_ok:
+                                    prev_tier = ps["tier"]
+                                    ps["tier"] = max(ps["tier"], target_tier)
+                                    if ps["tier"] > prev_tier:
+                                        logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} peak={peak:.6f} sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
                                     else:
-                                        # min_change đủ → đặt SL
-                                        update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
-                                        if update_ok:
-                                            prev_tier = ps["tier"]
-                                            ps["tier"] = max(ps["tier"], target_tier)
-                                            if ps["tier"] > prev_tier:
-                                                logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} "
-                                                            f"peak={peak:.6f} sl={new_trail_sl:.6f} "
-                                                            f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
-                                            else:
-                                                logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE "
-                                                            f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
-                                            ps["current_sl"]  = new_trail_sl
-                                            ps["trailing_sl"] = new_trail_sl
-                                            ps["sl_last_update_ts"] = now
-                                        else:
-                                            logger.error(f"[PP] ❌ {sym} SHORT T{ps['tier']} UPDATE FAILED _update_sl returned False")
+                                        logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                    ps["current_sl"]  = new_trail_sl
+                                    ps["trailing_sl"] = new_trail_sl
+                                    ps["sl_last_update_ts"] = now
                                 else:
-                                    # Lần đầu (tier=2) hoặc current_sl=0 → đặt luôn
-                                    update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
-                                    if update_ok:
-                                        prev_tier = ps["tier"]
-                                        ps["tier"] = max(ps["tier"], target_tier)
-                                        if ps["tier"] > prev_tier:
-                                            logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} "
-                                                        f"peak={peak:.6f} sl={new_trail_sl:.6f} "
-                                                        f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
-                                        else:
-                                            logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE "
-                                                        f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
-                                        ps["current_sl"]  = new_trail_sl
-                                        ps["trailing_sl"] = new_trail_sl
-                                        ps["sl_last_update_ts"] = now
-                                    else:
-                                        logger.error(f"[PP] ❌ {sym} SHORT T{ps['tier']}→T{target_tier} FAILED _update_sl returned False (peak={peak:.6f} sl={new_trail_sl:.6f})")
+                                    logger.error(f"[PP] ❌ {sym} SHORT T{ps['tier']}→T{target_tier} FAILED _update_sl")
 
         except Exception as e:
             logger.error(f"[PP] ========== LOOP EXCEPTION ========== {e}", exc_info=True)
