@@ -5389,7 +5389,13 @@ def profit_protection_monitor(exchange, notifier):
                                         ps["sl_last_update_ts"] = now
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
-                            if new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
+                            
+                            # FIX: Lần đầu T2→T3, FORCE update SL ngay cả khi new_trail_sl >= current_sl
+                            # Vì current_sl có thể là initial SL rất xa (structure low), không phải protection SL
+                            # Chỉ check direction khi ĐÃ tier>=3 (đã có trailing SL trước đó)
+                            force_first_tier3 = (ps["tier"] == 2 and target_tier == 3)
+                            
+                            if force_first_tier3 or new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
                                 # Fix 2: tránh min_change = 0 khi current_sl = 0
                                 # Fix: lần ĐẦU lên tier 3 (tier=2) → skip min_change check
                                 if ps["current_sl"] > 0 and ps["tier"] >= 3:
