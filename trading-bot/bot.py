@@ -5328,8 +5328,9 @@ def profit_protection_monitor(exchange, notifier):
                         else:
                             if mark < ps["peak_price"] or ps["peak_price"] == 0:
                                 ps["peak_price"] = mark
-                        logger.debug(f"[PP] {sym} profit={profit_pct:.2f}% >= {trail_trigger}% → trailing timer")
+                        logger.info(f"[PP] {sym} profit={profit_pct:.2f}% >= {trail_trigger}% → trailing timer START")
                     elif now - ps["trailing_ts"] >= trail_timer:
+                        logger.info(f"[PP] {sym} trailing timer READY ({now - ps["trailing_ts"]:.1f}s >= {trail_timer}s) → update SL...")
                         peak = ps["peak_price"]
 
                         # ── Tính tp_progress: % đường entry → TP đã đi được ──
