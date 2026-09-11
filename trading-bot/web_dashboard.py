@@ -767,13 +767,32 @@ function initTVChart(watchlist) {
         <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
         <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
-      <div style="height:600px;border-radius:6px;overflow:hidden;background:#0d1117">
-        <iframe id="binance-frame"
-          src="https://www.binance.com/en/futures/${chartSym}?theme=dark"
-          style="width:100%;height:600px;border:none" 
-          allow="clipboard-read; clipboard-write"
-          sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-          allowtransparency="true"></iframe>
+      <div style="display:grid;grid-template-columns:1fr 250px;gap:12px">
+        <div style="height:500px;border-radius:6px;overflow:hidden;background:#0d1117">
+          <iframe id="chart-frame"
+            src="https://s.tradingview.com/widgetembed/?frameElementId=chart-frame&symbol=BINANCE:${chartSym}&interval=15&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en"
+            style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+        </div>
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px">
+          <div style="font-size:11px;color:#58a6ff;font-weight:600;margin-bottom:12px">⚡ REALTIME (WebSocket)</div>
+          <div id="rt-symbol" style="font-size:14px;font-weight:600;color:#e6edf3;margin-bottom:8px">BTC/USDT</div>
+          <div id="rt-price" style="font-size:32px;font-weight:700;color:#3fb950;margin-bottom:4px">$0.00</div>
+          <div id="rt-change" style="font-size:14px;margin-bottom:16px">+0.00%</div>
+          <div style="border-top:1px solid #21262d;padding-top:12px;font-size:11px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="color:#6e7681">24h High:</span>
+              <span id="rt-high" style="color:#3fb950;font-weight:600">-</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="color:#6e7681">24h Low:</span>
+              <span id="rt-low" style="color:#f85149;font-weight:600">-</span>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#6e7681">Volume:</span>
+              <span id="rt-vol" style="color:#e6edf3;font-weight:600">-</span>
+            </div>
+          </div>
+        </div>
       </div>`;
 }
 async function toggleEntryOffset(enabled) {
@@ -810,10 +829,64 @@ async function setProfitLock() {
 function updateTVChart() {
     const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
-    const frame = document.getElementById('binance-frame');
+    const frame = document.getElementById('chart-frame');
     if (frame) {
-        frame.src = `https://www.binance.com/en/futures/${sym}?theme=dark`;
+        const tvSym = sym.replace('USDT', 'USDTPERP');
+        frame.src = `https://s.tradingview.com/widgetembed/?frameElementId=chart-frame&symbol=BINANCE:${tvSym}&interval=${interval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
     }
+    
+    // Update realtime price
+    const rtSym = document.getElementById('rt-symbol');
+    if (rtSym) rtSym.textContent = sym.replace('USDT', '/USDT');
+    updateRealtimePrice(sym);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// BINANCE WEBSOCKET REALTIME PRICE
+// ══════════════════════════════════════════════════════════════════
+let _rtWs = null;
+let _rtSym = null;
+
+function updateRealtimePrice(sym) {
+    if (_rtSym === sym && _rtWs) return;
+    if (_rtWs) { _rtWs.close(); _rtWs = null; }
+    
+    _rtSym = sym;
+    const stream = sym.toLowerCase() + '@ticker';
+    _rtWs = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
+    
+    _rtWs.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        const price = parseFloat(d.c);
+        const change = parseFloat(d.P);
+        const high = parseFloat(d.h);
+        const low = parseFloat(d.l);
+        const vol = parseFloat(d.v);
+        
+        const priceEl = document.getElementById('rt-price');
+        const changeEl = document.getElementById('rt-change');
+        const highEl = document.getElementById('rt-high');
+        const lowEl = document.getElementById('rt-low');
+        const volEl = document.getElementById('rt-vol');
+        
+        if (priceEl) {
+            priceEl.textContent = '$' + (price >= 1 ? price.toFixed(2) : price.toFixed(6));
+            priceEl.style.color = change >= 0 ? '#3fb950' : '#f85149';
+        }
+        if (changeEl) {
+            const sign = change >= 0 ? '+' : '';
+            changeEl.textContent = sign + change.toFixed(2) + '%';
+            changeEl.style.color = change >= 0 ? '#3fb950' : '#f85149';
+        }
+        if (highEl) highEl.textContent = '$' + (high >= 1 ? high.toFixed(2) : high.toFixed(6));
+        if (lowEl) lowEl.textContent = '$' + (low >= 1 ? low.toFixed(2) : low.toFixed(6));
+        if (volEl) {
+            const volM = vol >= 1e6 ? (vol/1e6).toFixed(1) + 'M' : (vol >= 1e3 ? (vol/1e3).toFixed(1) + 'K' : vol.toFixed(0));
+            volEl.textContent = volM;
+        }
+    };
+    
+    _rtWs.onerror = () => setTimeout(() => updateRealtimePrice(sym), 5000);
 }
 }
 async function toggleBreakevenExit(enabled) {
