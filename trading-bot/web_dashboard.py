@@ -3716,9 +3716,15 @@ refresh();
 
 // Init chart + WebSocket after DOM loaded
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => updateTVChart());
+    document.addEventListener('DOMContentLoaded', () => {
+        updateTVChart();
+        // Force init WebSocket with BTCUSDT
+        setTimeout(() => updateRealtimePrice('BTCUSDT'), 500);
+    });
 } else {
     updateTVChart();
+    // Force init WebSocket with BTCUSDT
+    setTimeout(() => updateRealtimePrice('BTCUSDT'), 500);
 }
 
 // ── P0 SETTINGS ──────────────────────────────────────────────
