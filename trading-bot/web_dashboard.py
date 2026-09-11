@@ -768,9 +768,11 @@ function initTVChart(watchlist) {
         <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 280px;gap:16px;margin-bottom:20px">
-        <!-- Binance Chart Widget -->
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden;height:500px">
-          <div id="binance-chart-widget" style="height:100%"></div>
+        <!-- TradingView Chart -->
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden">
+          <iframe id="tv-chart-frame"
+            src="https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:BTCUSDTPERP&interval=15&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en"
+            style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
         </div>
         
         <!-- Realtime Price Box -->
@@ -830,49 +832,18 @@ async function setProfitLock() {
 function updateTVChart() {
     const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
-    // Update chart widget
-    updateBinanceChart(sym, interval);
+    // Update TradingView iframe
+    const tvFrame = document.getElementById('tv-chart-frame');
+    if (tvFrame) {
+        const tvSym = sym.replace('USDT', 'USDTPERP');
+        const tvInterval = interval.replace('m', '').replace('h', '');
+        tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${tvSym}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
+    }
     
     // Update realtime price
     const rtSym = document.getElementById('rt-symbol');
     if (rtSym) rtSym.textContent = sym.replace('USDT', '/USDT');
     updateRealtimePrice(sym);
-}
-
-// ══════════════════════════════════════════════════════════════════
-// BINANCE CHART WIDGET
-// ══════════════════════════════════════════════════════════════════
-function updateBinanceChart(sym, interval) {
-    const container = document.getElementById('binance-chart-widget');
-    if (!container) return;
-    
-    // Clear previous widget
-    container.innerHTML = '';
-    
-    // Create Binance widget
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-    script.async = true;
-    
-    const tvSym = `BINANCE:${sym.replace('USDT', 'USDTPERP')}`;
-    const tvInterval = interval === '1m' ? '1' : (interval === '5m' ? '5' : (interval === '15m' ? '15' : (interval === '1h' ? '60' : '240')));
-    
-    script.innerHTML = JSON.stringify({
-        autosize: true,
-        symbol: tvSym,
-        interval: tvInterval,
-        timezone: "Asia/Ho_Chi_Minh",
-        theme: "dark",
-        style: "1",
-        locale: "en",
-        enable_publishing: false,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        save_image: false,
-        container_id: "binance-chart-widget"
-    });
-    
-    container.appendChild(script);
 }
 
 // ══════════════════════════════════════════════════════════════════
