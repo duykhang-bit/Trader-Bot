@@ -830,14 +830,17 @@ async function setProfitLock() {
     refresh();
 }
 function updateTVChart() {
-    const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
+    const symRaw = document.getElementById('tv-symbol-select')?.value || 'BTCUSDTPERP';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
+    
+    // Convert BTCUSDTPERP -> BTCUSDT for WebSocket
+    const sym = symRaw.replace('USDTPERP', 'USDT').replace('.P', '');
+    
     // Update TradingView iframe
     const tvFrame = document.getElementById('tv-chart-frame');
     if (tvFrame) {
-        const tvSym = sym.replace('USDT', 'USDTPERP');
         const tvInterval = interval.replace('m', '').replace('h', '');
-        tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${tvSym}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
+        tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${symRaw}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
     }
     
     // Update realtime price
