@@ -625,6 +625,7 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
     </div>
     <div id="content">Loading...</div>
     <div id="tv-chart-section" class="section" style="padding:12px;margin:0 12px 12px"></div>
+    <div id="coinglass-container" style="margin:0 12px 12px"></div>
 </div>
 <div id="toast-container"></div>
 
@@ -767,8 +768,8 @@ function initTVChart(watchlist) {
         <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
       <div style="height:500px;border-radius:6px;overflow:hidden">
-        <iframe id="tv-chart-frame"
-          src="https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${chartSym}&interval=15&hidesidetoolbar=0&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&locale=vi"
+        <iframe id="binance-chart-frame"
+          src="https://www.binance.com/en/trade/${chartSym}?theme=dark&type=spot"
           style="width:100%;height:500px;border:none" allowtransparency="true" scrolling="no"></iframe>
       </div>`;
 }
@@ -806,9 +807,10 @@ async function setProfitLock() {
 function updateTVChart() {
     const sym = document.getElementById('tv-symbol-select')?.value || 'BTCUSDT.P';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
-    const frame = document.getElementById('tv-chart-frame');
+    const frame = document.getElementById('binance-chart-frame');
     if (frame) {
-        frame.src = `https://www.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE%3A${sym}&interval=${interval}&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&withdateranges=1&showpopupbutton=1&locale=vi`;
+        // Binance chart URL: https://www.binance.com/en/trade/BTCUSDT?theme=dark&type=spot
+        frame.src = `https://www.binance.com/en/trade/${sym}?theme=dark&type=spot`;
     }
 }
 async function toggleBreakevenExit(enabled) {
@@ -4037,6 +4039,34 @@ async function saveP0Settings() {
     }
     if (r.ok) updateGateHints();
 }
+
+// ══════════════════════════════════════════════════════════════════
+// COINGLASS LIQUIDATION HEATMAP
+// ══════════════════════════════════════════════════════════════════
+function renderCoinglass() {
+    const container = document.getElementById('coinglass-container');
+    if (!container) return;
+    
+    container.innerHTML = `
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:20px">
+            <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:12px">
+                📊 Liquidation Heatmap (Coinglass)
+            </div>
+            <div style="height:600px;border-radius:6px;overflow:hidden">
+                <iframe 
+                    src="https://coinglass.com/pro/futures/LiquidationHeatMap" 
+                    style="width:100%;height:600px;border:none;background:#0d1117" 
+                    allowtransparency="true" 
+                    scrolling="yes">
+                </iframe>
+            </div>
+        </div>
+    `;
+}
+
+// Render Coinglass khi load trang
+setTimeout(renderCoinglass, 1000);
+
 </script>
 </body>
 </html>"""
