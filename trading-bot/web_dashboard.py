@@ -3713,7 +3713,13 @@ setInterval(updateClock,1000);
 setInterval(refresh, 5000);  // 5s - đủ nhanh, giảm tải browser
 updateClock();
 refresh();
-updateTVChart();  // Init chart + realtime price
+
+// Init chart + WebSocket after DOM loaded
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => updateTVChart());
+} else {
+    updateTVChart();
+}
 
 // ── P0 SETTINGS ──────────────────────────────────────────────
 function toggleP0Settings() {
