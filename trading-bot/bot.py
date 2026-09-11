@@ -5317,12 +5317,8 @@ def profit_protection_monitor(exchange, notifier):
                     ps["protection_ts"] = 0.0
 
                 # ── TẦNG 3/4/5: TRAILING SL ─────────────────────────────
-                # Fix: Khi trailing_ts đã start (>0), cho phép update SL ngay cả khi profit tạm giảm < trigger
-                # Tránh trường hợp: profit 1.1% → start timer → giá bounce → profit 0.9% → timer đóng băng
-                can_trail = (ps["tier"] >= 2 and profit_pct >= trail_trigger) or (ps["trailing_ts"] > 0)
-                
-                if can_trail:
-                    if ps["trailing_ts"] == 0.0 and profit_pct >= trail_trigger:
+                if ps["tier"] >= 2 and profit_pct >= trail_trigger:
+                    if ps["trailing_ts"] == 0.0:
                         ps["trailing_ts"] = now
                         # Fix 1: KHÔNG reset peak_price — giữ giá trị đã init từ klines
                         # Chỉ update peak nếu mark tốt hơn peak hiện tại
