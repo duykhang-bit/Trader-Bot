@@ -888,7 +888,7 @@ function updateRealtimePrice(sym) {
     
     _rtWs.onerror = () => setTimeout(() => updateRealtimePrice(sym), 5000);
 }
-}
+
 async function toggleBreakevenExit(enabled) {
     const r = await apiPost('/api/breakeven_exit', {enabled});
     if (r && r.msg) toast(r.msg, r.ok !== false);
