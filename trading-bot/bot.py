@@ -4234,6 +4234,19 @@ def pump_scan_engine(exchange, notifier):
                     pump_shorts = set()
 
                 for symbol in pump_shorts:
+                    # Chỉ apply pump reversal exit cho tier 1 (chưa có protection SL)
+                    # Tier 2+ đã có SL bảo vệ → tin vào trailing SL logic
+                    tier = 1
+                    with lock:
+                        pp_state = state.get("_pp_state", {})
+                        ps = pp_state.get(symbol)
+                        if ps:
+                            tier = ps.get("tier", 1)
+                    
+                    if tier >= 2:
+                        logger.debug(f"[PumpRevExit] {symbol} tier={tier} → skip (đã có protection SL)")
+                        continue
+                    
                     # Tính thời gian đã giữ lệnh
                     _min_hold_pump = getattr(config, "PUMP_REVERSAL_HOLD_SECONDS", 60)
                     _entry_time_pump = None
@@ -5089,6 +5102,10 @@ def profit_protection_monitor(exchange, notifier):
     #   "trailing_sl": float,    # trailing SL hiện tại
     # }}
     _pp_state: dict = {}
+    
+    # Chia sẻ _pp_state với các thread khác qua state
+    with lock:
+        state["_pp_state"] = _pp_state
 
     logger.info("[PP] sleeping 5s for bot warmup...")
     time.sleep(5)
@@ -5370,24 +5387,31 @@ def profit_protection_monitor(exchange, notifier):
                             new_trail_sl = round(peak * (1 - active_dist), 8)
                             if new_trail_sl > ps["current_sl"]:
                                 # Fix 2: tránh min_change = 0 khi current_sl = 0
-                                if ps["current_sl"] > 0:
-                                    min_change = ps["current_sl"] * 0.0005
-                                else:
-                                    min_change = 0.0
-                                if new_trail_sl - ps["current_sl"] >= min_change:
-                                    if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
-                                        prev_tier = ps["tier"]
-                                        ps["tier"] = max(ps["tier"], target_tier)
-                                        if ps["tier"] > prev_tier:
-                                            logger.info(f"[PP] ✅ {sym} LONG tier{ps['tier']} "
-                                                        f"peak={peak:.6f} sl={new_trail_sl:.6f} "
-                                                        f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
-                                        else:
-                                            logger.info(f"[PP] 📈 {sym} LONG tier{ps['tier']} UPDATE "
-                                                        f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
-                                        ps["current_sl"]  = new_trail_sl
-                                        ps["trailing_sl"] = new_trail_sl
-                                        ps["sl_last_update_ts"] = now
+                                if ps["current_sl"] > 0 and ps["tier"] >= 3:
+                                    # Tier 3+: check min_change tích lũy từ lần update cuối
+                                    last_updated_sl = ps.get("sl_last_updated", ps["current_sl"])
+                                    min_change = last_updated_sl * 0.0005
+                                    accumulated_change = new_trail_sl - last_updated_sl
+                                    
+                                    if accumulated_change < min_change:
+                                        logger.debug(f"[PP] {sym} LONG skip: accumulated {accumulated_change:.6f} < min {min_change:.6f}")
+                                        # KHÔNG reset trailing_ts → check lại 1s sau
+                                        continue
+                                
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                    prev_tier = ps["tier"]
+                                    ps["tier"] = max(ps["tier"], target_tier)
+                                    if ps["tier"] > prev_tier:
+                                        logger.info(f"[PP] ✅ {sym} LONG tier{ps['tier']} "
+                                                    f"peak={peak:.6f} sl={new_trail_sl:.6f} "
+                                                    f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
+                                    else:
+                                        logger.info(f"[PP] 📈 {sym} LONG tier{ps['tier']} UPDATE "
+                                                    f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                    ps["current_sl"]  = new_trail_sl
+                                    ps["trailing_sl"] = new_trail_sl
+                                    ps["sl_last_update_ts"] = now
+                                    ps["sl_last_updated"] = new_trail_sl
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             
@@ -5401,11 +5425,16 @@ def profit_protection_monitor(exchange, notifier):
                                 skip_min_change = (ps["current_sl"] == 0 or ps["tier"] < 3)
                                 
                                 if not skip_min_change:
-                                    # Đã tier>=3, check min_change
-                                    min_change = ps["current_sl"] * 0.0005
-                                    if ps["current_sl"] - new_trail_sl < min_change:
-                                        logger.debug(f"[PP] {sym} SHORT skip: change {ps['current_sl'] - new_trail_sl:.6f} < min {min_change:.6f}")
-                                        continue  # skip position này, xử lý position khác
+                                    # Đã tier>=3, check min_change tích lũy từ lần update cuối
+                                    # Track SL lần update cuối thành công (khác current_sl khi bị skip)
+                                    last_updated_sl = ps.get("sl_last_updated", ps["current_sl"])
+                                    min_change = last_updated_sl * 0.0005
+                                    accumulated_change = last_updated_sl - new_trail_sl
+                                    
+                                    if accumulated_change < min_change:
+                                        logger.debug(f"[PP] {sym} SHORT skip: accumulated {accumulated_change:.6f} < min {min_change:.6f}")
+                                        # KHÔNG reset trailing_ts → check lại 1s sau (tích lũy change)
+                                        continue
                                 
                                 # Update SL
                                 update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
@@ -5419,6 +5448,7 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["current_sl"]  = new_trail_sl
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
+                                    ps["sl_last_updated"] = new_trail_sl  # Track để tích lũy change
                                 else:
                                     logger.error(f"[PP] ❌ {sym} SHORT T{ps['tier']}→T{target_tier} FAILED _update_sl")
 
