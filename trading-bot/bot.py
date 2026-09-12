@@ -5424,6 +5424,7 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
                                     ps["sl_last_updated"] = new_trail_sl
+                                    ps["trailing_ts"] = now  # Reset để chờ 3s rồi mới check tiếp
                                     _sl_fail_count.pop(sym, None)
                                 else:
                                     if sym not in _sl_fail_count:
@@ -5480,6 +5481,7 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
                                     ps["sl_last_updated"] = new_trail_sl  # Track để tích lũy change
+                                    ps["trailing_ts"] = now  # Reset để chờ 3s rồi mới check tiếp
                                     # Reset fail count khi update thành công
                                     _sl_fail_count.pop(sym, None)
                                 else:
