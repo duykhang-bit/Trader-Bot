@@ -5915,7 +5915,17 @@ def orphan_order_cleanup(exchange, notifier):
     time.sleep(60)  # Chờ 60s sau bot start rồi quét ngay
 
     # Coin không bị auto cancel — user muốn tự hủy tay
-    EXCLUDE_AUTO_CANCEL = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT"}
+    # Check prefix để bao gồm cả quarterly futures (VD: ETHUSDT_260925)
+    EXCLUDE_AUTO_CANCEL = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"}
+
+    def is_excluded(sym):
+        if sym in EXCLUDE_AUTO_CANCEL:
+            return True
+        # Check prefix: ETHUSDT_260925 → starts with ETHUSDT
+        for ex in EXCLUDE_AUTO_CANCEL:
+            if sym.startswith(ex):
+                return True
+        return False
 
     while state["running"]:
         try:
@@ -5932,7 +5942,7 @@ def orphan_order_cleanup(exchange, notifier):
                     orphan_algo_syms = set()
                     for o in algo_orders:
                         sym = o.get("symbol", "")
-                        if sym and sym not in open_syms and sym not in EXCLUDE_AUTO_CANCEL:
+                        if sym and sym not in open_syms and not is_excluded(sym):
                             orphan_algo_syms.add(sym)
                     for sym in orphan_algo_syms:
                         try:
@@ -5949,7 +5959,7 @@ def orphan_order_cleanup(exchange, notifier):
                 all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                 for o in all_orders:
                     sym = o.get("symbol", "")
-                    if sym in EXCLUDE_AUTO_CANCEL:
+                    if is_excluded(sym):
                         continue
                     if sym and sym not in open_syms and o.get("reduceOnly", False):
                         try:
@@ -5967,7 +5977,7 @@ def orphan_order_cleanup(exchange, notifier):
                     all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     for o in all_orders:
                         sym = o.get("symbol", "")
-                        if sym in EXCLUDE_AUTO_CANCEL:
+                        if is_excluded(sym):
                             continue
                         if not (sym and sym not in open_syms and not o.get("reduceOnly", False)):
                             continue
