@@ -5522,6 +5522,15 @@ def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> b
             if sl_distance_pct > max_sl_distance:
                 logger.warning(f"[PP] _update_sl {symbol} SKIP: SL {new_sl:.6f} xa mark {mark_price:.6f} quá {sl_distance_pct:.1f}% > {max_sl_distance}%")
                 return False
+            
+            # LONG: SL phải dưới mark, SHORT: SL phải trên mark
+            # Nếu không → Binance reject -2021 "Order would immediately trigger"
+            if close_side == "SELL" and new_sl >= mark_price * 0.9995:
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: LONG SL {new_sl:.6f} >= mark {mark_price:.6f} → would trigger immediately")
+                return False
+            if close_side == "BUY" and new_sl <= mark_price * 1.0005:
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: SHORT SL {new_sl:.6f} <= mark {mark_price:.6f} → would trigger immediately")
+                return False
         except Exception as e:
             logger.debug(f"[PP] _update_sl {symbol} skip validation: {e}")
         
