@@ -5102,6 +5102,7 @@ def profit_protection_monitor(exchange, notifier):
     #   "trailing_sl": float,    # trailing SL hiện tại
     # }}
     _pp_state: dict = {}
+    _sl_fail_count: dict = {}  # Track SL update fail count: {symbol: {"count": int, "last_fail_ts": float}}
     
     # Chia sẻ _pp_state với các thread khác qua state
     with lock:
@@ -5398,6 +5399,16 @@ def profit_protection_monitor(exchange, notifier):
                                         # KHÔNG reset trailing_ts → check lại 1s sau
                                         continue
                                 
+                                # Check fail count trước khi retry
+                                fail_info = _sl_fail_count.get(sym, {"count": 0, "last_fail_ts": 0})
+                                if fail_info["count"] >= 3:
+                                    cooldown = 60
+                                    if now - fail_info["last_fail_ts"] < cooldown:
+                                        logger.debug(f"[PP] {sym} LONG skip SL update: fail count {fail_info['count']}, cooldown {cooldown}s")
+                                        continue
+                                    else:
+                                        _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
+                                
                                 if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
                                     prev_tier = ps["tier"]
                                     ps["tier"] = max(ps["tier"], target_tier)
@@ -5412,6 +5423,13 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
                                     ps["sl_last_updated"] = new_trail_sl
+                                    _sl_fail_count.pop(sym, None)
+                                else:
+                                    if sym not in _sl_fail_count:
+                                        _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
+                                    _sl_fail_count[sym]["count"] += 1
+                                    _sl_fail_count[sym]["last_fail_ts"] = now
+                                    logger.error(f"[PP] ❌ {sym} LONG tier{ps['tier']} FAILED _update_sl (fail_count={_sl_fail_count[sym]['count']})")
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             
@@ -5437,6 +5455,17 @@ def profit_protection_monitor(exchange, notifier):
                                         continue
                                 
                                 # Update SL
+                                # Check fail count trước khi retry (tránh spam)
+                                fail_info = _sl_fail_count.get(sym, {"count": 0, "last_fail_ts": 0})
+                                if fail_info["count"] >= 3:
+                                    cooldown = 60  # 60s cooldown sau 3 lần fail
+                                    if now - fail_info["last_fail_ts"] < cooldown:
+                                        logger.debug(f"[PP] {sym} SHORT skip SL update: fail count {fail_info['count']}, cooldown {cooldown}s")
+                                        continue
+                                    else:
+                                        # Reset fail count sau cooldown
+                                        _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
+                                
                                 update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
                                 if update_ok:
                                     prev_tier = ps["tier"]
@@ -5449,8 +5478,15 @@ def profit_protection_monitor(exchange, notifier):
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
                                     ps["sl_last_updated"] = new_trail_sl  # Track để tích lũy change
+                                    # Reset fail count khi update thành công
+                                    _sl_fail_count.pop(sym, None)
                                 else:
                                     logger.error(f"[PP] ❌ {sym} SHORT T{ps['tier']}→T{target_tier} FAILED _update_sl")
+                                    # Track fail count
+                                    if sym not in _sl_fail_count:
+                                        _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
+                                    _sl_fail_count[sym]["count"] += 1
+                                    _sl_fail_count[sym]["last_fail_ts"] = now
 
         except Exception as e:
             logger.error(f"[PP] ========== LOOP EXCEPTION ========== {e}", exc_info=True)
@@ -5472,6 +5508,19 @@ def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> b
     """
     try:
         close_side = "SELL" if side == "LONG" else "BUY"
+        
+        # Validate SL price trước khi đặt (tránh Binance reject)
+        try:
+            mark_price = exchange.get_ticker_price(symbol)
+            sl_distance_pct = abs(new_sl - mark_price) / mark_price * 100
+            max_sl_distance = 10.0  # 10% max distance
+            
+            if sl_distance_pct > max_sl_distance:
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: SL {new_sl:.6f} xa mark {mark_price:.6f} quá {sl_distance_pct:.1f}% > {max_sl_distance}%")
+                return False
+        except Exception as e:
+            logger.debug(f"[PP] _update_sl {symbol} skip validation: {e}")
+        
         # Lấy SL cũ trước khi đặt mới
         orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
         sl_orders = [o for o in orders
