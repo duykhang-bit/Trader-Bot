@@ -5548,18 +5548,38 @@ def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> b
         except Exception as e:
             logger.debug(f"[PP] _update_sl {symbol} skip validation: {e}")
         
-        # Lấy SL cũ trước khi đặt mới
+        # Lấy TẤT CẢ SL orders cũ (cả regular và algo) trước khi đặt mới
         orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
         sl_orders = [o for o in orders
                      if o.get("type") in ("STOP_MARKET", "STOP")
                      and o.get("reduceOnly", False)]
-        # ĐẶT SL MỚI TRƯỚC — luôn có SL bảo vệ
+        # Lấy thêm algo SL orders
+        algo_sl_orders = []
+        try:
+            algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
+            if isinstance(algo_orders, list):
+                algo_sl_orders = [o for o in algo_orders
+                                  if o.get("symbol") == symbol
+                                  and o.get("type") in ("STOP_MARKET", "CONDITIONAL")]
+        except Exception:
+            pass
+        
+        # ĐẶT SL MỚI TRƯỚC - nếu thành công mới cancel cũ
+        # KHÔNG cancel SL cũ nếu place mới fail → tránh mất SL
         exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
-        # SAU ĐÓ mới cancel SL cũ
+        
+        # Chỉ cancel SL cũ KHI VÀ CHỈ KHI place mới thành công
         for o in sl_orders:
             try:
                 exchange._delete("/fapi/v1/order",
                                  {"symbol": symbol, "orderId": o["orderId"]})
+            except Exception:
+                pass
+        # Cancel algo SL cũ
+        for o in algo_sl_orders:
+            try:
+                exchange._delete("/fapi/v1/algoOrder",
+                                 {"algoId": o.get("algoId", ""), "symbol": symbol})
             except Exception:
                 pass
         return True
