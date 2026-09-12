@@ -6090,6 +6090,14 @@ def pending_order_reviewer(exchange, notifier):
     # Coin không bị auto cancel pending review
     EXCLUDE_PENDING_REVIEW = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
 
+    def is_excluded_pending(sym):
+        if sym in EXCLUDE_PENDING_REVIEW:
+            return True
+        for ex in EXCLUDE_PENDING_REVIEW:
+            if sym.startswith(ex):
+                return True
+        return False
+
     while state["running"]:
         try:
             # ── Chỉ chạy khi user bật toggle trên web ──────────
@@ -6113,7 +6121,7 @@ def pending_order_reviewer(exchange, notifier):
                 order_price = float(order.get("price", 0))
 
                 # Skip coin không bị auto cancel
-                if sym in EXCLUDE_PENDING_REVIEW:
+                if is_excluded_pending(sym):
                     continue
 
                 try:
