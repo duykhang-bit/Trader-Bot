@@ -5396,7 +5396,8 @@ def profit_protection_monitor(exchange, notifier):
                                     
                                     if accumulated_change < min_change:
                                         logger.debug(f"[PP] {sym} LONG skip: accumulated {accumulated_change:.6f} < min {min_change:.6f}")
-                                        # KHÔNG reset trailing_ts → check lại 1s sau
+                                        # Reset trailing_ts NHƯNG chờ ngắn hơn (2s)
+                                        ps["trailing_ts"] = now - (trail_timer - 2.0)
                                         continue
                                 
                                 # Check fail count trước khi retry
@@ -5451,7 +5452,8 @@ def profit_protection_monitor(exchange, notifier):
                                     
                                     if accumulated_change < min_change:
                                         logger.debug(f"[PP] {sym} SHORT skip: accumulated {accumulated_change:.6f} < min {min_change:.6f}")
-                                        # KHÔNG reset trailing_ts → check lại 1s sau (tích lũy change)
+                                        # Reset trailing_ts NHƯNG chờ ngắn hơn (2s) để check lại
+                                        ps["trailing_ts"] = now - (trail_timer - 2.0)  # Chờ 2s thay vì 3s
                                         continue
                                 
                                 # Update SL
