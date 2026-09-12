@@ -5255,19 +5255,34 @@ def profit_protection_monitor(exchange, notifier):
                     except Exception:
                         pass
 
+                    # Suy ra tier từ SL hiện tại trên Binance khi restart
+                    init_tier = 1
+                    if cur_sl > 0 and entry > 0:
+                        if is_long:
+                            sl_vs_entry = (cur_sl - entry) / entry * 100
+                            if sl_vs_entry >= 0:
+                                # SL trên entry → đã tier 2+ (protection)
+                                init_tier = 3 if sl_vs_entry > 0.3 else 2
+                        else:
+                            sl_vs_entry = (entry - cur_sl) / entry * 100
+                            if sl_vs_entry >= 0:
+                                init_tier = 3 if sl_vs_entry > 0.3 else 2
+
                     _pp_state[sym] = {
                         "side":              side,
                         "entry":             entry,
-                        "tier":              1,
+                        "tier":              init_tier,
                         "current_sl":        cur_sl,
-                        "protection_ts":     0.0,
-                        "trailing_ts":       0.0,
-                        "peak_price":        peak_init,   # Fix 5: đỉnh thực từ klines
-                        "trailing_sl":       0.0,
+                        "sl_last_updated":   cur_sl,
+                        "protection_ts":     now if init_tier >= 2 else 0.0,
+                        "trailing_ts":       now if init_tier >= 3 else 0.0,
+                        "peak_price":        peak_init,
+                        "trailing_sl":       cur_sl if init_tier >= 3 else 0.0,
                         "notified":          False,
                         "tp":                0.0,
                         "sl_last_update_ts": 0.0,
                     }
+                    logger.info(f"[PP] {sym} initialized tier={init_tier} sl={cur_sl:.6f} (inferred from Binance SL)")
                     # Lấy TP từ Binance open orders
                     try:
                         orders = exchange._get("/fapi/v1/openOrders", {"symbol": sym}, signed=True)
@@ -5278,7 +5293,6 @@ def profit_protection_monitor(exchange, notifier):
                             _pp_state[sym]["tp"] = float(tp_orders[0].get("stopPrice", 0))
                     except Exception:
                         pass
-                    logger.info(f"[PP] {sym} initialized tier=1 sl={cur_sl:.6f}")
                     continue  # skip vòng này, xử lý vòng sau
 
                 ps = _pp_state[sym]
