@@ -769,8 +769,8 @@ function initTVChart(watchlist) {
       </div>
       <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:20px">
         <iframe id="tv-chart-frame"
-          src="https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:BTCUSDTPERP&interval=15&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en"
-          style="width:100%;height:500px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+          src="https://www.binance.com/vi/futures/BTCUSDT"
+          style="width:100%;height:500px;border:none" frameborder="0"></iframe>
       </div>`;
 }
 async function toggleEntryOffset(enabled) {
@@ -808,10 +808,12 @@ function updateTVChart() {
     const symRaw = document.getElementById('tv-symbol-select')?.value || 'BTCUSDTPERP';
     const interval = document.getElementById('tv-interval-select')?.value || '15';
     
+    // Convert BTCUSDTPERP → BTCUSDT cho Binance URL
+    const binanceSym = symRaw.replace('USDTPERP', 'USDT');
+    
     const tvFrame = document.getElementById('tv-chart-frame');
     if (tvFrame) {
-        const tvInterval = interval.replace('m', '').replace('h', '');
-        tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${symRaw}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
+        tvFrame.src = `https://www.binance.com/vi/futures/${binanceSym}`;
     }
 }
 
