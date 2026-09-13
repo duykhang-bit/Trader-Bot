@@ -757,12 +757,7 @@ function initTVChart(watchlist) {
           <option value="1">1m</option><option value="5">5m</option>
           <option value="15" selected>15m</option><option value="60">1h</option><option value="240">4h</option>
         </select>
-        <span style="margin-left:auto;background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:4px 10px;display:flex;align-items:center;gap:6px">
-          <span id="rt-sym" style="font-size:11px;color:#8b949e;font-weight:600">BTC/USDT</span>
-          <span id="rt-price" style="font-size:15px;font-weight:800;color:#3fb950;letter-spacing:-0.5px">--</span>
-          <span id="rt-chg" style="font-size:11px;font-weight:600;color:#3fb950">--</span>
-        </span>
-        <span style="font-size:13px;color:#f85149;font-weight:600">⚡ Quick Trade</span>
+        <span style="margin-left:auto;font-size:13px;color:#f85149;font-weight:600">⚡ Quick Trade</span>
         <select id="qs-symbol-select" onchange="document.getElementById('qs-symbol').value=this.value; document.getElementById('tv-symbol-select').value=this.value.replace('USDT','')+'USDTPERP'; updateTVChart();"
                 style="background:#0d1117;border:1px solid #5a1a1a;color:#f85149;font-size:12px;padding:3px 8px;border-radius:4px">
           ${watchlist.map(s => `<option value="${s}">${s.replace('USDT','')}</option>`).join('')}
@@ -817,35 +812,6 @@ function updateTVChart() {
         const tvInterval = interval.replace('m', '').replace('h', '');
         tvFrame.src = `https://s.tradingview.com/widgetembed/?frameElementId=tv-chart-frame&symbol=BINANCE:${symRaw}&interval=${tvInterval}&hidesidetoolbar=0&symboledit=1&theme=dark&style=1&timezone=Asia/Ho_Chi_Minh&withdateranges=1&locale=en`;
     }
-    // Update realtime price symbol
-    const sym = symRaw.replace('USDTPERP','USDT').replace('.P','');
-    document.getElementById('rt-sym').textContent = sym.replace('USDT','/USDT');
-    startRtPrice(sym);
-}
-
-// ── REALTIME PRICE VIA BINANCE REST API ────────────────────────
-let _rtSym = null, _rtTimer = null;
-function startRtPrice(sym) {
-    if (_rtTimer) { clearInterval(_rtTimer); _rtTimer = null; }
-    _rtSym = sym;
-    const fetchPrice = () => {
-        fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${sym}`)
-            .then(r => r.json())
-            .then(d => {
-                const p = parseFloat(d.lastPrice), chg = parseFloat(d.priceChangePercent);
-                const priceEl = document.getElementById('rt-price');
-                const chgEl   = document.getElementById('rt-chg');
-                if (!priceEl || isNaN(p)) return;
-                const dec = p < 0.01 ? 6 : p < 1 ? 4 : p < 100 ? 3 : 2;
-                priceEl.textContent = '$' + p.toFixed(dec);
-                priceEl.style.color = chg >= 0 ? '#3fb950' : '#f85149';
-                chgEl.textContent   = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
-                chgEl.style.color   = chg >= 0 ? '#3fb950' : '#f85149';
-            })
-            .catch(() => {});
-    };
-    fetchPrice();
-    _rtTimer = setInterval(fetchPrice, 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════
