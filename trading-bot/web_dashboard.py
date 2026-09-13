@@ -823,28 +823,29 @@ function updateTVChart() {
     startRtPrice(sym);
 }
 
-// ── REALTIME PRICE VIA BINANCE WEBSOCKET ────────────────────────
-let _rtWs = null, _rtSym = null;
+// ── REALTIME PRICE VIA BINANCE REST API ────────────────────────
+let _rtSym = null, _rtTimer = null;
 function startRtPrice(sym) {
-    if (_rtSym === sym && _rtWs && _rtWs.readyState === 1) return;
-    if (_rtWs) { try { _rtWs.close(); } catch(e){} _rtWs = null; }
+    if (_rtTimer) { clearInterval(_rtTimer); _rtTimer = null; }
     _rtSym = sym;
-    const ws = new WebSocket('wss://fstream.binance.com/ws/' + sym.toLowerCase() + '@ticker');
-    ws.onmessage = e => {
-        const d = JSON.parse(e.data);
-        const p = parseFloat(d.c), chg = parseFloat(d.P);
-        const priceEl = document.getElementById('rt-price');
-        const chgEl   = document.getElementById('rt-chg');
-        if (!priceEl) return;
-        const decimals = p < 0.01 ? 6 : p < 1 ? 4 : p < 100 ? 3 : 2;
-        priceEl.textContent = '$' + p.toFixed(decimals);
-        priceEl.style.color = chg >= 0 ? '#3fb950' : '#f85149';
-        chgEl.textContent   = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
-        chgEl.style.color   = chg >= 0 ? '#3fb950' : '#f85149';
+    const fetchPrice = () => {
+        fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${sym}`)
+            .then(r => r.json())
+            .then(d => {
+                const p = parseFloat(d.lastPrice), chg = parseFloat(d.priceChangePercent);
+                const priceEl = document.getElementById('rt-price');
+                const chgEl   = document.getElementById('rt-chg');
+                if (!priceEl || isNaN(p)) return;
+                const dec = p < 0.01 ? 6 : p < 1 ? 4 : p < 100 ? 3 : 2;
+                priceEl.textContent = '$' + p.toFixed(dec);
+                priceEl.style.color = chg >= 0 ? '#3fb950' : '#f85149';
+                chgEl.textContent   = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+                chgEl.style.color   = chg >= 0 ? '#3fb950' : '#f85149';
+            })
+            .catch(() => {});
     };
-    ws.onerror = () => setTimeout(() => startRtPrice(sym), 3000);
-    ws.onclose = () => { if (_rtSym === sym) setTimeout(() => startRtPrice(sym), 3000); };
-    _rtWs = ws;
+    fetchPrice();
+    _rtTimer = setInterval(fetchPrice, 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════
