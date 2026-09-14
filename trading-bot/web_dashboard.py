@@ -6262,9 +6262,6 @@ def api_equity_curve():
     # Tính balance ngược từ hiện tại: balance hiện tại - tổng PnL từ range = start balance
     total_pnl_in_range = sum(t.get("pnl_usdt", 0) for t in closed)
     start_balance = current_balance - total_pnl_in_range
-    # Nếu âm (profit > balance, do withdraw) → dùng current_balance
-    if start_balance < 0:
-        start_balance = current_balance
 
     # Build equity curve: cộng dần PnL
     points = []
