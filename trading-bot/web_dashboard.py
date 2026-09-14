@@ -4129,16 +4129,6 @@ def api_state():
 
     today = datetime.now().strftime("%Y-%m-%d")
     all_closed = [t for t in tlog if t.get("status") == "CLOSED"]
-    # Đọc thêm từ trade_history.json để đếm đúng số lệnh (tránh mất sau restart)
-    try:
-        from trade_history import load_history
-        file_history = load_history()
-        file_closed = [t for t in file_history if t.get("status") == "CLOSED"]
-        # Merge: dùng file nếu nhiều hơn RAM
-        if len(file_closed) > len(all_closed):
-            all_closed = file_closed
-    except Exception:
-        pass
     closed = [t for t in all_closed if abs(t.get("pnl_usdt", 0)) > 0.001]
     today_closed = [t for t in all_closed if t.get("time", "").startswith(today)]
     today_pnl = sum(t.get("pnl_usdt", 0) for t in today_closed)
@@ -6272,9 +6262,9 @@ def api_equity_curve():
     # Tính balance ngược từ hiện tại: balance hiện tại - tổng PnL từ range = start balance
     total_pnl_in_range = sum(t.get("pnl_usdt", 0) for t in closed)
     start_balance = current_balance - total_pnl_in_range
-    # Nếu âm (tổng profit > balance hiện tại, do đã withdraw) → dùng 0
+    # Nếu âm (profit > balance, do withdraw) → dùng current_balance
     if start_balance < 0:
-        start_balance = 0.0
+        start_balance = current_balance
 
     # Build equity curve: cộng dần PnL
     points = []
