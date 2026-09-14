@@ -6277,6 +6277,9 @@ def api_equity_curve():
     # Nếu âm (profit > balance vì đã withdraw) → dùng current_balance
     if start_balance < 0:
         start_balance = current_balance
+    # Nếu âm (profit > balance vì đã withdraw) → dùng current_balance
+    if start_balance < 0:
+        start_balance = current_balance
 
     # Build equity curve: cộng dần PnL
     points = []
