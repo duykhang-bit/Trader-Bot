@@ -6119,13 +6119,8 @@ def api_pnl_stats():
     from datetime import datetime, timedelta, timezone
     import collections
 
-    # Dùng file history làm nguồn chính (tránh RAM tích lũy sau nhiều restart)
-    try:
-        from trade_history import load_history
-        tlog = load_history()
-    except Exception:
-        with _lock:
-            tlog = list(_state.get("trade_log", []))
+    with _lock:
+        tlog = list(_state.get("trade_log", []))
 
     # Chỉ lấy lệnh đã đóng có PnL thực
     closed = [t for t in tlog
@@ -6238,15 +6233,8 @@ def api_equity_curve():
     range_param = request.args.get("range", "30d")
 
     with _lock:
+        tlog = list(_state.get("trade_log", []))
         current_balance = float(_state.get("balance", 0))
-
-    # Dùng file history làm nguồn chính (tránh RAM tích lũy sau nhiều restart)
-    try:
-        from trade_history import load_history
-        tlog = load_history()
-    except Exception:
-        with _lock:
-            tlog = list(_state.get("trade_log", []))
 
     closed = sorted(
         [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001],
@@ -6274,12 +6262,6 @@ def api_equity_curve():
     # Tính balance ngược từ hiện tại: balance hiện tại - tổng PnL từ range = start balance
     total_pnl_in_range = sum(t.get("pnl_usdt", 0) for t in closed)
     start_balance = current_balance - total_pnl_in_range
-    # Nếu âm (profit > balance vì đã withdraw) → dùng current_balance
-    if start_balance < 0:
-        start_balance = current_balance
-    # Nếu âm (profit > balance vì đã withdraw) → dùng current_balance
-    if start_balance < 0:
-        start_balance = current_balance
 
     # Build equity curve: cộng dần PnL
     points = []
