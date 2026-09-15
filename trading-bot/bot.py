@@ -5216,6 +5216,15 @@ def profit_protection_monitor(exchange, notifier):
                 # Lấy mark price từ WS (realtime)
                 mark = prices_now.get(sym, 0)
                 if mark <= 0:
+                    # Coin không trong WATCHLIST → không có WS price → fetch trực tiếp
+                    try:
+                        mark = exchange.get_ticker_price(sym)
+                        if mark > 0:
+                            with lock:
+                                state["prices"][sym] = mark
+                    except Exception:
+                        pass
+                if mark <= 0:
                     continue
 
                 # Tính profit % hiện tại (chưa trừ phí)
