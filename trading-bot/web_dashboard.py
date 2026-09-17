@@ -3759,15 +3759,41 @@ function updatePPMonitor(d) {
             const timerElapsed = ps.trailing_ts > 0 ? Math.min(nowTs - ps.trailing_ts, trailTimer) : 0;
             const timerPct = ps.trailing_ts > 0 ? Math.min(100, timerElapsed / trailTimer * 100) : 0;
             const profStr = `${profit.toFixed(2)}% / ${trailTrigger}%`;
-            const timerStr = ps.trailing_ts > 0
-                ? `⏱ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3`
-                : `→ T3`;
+
+            // Check SL trailing có hợp lệ không (giá bật ngược?)
+            const trailDistPct = parseFloat(document.getElementById('pp-trail-dist')?.value || 0.5) / 100;
+            const peakForCheck = ps.peak_price || 0;
+            const markForCheck = p.mark || 0;
+            let slWouldTrigger = false;
+            if (peakForCheck > 0 && markForCheck > 0) {
+                if (p.side === 'SHORT') {
+                    const trailSLCheck = peakForCheck * (1 + trailDistPct);
+                    slWouldTrigger = trailSLCheck <= markForCheck * 1.0005;
+                } else {
+                    const trailSLCheck = peakForCheck * (1 - trailDistPct);
+                    slWouldTrigger = trailSLCheck >= markForCheck * 0.9995;
+                }
+            }
+
+            const timerReady = ps.trailing_ts > 0 && timerElapsed >= trailTimer;
+            let timerColor, timerStr;
+            if (timerReady && slWouldTrigger) {
+                timerColor = '#f85149';
+                timerStr = `⚠️ Giá bật ngược, chờ peak mới`;
+            } else if (timerReady) {
+                timerColor = '#3fb950';
+                timerStr = `✅ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3`;
+            } else {
+                timerColor = '#d29922';
+                timerStr = ps.trailing_ts > 0 ? `⏱ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3` : `→ T3`;
+            }
+
             progressHtml = `
                 <div style="font-size:10px;color:#3fb950">${profStr}</div>
                 <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
                     <div style="background:#3fb950;height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
                 </div>
-                <div style="font-size:10px;color:#d29922;margin-top:2px">${timerStr}</div>
+                <div style="font-size:10px;color:${timerColor};margin-top:2px">${timerStr}</div>
                 ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
         } else {
             // T3/T4/T5 - hiện tp_progress và tier hiện tại
