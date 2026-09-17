@@ -2359,9 +2359,9 @@ function renderEquityCurve() {
 
     // Range selector
     let rangeHtml = '<div style="display:flex;gap:6px;margin-bottom:12px">';
-    ['7d','30d','90d','all'].forEach(r => {
+    ['1d','7d','30d','90d','all'].forEach(r => {
         const active = r === _equityRange;
-        const label  = r === 'all' ? 'Tất cả' : r === '7d' ? '7 ngày' : r === '30d' ? '30 ngày' : '90 ngày';
+        const label  = r === 'all' ? 'Tất cả' : r === '1d' ? '1 ngày' : r === '7d' ? '7 ngày' : r === '30d' ? '30 ngày' : '90 ngày';
         rangeHtml += `<div onclick="fetchEquityCurve('${r}')"
             style="padding:4px 14px;border-radius:6px;border:1px solid ${active?'#3fb950':'#30363d'};
                    background:${active?'rgba(63,185,80,0.12)':'transparent'};
@@ -6231,7 +6231,9 @@ def api_equity_curve():
 
     # Filter theo range
     now = datetime.now()
-    if range_param == "7d":
+    if range_param == "1d":
+        cutoff = now - timedelta(days=1)
+    elif range_param == "7d":
         cutoff = now - timedelta(days=7)
     elif range_param == "30d":
         cutoff = now - timedelta(days=30)
