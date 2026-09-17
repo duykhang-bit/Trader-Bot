@@ -1612,6 +1612,9 @@ function renderDashboard(d) {
         html += `</table></div>`;
     }
 
+    // ── TV CHART PLACEHOLDER (Open Positions nằm trên, chart nằm dưới) ──
+    html += `<div id="tv-chart-placeholder"></div>`;
+
     // Signal candidates table
     if (d.candidates && d.candidates.length > 0) {
         html += `<div class="section"><table><tr><th>Coin</th><th>Signal</th><th>Score</th><th>Now</th><th>Entry Target</th><th>RSI</th><th>Reason</th></tr>`;
@@ -3516,6 +3519,15 @@ async function refresh(){
         if (_firstRender) {
             saveInputs();
             document.getElementById('content').innerHTML = renderDashboard(d);
+            // Di chuyển TV chart vào placeholder (nằm ngay dưới Open Positions)
+            (function() {
+                const placeholder = document.getElementById('tv-chart-placeholder');
+                const chartEl = document.getElementById('tv-chart-section');
+                if (placeholder && chartEl) {
+                    placeholder.appendChild(chartEl);
+                    chartEl.style.margin = '0 0 12px 0';
+                }
+            })();
             _pumpRendered = false;  // pump-radar-root vừa được tạo lại → cần render lại
             restoreInputs();
             _firstRender = false;
