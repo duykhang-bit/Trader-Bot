@@ -5455,8 +5455,6 @@ def profit_protection_monitor(exchange, notifier):
                                     _sl_fail_count[sym]["count"] += 1
                                     _sl_fail_count[sym]["last_fail_ts"] = now
                                     logger.error(f"[PP] ❌ {sym} LONG tier{ps['tier']} FAILED _update_sl (fail_count={_sl_fail_count[sym]['count']})")
-                                    # Reset trailing_ts để chờ peak mới (tránh spam retry mỗi giây)
-                                    ps["trailing_ts"] = now
                             else:
                                 # new_trail_sl <= current_sl: giá đang giảm, SL không cần update
                                 # Reset trailing_ts để tránh spam loop
@@ -5520,8 +5518,6 @@ def profit_protection_monitor(exchange, notifier):
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
                                     _sl_fail_count[sym]["count"] += 1
                                     _sl_fail_count[sym]["last_fail_ts"] = now
-                                    # Reset trailing_ts để chờ peak mới (tránh spam retry mỗi giây)
-                                    ps["trailing_ts"] = now
                             else:
                                 # new_trail_sl >= current_sl: giá đang tăng lại (SHORT), SL không cần update
                                 # Reset trailing_ts để tránh spam loop
