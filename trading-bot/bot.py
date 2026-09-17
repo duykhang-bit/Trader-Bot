@@ -5409,6 +5409,11 @@ def profit_protection_monitor(exchange, notifier):
 
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
+                            # Nếu SL tính từ peak cao hơn mark (giá bật ngược),
+                            # dùng mark làm base để SL luôn dưới mark
+                            if new_trail_sl >= mark * 0.9995:
+                                new_trail_sl = round(mark * (1 - active_dist), 8)
+                                logger.debug(f"[PP] {sym} LONG SL từ peak quá cao, dùng mark={mark:.6f} → sl={new_trail_sl:.6f}")
                             if new_trail_sl > ps["current_sl"]:
                                 # Fix 2: tránh min_change = 0 khi current_sl = 0
                                 if ps["current_sl"] > 0 and ps["tier"] >= 3:
@@ -5461,6 +5466,12 @@ def profit_protection_monitor(exchange, notifier):
                                 ps["trailing_ts"] = now - (trail_timer - 2.0)
                         else:  # SHORT
                             new_trail_sl = round(peak * (1 + active_dist), 8)
+                            
+                            # Nếu SL tính từ peak thấp hơn mark (giá bật ngược),
+                            # dùng mark làm base để SL luôn trên mark
+                            if new_trail_sl <= mark * 1.0005:
+                                new_trail_sl = round(mark * (1 + active_dist), 8)
+                                logger.debug(f"[PP] {sym} SHORT SL từ peak quá thấp, dùng mark={mark:.6f} → sl={new_trail_sl:.6f}")
                             
                             # FIX: Lần đầu T2→T3, FORCE update SL ngay cả khi new_trail_sl >= current_sl
                             # Vì current_sl có thể là initial SL rất xa (structure low), không phải protection SL
