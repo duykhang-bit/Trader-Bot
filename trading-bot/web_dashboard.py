@@ -4067,19 +4067,31 @@ async function saveP0Settings() {
 function renderCoinglass() {
     const container = document.getElementById('coinglass-container');
     if (!container) return;
-    
+
     container.innerHTML = `
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:20px">
-            <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:12px">
-                📊 Liquidation Heatmap (Coinglass)
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                <span style="font-size:16px;font-weight:600;color:#e6edf3">📊 Liquidation Heatmap</span>
+                <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMap" target="_blank"
+                   style="font-size:11px;color:#58a6ff;border:1px solid #1f6feb;border-radius:4px;padding:2px 8px;text-decoration:none">
+                   🔗 Mở Coinglass
+                </a>
+                <a href="https://www.coinglass.com/pro/futures/liquidation" target="_blank"
+                   style="font-size:11px;color:#3fb950;border:1px solid #238636;border-radius:4px;padding:2px 8px;text-decoration:none">
+                   🔗 Liquidation Live
+                </a>
             </div>
-            <div style="height:600px;border-radius:6px;overflow:hidden">
-                <iframe 
-                    src="https://coinglass.com/pro/futures/LiquidationHeatMap" 
-                    style="width:100%;height:600px;border:none;background:#0d1117" 
-                    allowtransparency="true" 
-                    scrolling="yes">
-                </iframe>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div style="border-radius:6px;overflow:hidden">
+                    <div style="font-size:11px;color:#8b949e;margin-bottom:4px">BTC Open Interest</div>
+                    <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=oi-btc&symbol=BINANCE%3ABTCUSDTPERP&interval=60&hidesidetoolbar=1&symboledit=0&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&studies=OpenInterest%40tv-basicstudies&locale=en"
+                        style="width:100%;height:300px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+                </div>
+                <div style="border-radius:6px;overflow:hidden">
+                    <div style="font-size:11px;color:#8b949e;margin-bottom:4px">ETH Open Interest</div>
+                    <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=oi-eth&symbol=BINANCE%3AETHUSDTPERP&interval=60&hidesidetoolbar=1&symboledit=0&theme=dark&style=1&timezone=Asia%2FHo_Chi_Minh&studies=OpenInterest%40tv-basicstudies&locale=en"
+                        style="width:100%;height:300px;border:none" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+                </div>
             </div>
         </div>
     `;
