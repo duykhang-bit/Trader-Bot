@@ -4070,11 +4070,11 @@ function renderCoinglass() {
     container.innerHTML = `
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:20px">
             <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:12px">
-                📊 Liquidation Heatmap (Coinglass)
+                📊 Liquidation Heatmap
             </div>
             <div style="height:600px;border-radius:6px;overflow:hidden">
                 <iframe 
-                    src="https://coinglass.com/pro/futures/LiquidationHeatMap" 
+                    src="https://app.hyblock.io/liquidation-heatmap" 
                     style="width:100%;height:600px;border:none;background:#0d1117" 
                     allowtransparency="true" 
                     scrolling="yes">
