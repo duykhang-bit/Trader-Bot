@@ -4067,18 +4067,16 @@ async function saveP0Settings() {
 function renderCoinglass() {
     const container = document.getElementById('coinglass-container');
     if (!container) return;
-
     container.innerHTML = `
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:20px">
             <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:12px">
                 📊 Liquidation Heatmap (Coinglass)
             </div>
-            <div style="height:600px;border-radius:6px;overflow:hidden;background:#0d1117">
-                <iframe
-                    src="https://www.coinglass.com/pro/futures/LiquidationHeatMap"
-                    style="width:100%;height:600px;border:none;background:#0d1117"
-                    allowtransparency="true"
-                    referrerpolicy="no-referrer"
+            <div style="height:600px;border-radius:6px;overflow:hidden">
+                <iframe 
+                    src="https://coinglass.com/pro/futures/LiquidationHeatMap" 
+                    style="width:100%;height:600px;border:none;background:#0d1117" 
+                    allowtransparency="true" 
                     scrolling="yes">
                 </iframe>
             </div>
