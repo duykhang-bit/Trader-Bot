@@ -403,7 +403,7 @@ class BinanceFutures:
                 "triggerPrice": str(price),
                 "quantity": str(quantity),
                 "reduceOnly": "true",
-                "workingType": "CONTRACT_PRICE"
+                "workingType": "MARK_PRICE"
             })
             logger.info(f"SL placed (algo): {side} {symbol} qty={quantity} @ {price}")
             return result
@@ -415,7 +415,7 @@ class BinanceFutures:
                 "stopPrice": str(price),
                 "quantity": str(quantity),
                 "reduceOnly": "true",
-                "workingType": "CONTRACT_PRICE",
+                "workingType": "MARK_PRICE",
                 "timeInForce": "GTC"
             })
             logger.info(f"SL placed (regular): {side} {symbol} qty={quantity} @ {price}")
