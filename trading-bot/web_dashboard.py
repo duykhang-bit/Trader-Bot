@@ -4074,7 +4074,7 @@ function renderCoinglass() {
             </div>
             <div style="height:600px;border-radius:6px;overflow:hidden">
                 <iframe 
-                    src="https://app.hyblock.io/liquidation-heatmap" 
+                    src="https://www.coinglass.com/pro/futures/LiquidationHeatMap?coin=BTC" 
                     style="width:100%;height:600px;border:none;background:#0d1117" 
                     allowtransparency="true" 
                     scrolling="yes">
