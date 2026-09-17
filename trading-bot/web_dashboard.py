@@ -625,7 +625,6 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
     </div>
     <div id="content">Loading...</div>
     <div id="tv-chart-section" class="section" style="padding:12px;margin:0 12px 12px"></div>
-    <div id="coinglass-container" style="margin:0 12px 12px"></div>
 </div>
 <div id="toast-container"></div>
 
@@ -4064,28 +4063,6 @@ async function saveP0Settings() {
 // ══════════════════════════════════════════════════════════════════
 // COINGLASS LIQUIDATION HEATMAP
 // ══════════════════════════════════════════════════════════════════
-function renderCoinglass() {
-    const container = document.getElementById('coinglass-container');
-    if (!container) return;
-    container.innerHTML = `
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:20px">
-            <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:12px">
-                📊 Liquidation Heatmap
-            </div>
-            <div style="height:600px;border-radius:6px;overflow:hidden">
-                <iframe 
-                    src="https://www.coinglass.com/pro/futures/LiquidationHeatMap?coin=BTC" 
-                    style="width:100%;height:600px;border:none;background:#0d1117" 
-                    allowtransparency="true" 
-                    scrolling="yes">
-                </iframe>
-            </div>
-        </div>
-    `;
-}
-
-// Render Coinglass khi load trang
-setTimeout(renderCoinglass, 1000);
 
 </script>
 </body>
