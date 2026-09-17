@@ -4500,6 +4500,16 @@ def api_quick_trade():
     if _exchange is None:
         return jsonify({"ok": False, "msg": "Exchange not connected"})
     try:
+        # ── Chống duplicate: không mở thêm nếu đã có position cùng symbol ──
+        with _lock:
+            existing = _state.get("open_positions", [])
+        already_open = any(
+            p.get("symbol") == symbol and abs(float(p.get("positionAmt", p.get("qty", 0)))) > 0
+            for p in existing
+        )
+        if already_open:
+            return jsonify({"ok": False, "msg": f"⚠️ {symbol} đang có position mở rồi, đóng trước!"})
+
         usdt = float(getattr(_config, "MAX_ORDER_USDT", 15))
         leverage = int(getattr(_config, "LEVERAGE", 15))
         price = _exchange.get_ticker_price(symbol)
