@@ -5410,9 +5410,9 @@ def profit_protection_monitor(exchange, notifier):
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
                             # Nếu SL tính từ peak cao hơn mark (giá bật ngược),
-                            # dùng mark làm base để SL luôn dưới mark
+                            # dùng mark làm base + extra buffer để SL luôn dưới mark an toàn
                             if new_trail_sl >= mark * 0.9995:
-                                new_trail_sl = round(mark * (1 - active_dist), 8)
+                                new_trail_sl = round(mark * (1 - active_dist - 0.001), 8)
                                 logger.debug(f"[PP] {sym} LONG SL từ peak quá cao, dùng mark={mark:.6f} → sl={new_trail_sl:.6f}")
                             if new_trail_sl > ps["current_sl"]:
                                 # Fix 2: tránh min_change = 0 khi current_sl = 0
@@ -5434,6 +5434,7 @@ def profit_protection_monitor(exchange, notifier):
                                     cooldown = 60
                                     if now - fail_info["last_fail_ts"] < cooldown:
                                         logger.debug(f"[PP] {sym} LONG skip SL update: fail count {fail_info['count']}, cooldown {cooldown}s")
+                                        ps["trailing_ts"] = now - (trail_timer - 2.0)
                                         continue
                                     else:
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
@@ -5468,15 +5469,18 @@ def profit_protection_monitor(exchange, notifier):
                             new_trail_sl = round(peak * (1 + active_dist), 8)
                             
                             # Nếu SL tính từ peak thấp hơn mark (giá bật ngược),
-                            # dùng mark làm base để SL luôn trên mark
+                            # dùng mark làm base + extra buffer để SL luôn trên mark an toàn
                             if new_trail_sl <= mark * 1.0005:
-                                new_trail_sl = round(mark * (1 + active_dist), 8)
+                                new_trail_sl = round(mark * (1 + active_dist + 0.001), 8)
                                 logger.debug(f"[PP] {sym} SHORT SL từ peak quá thấp, dùng mark={mark:.6f} → sl={new_trail_sl:.6f}")
                             
                             # FIX: Lần đầu T2→T3, FORCE update SL ngay cả khi new_trail_sl >= current_sl
                             # Vì current_sl có thể là initial SL rất xa (structure low), không phải protection SL
                             # Chỉ check direction khi ĐÃ tier>=3 (đã có trailing SL trước đó)
                             force_first_tier3 = (ps["tier"] == 2 and target_tier == 3)
+                            # Chỉ force khi SL mới thực sự tốt hơn hoặc chưa có SL
+                            if force_first_tier3:
+                                force_first_tier3 = (new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0)
                             
                             if force_first_tier3 or new_trail_sl < ps["current_sl"] or ps["current_sl"] == 0:
                                 # Quyết định có check min_change không
@@ -5502,6 +5506,7 @@ def profit_protection_monitor(exchange, notifier):
                                     cooldown = 60  # 60s cooldown sau 3 lần fail
                                     if now - fail_info["last_fail_ts"] < cooldown:
                                         logger.debug(f"[PP] {sym} SHORT skip SL update: fail count {fail_info['count']}, cooldown {cooldown}s")
+                                        ps["trailing_ts"] = now - (trail_timer - 2.0)
                                         continue
                                     else:
                                         # Reset fail count sau cooldown
