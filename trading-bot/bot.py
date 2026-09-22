@@ -5285,6 +5285,8 @@ def profit_protection_monitor(exchange, notifier):
                         "sl_last_updated":   cur_sl,
                         "protection_ts":     now if init_tier >= 2 else 0.0,
                         "trailing_ts":       now if init_tier >= 3 else 0.0,
+                        "tier4_ts":          now if init_tier >= 4 else 0.0,
+                        "tier5_ts":          now if init_tier >= 5 else 0.0,
                         "peak_price":        peak_init,
                         "trailing_sl":       cur_sl if init_tier >= 3 else 0.0,
                         "notified":          False,
@@ -5382,30 +5384,50 @@ def profit_protection_monitor(exchange, notifier):
                             done  = abs(peak - entry)
                             tp_progress = done / total if total > 0 else 0.0
 
-                        # ── Xác định tier và trailing distance theo tp_progress ──
-                        tier4_threshold = getattr(config, "PP_TIER4_TP_PROGRESS_PCT", 50.0) / 100
-                        tier5_threshold = getattr(config, "PP_TIER5_TP_PROGRESS_PCT", 80.0) / 100
-                        tier4_dist      = getattr(config, "PP_TIER4_TRAIL_DIST_PCT",   0.3)  / 100
-                        tier5_dist      = getattr(config, "PP_TIER5_TRAIL_DIST_PCT",   0.15) / 100
+                        # ── Xác định tier và trailing distance theo profit_pct (giống T3) ──
+                        tier4_trigger = getattr(config, "PP_TIER4_TRIGGER_PCT", 2.0)
+                        tier5_trigger = getattr(config, "PP_TIER5_TRIGGER_PCT", 3.0)
+                        tier4_timer   = getattr(config, "PP_TIER4_TIMER_SECS",  3)
+                        tier5_timer   = getattr(config, "PP_TIER5_TIMER_SECS",  3)
+                        tier4_dist    = getattr(config, "PP_TIER4_TRAIL_DIST_PCT", 0.3)  / 100
+                        tier5_dist    = getattr(config, "PP_TIER5_TRAIL_DIST_PCT", 0.15) / 100
 
-                        if tp_progress >= tier5_threshold:
-                            active_dist  = tier5_dist
-                            target_tier  = 5
-                        elif tp_progress >= tier4_threshold:
-                            active_dist  = tier4_dist
-                            target_tier  = 4
+                        # ── Timer T4/T5: khi profit >= threshold ──
+                        if profit_pct >= tier5_trigger:
+                            if ps.get("tier5_ts", 0.0) == 0.0:
+                                ps["tier5_ts"] = now
+                                logger.info(f"[PP] {sym} profit={profit_pct:.2f}% >= {tier5_trigger}% → T5 timer START")
+                            if ps.get("tier4_ts", 0.0) == 0.0:
+                                ps["tier4_ts"] = now
+                        elif profit_pct >= tier4_trigger:
+                            if ps.get("tier4_ts", 0.0) == 0.0:
+                                ps["tier4_ts"] = now
+                                logger.info(f"[PP] {sym} profit={profit_pct:.2f}% >= {tier4_trigger}% → T4 timer START")
+                            ps["tier5_ts"] = 0.0  # reset T5 nếu profit giảm xuống dưới T5 trigger
                         else:
-                            active_dist  = trail_dist
-                            target_tier  = 3
+                            ps["tier4_ts"] = 0.0
+                            ps["tier5_ts"] = 0.0
 
-                        # Fix 3: active_dist luôn dùng dist của tier CAO NHẤT đã đạt
-                        # Tránh tình trạng tier giữ T4 nhưng dist dùng T3 khi tp_progress giảm
+                        # ── Xác định target_tier dựa trên timer đủ chưa ──
+                        tier5_ready = ps.get("tier5_ts", 0.0) > 0 and (now - ps["tier5_ts"]) >= tier5_timer
+                        tier4_ready = ps.get("tier4_ts", 0.0) > 0 and (now - ps["tier4_ts"]) >= tier4_timer
+
+                        if tier5_ready:
+                            active_dist = tier5_dist
+                            target_tier = 5
+                        elif tier4_ready:
+                            active_dist = tier4_dist
+                            target_tier = 4
+                        else:
+                            active_dist = trail_dist
+                            target_tier = 3
+
+                        # active_dist luôn dùng dist của tier CAO NHẤT đã đạt
                         reached_tier = max(ps["tier"], target_tier)
                         if reached_tier >= 5:
                             active_dist = tier5_dist
                         elif reached_tier >= 4:
                             active_dist = tier4_dist
-                        # T3 giữ nguyên trail_dist
 
                         if is_long:
                             new_trail_sl = round(peak * (1 - active_dist), 8)
@@ -5439,16 +5461,16 @@ def profit_protection_monitor(exchange, notifier):
                                     else:
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
                                 
-                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt)):
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt), cancel_nearest=True):
                                     prev_tier = ps["tier"]
                                     ps["tier"] = max(ps["tier"], target_tier)
                                     if ps["tier"] > prev_tier:
                                         logger.info(f"[PP] ✅ {sym} LONG tier{ps['tier']} "
                                                     f"peak={peak:.6f} sl={new_trail_sl:.6f} "
-                                                    f"tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
+                                                    f"profit={profit_pct:.2f}% dist={active_dist*100:.2f}%")
                                     else:
                                         logger.info(f"[PP] 📈 {sym} LONG tier{ps['tier']} UPDATE "
-                                                    f"sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                                    f"sl={new_trail_sl:.6f} profit={profit_pct:.2f}%")
                                     ps["current_sl"]  = new_trail_sl
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
@@ -5512,14 +5534,14 @@ def profit_protection_monitor(exchange, notifier):
                                         # Reset fail count sau cooldown
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
                                 
-                                update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt))
+                                update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt), cancel_nearest=True)
                                 if update_ok:
                                     prev_tier = ps["tier"]
                                     ps["tier"] = max(ps["tier"], target_tier)
                                     if ps["tier"] > prev_tier:
-                                        logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} peak={peak:.6f} sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}% dist={active_dist*100:.2f}%")
+                                        logger.info(f"[PP] ✅ {sym} SHORT tier{ps['tier']} peak={peak:.6f} sl={new_trail_sl:.6f} profit={profit_pct:.2f}% dist={active_dist*100:.2f}%")
                                     else:
-                                        logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE sl={new_trail_sl:.6f} tp_progress={tp_progress*100:.0f}%")
+                                        logger.info(f"[PP] 📉 {sym} SHORT tier{ps['tier']} UPDATE sl={new_trail_sl:.6f} profit={profit_pct:.2f}%")
                                     ps["current_sl"]  = new_trail_sl
                                     ps["trailing_sl"] = new_trail_sl
                                     ps["sl_last_update_ts"] = now
@@ -5551,11 +5573,13 @@ def profit_protection_monitor(exchange, notifier):
     logger.warning(f"[PP] ========== EXITED MAIN LOOP ========== running={state.get('running')}")
 
 
-def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> bool:
+def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float, cancel_nearest: bool = False) -> bool:
     """
     Update SL trên Binance.
     Fix 6: ĐẶT SL MỚI TRƯỚC, sau đó mới cancel cũ.
     Đảm bảo không có khoảng trống không có SL bảo vệ.
+    cancel_nearest=True: sau khi đặt SL mới, cancel đúng 1 SL cũ gần nhất (dùng khi tier>=3)
+    cancel_nearest=False: cancel tất cả SL cũ (behavior cũ)
     """
     try:
         close_side = "SELL" if side == "LONG" else "BUY"
@@ -5581,40 +5605,71 @@ def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float) -> b
         except Exception as e:
             logger.debug(f"[PP] _update_sl {symbol} skip validation: {e}")
         
-        # Lấy TẤT CẢ SL orders cũ (cả regular và algo) trước khi đặt mới
-        orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
-        sl_orders = [o for o in orders
-                     if o.get("type") in ("STOP_MARKET", "STOP")
-                     and o.get("reduceOnly", False)]
-        # Lấy thêm algo SL orders
+        # Lấy TẤT CẢ SL orders cũ (cả regular và algo) TRƯỚC khi đặt mới
+        sl_orders = []
+        try:
+            orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+            sl_orders = [o for o in orders
+                         if o.get("type") in ("STOP_MARKET", "STOP")
+                         and o.get("reduceOnly", False)]
+        except Exception:
+            pass
+
         algo_sl_orders = []
         try:
             algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
             if isinstance(algo_orders, list):
                 algo_sl_orders = [o for o in algo_orders
                                   if o.get("symbol") == symbol
-                                  and o.get("type") in ("STOP_MARKET", "CONDITIONAL")]
+                                  and o.get("type") not in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")]
         except Exception:
             pass
-        
+
         # ĐẶT SL MỚI TRƯỚC - nếu thành công mới cancel cũ
-        # KHÔNG cancel SL cũ nếu place mới fail → tránh mất SL
         exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
-        
-        # Chỉ cancel SL cũ KHI VÀ CHỈ KHI place mới thành công
-        for o in sl_orders:
-            try:
-                exchange._delete("/fapi/v1/order",
-                                 {"symbol": symbol, "orderId": o["orderId"]})
-            except Exception:
-                pass
-        # Cancel algo SL cũ
-        for o in algo_sl_orders:
-            try:
-                exchange._delete("/fapi/v1/algoOrder",
-                                 {"algoId": o.get("algoId", ""), "symbol": symbol})
-            except Exception:
-                pass
+
+        # ── Cancel SL cũ sau khi đặt mới thành công ──
+        if cancel_nearest:
+            # Chỉ cancel 1 SL cũ gần nhất với new_sl (tránh cancel SL ban đầu xa)
+            all_old = []
+            for o in sl_orders:
+                price = float(o.get("stopPrice", 0))
+                if price > 0:
+                    all_old.append(("regular", o, price))
+            for o in algo_sl_orders:
+                price = float(o.get("triggerPrice", o.get("stopPrice", 0)))
+                if price > 0:
+                    all_old.append(("algo", o, price))
+
+            if all_old:
+                # Tìm SL cũ gần new_sl nhất
+                nearest = min(all_old, key=lambda x: abs(x[2] - new_sl))
+                kind, order, price = nearest
+                try:
+                    if kind == "regular":
+                        exchange._delete("/fapi/v1/order",
+                                         {"symbol": symbol, "orderId": order["orderId"]})
+                        logger.debug(f"[PP] Cancelled nearest SL: {price:.6f}")
+                    else:
+                        exchange._delete("/fapi/v1/algoOrder",
+                                         {"algoId": order.get("algoId", ""), "symbol": symbol})
+                        logger.debug(f"[PP] Cancelled nearest algo SL: {price:.6f}")
+                except Exception as e:
+                    logger.debug(f"[PP] Cancel nearest SL failed: {e}")
+        else:
+            # Cancel TẤT CẢ SL cũ (behavior cũ)
+            for o in sl_orders:
+                try:
+                    exchange._delete("/fapi/v1/order",
+                                     {"symbol": symbol, "orderId": o["orderId"]})
+                except Exception:
+                    pass
+            for o in algo_sl_orders:
+                try:
+                    exchange._delete("/fapi/v1/algoOrder",
+                                     {"algoId": o.get("algoId", ""), "symbol": symbol})
+                except Exception:
+                    pass
         return True
     except Exception as e:
         logger.warning(f"[PP] _update_sl {symbol} failed: {e}")

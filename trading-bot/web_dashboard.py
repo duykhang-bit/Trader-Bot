@@ -2102,11 +2102,17 @@ function renderDashboard(d) {
             <div style="border-top:1px solid #21262d;margin:8px 0;padding-top:8px">
               <div style="font-size:11px;color:#58a6ff;margin-bottom:6px;font-weight:600">⚡ Tier 4 — Near TP</div>
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-                <span style="font-size:12px;color:#8b949e;width:130px">Trigger TP%:</span>
-                <input type="number" id="pp-tier4-threshold" min="20" max="90" step="5"
+                <span style="font-size:12px;color:#8b949e;width:130px">Trigger lời:</span>
+                <input type="number" id="pp-tier4-threshold" min="1" max="20" step="0.5"
                        style="width:55px;background:#161b22;border:1px solid #1a3a5a;color:#58a6ff;border-radius:4px;padding:3px 6px;font-size:12px"
-                       title="Khi giá đi được X% đường entry→TP → vào Tier 4">
-                <span style="font-size:11px;color:#484f58">% đường</span>
+                       title="Khi lời >= X% → vào Tier 4">
+                <span style="font-size:11px;color:#484f58">%</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">Timer xác nhận:</span>
+                <input type="number" id="pp-tier4-timer" min="1" max="30" step="1"
+                       style="width:55px;background:#161b22;border:1px solid #1a3a5a;color:#58a6ff;border-radius:4px;padding:3px 6px;font-size:12px">
+                <span style="font-size:11px;color:#484f58">giây</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:12px;color:#8b949e;width:130px">T4 distance:</span>
@@ -2118,11 +2124,17 @@ function renderDashboard(d) {
             <div style="border-top:1px solid #21262d;margin:8px 0;padding-top:8px">
               <div style="font-size:11px;color:#f0883e;margin-bottom:6px;font-weight:600">🔥 Tier 5 — Very Near TP</div>
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-                <span style="font-size:12px;color:#8b949e;width:130px">Trigger TP%:</span>
-                <input type="number" id="pp-tier5-threshold" min="50" max="99" step="5"
+                <span style="font-size:12px;color:#8b949e;width:130px">Trigger lời:</span>
+                <input type="number" id="pp-tier5-threshold" min="1" max="30" step="0.5"
                        style="width:55px;background:#161b22;border:1px solid #3a2a00;color:#f0883e;border-radius:4px;padding:3px 6px;font-size:12px"
-                       title="Khi giá đi được X% đường entry→TP → vào Tier 5">
-                <span style="font-size:11px;color:#484f58">% đường</span>
+                       title="Khi lời >= X% → vào Tier 5">
+                <span style="font-size:11px;color:#484f58">%</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <span style="font-size:12px;color:#8b949e;width:130px">Timer xác nhận:</span>
+                <input type="number" id="pp-tier5-timer" min="1" max="30" step="1"
+                       style="width:55px;background:#161b22;border:1px solid #3a2a00;color:#f0883e;border-radius:4px;padding:3px 6px;font-size:12px">
+                <span style="font-size:11px;color:#484f58">giây</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-size:12px;color:#8b949e;width:130px">T5 distance:</span>
@@ -3686,9 +3698,11 @@ async function loadPP() {
         set('pp-trail-trigger', s.trailing_trigger_pct);
         set('pp-trail-timer',   s.trailing_timer_secs);
         set('pp-trail-dist',    s.trailing_distance_pct);
-        set('pp-tier4-threshold', s.tier4_tp_progress_pct);
+        set('pp-tier4-threshold', s.tier4_trigger_pct);
+        set('pp-tier4-timer',   s.tier4_timer_secs);
         set('pp-tier4-dist',    s.tier4_trail_dist_pct);
-        set('pp-tier5-threshold', s.tier5_tp_progress_pct);
+        set('pp-tier5-threshold', s.tier5_trigger_pct);
+        set('pp-tier5-timer',   s.tier5_timer_secs);
         set('pp-tier5-dist',    s.tier5_trail_dist_pct);
         set('pp-apply-scan',    s.apply_scan);
         set('pp-apply-pump',    s.apply_pump);
@@ -3870,9 +3884,11 @@ async function savePP() {
         trailing_trigger_pct:  parseFloat(get('pp-trail-trigger')),
         trailing_timer_secs:   parseInt(get('pp-trail-timer')),
         trailing_distance_pct: parseFloat(get('pp-trail-dist')),
-        tier4_tp_progress_pct: parseFloat(get('pp-tier4-threshold')),
+        tier4_trigger_pct:     parseFloat(get('pp-tier4-threshold')),
+        tier4_timer_secs:      parseInt(get('pp-tier4-timer')),
         tier4_trail_dist_pct:  parseFloat(get('pp-tier4-dist')),
-        tier5_tp_progress_pct: parseFloat(get('pp-tier5-threshold')),
+        tier5_trigger_pct:     parseFloat(get('pp-tier5-threshold')),
+        tier5_timer_secs:      parseInt(get('pp-tier5-timer')),
         tier5_trail_dist_pct:  parseFloat(get('pp-tier5-dist')),
         apply_scan:            get('pp-apply-scan'),
         apply_pump:            get('pp-apply-pump'),
@@ -5688,9 +5704,11 @@ def api_pp_settings_get():
             "trailing_trigger_pct":  getattr(_cfg, "PP_TRAILING_TRIGGER_PCT",    1.0),
             "trailing_timer_secs":   getattr(_cfg, "PP_TRAILING_TIMER_SECS",     7),
             "trailing_distance_pct": getattr(_cfg, "PP_TRAILING_DISTANCE_PCT",   0.5),
-            "tier4_tp_progress_pct": getattr(_cfg, "PP_TIER4_TP_PROGRESS_PCT",  50.0),
+            "tier4_trigger_pct":     getattr(_cfg, "PP_TIER4_TRIGGER_PCT",       2.0),
+            "tier4_timer_secs":      getattr(_cfg, "PP_TIER4_TIMER_SECS",        3),
             "tier4_trail_dist_pct":  getattr(_cfg, "PP_TIER4_TRAIL_DIST_PCT",    0.3),
-            "tier5_tp_progress_pct": getattr(_cfg, "PP_TIER5_TP_PROGRESS_PCT",  80.0),
+            "tier5_trigger_pct":     getattr(_cfg, "PP_TIER5_TRIGGER_PCT",       3.0),
+            "tier5_timer_secs":      getattr(_cfg, "PP_TIER5_TIMER_SECS",        3),
             "tier5_trail_dist_pct":  getattr(_cfg, "PP_TIER5_TRAIL_DIST_PCT",   0.15),
             "apply_scan":            getattr(_cfg, "PP_APPLY_SCAN",              True),
             "apply_pump":            getattr(_cfg, "PP_APPLY_PUMP",              True),
@@ -5714,9 +5732,11 @@ def api_pp_settings_save():
         if "trailing_trigger_pct"  in data: _cfg.PP_TRAILING_TRIGGER_PCT    = max(0.5, min(10.0, float(data["trailing_trigger_pct"])))
         if "trailing_timer_secs"   in data: _cfg.PP_TRAILING_TIMER_SECS     = max(3,   min(30,   int(data["trailing_timer_secs"])))
         if "trailing_distance_pct" in data: _cfg.PP_TRAILING_DISTANCE_PCT   = max(0.1, min(3.0,  float(data["trailing_distance_pct"])))
-        if "tier4_tp_progress_pct" in data: _cfg.PP_TIER4_TP_PROGRESS_PCT   = max(20.0,min(90.0, float(data["tier4_tp_progress_pct"])))
+        if "tier4_trigger_pct"     in data: _cfg.PP_TIER4_TRIGGER_PCT       = max(0.5, min(20.0, float(data["tier4_trigger_pct"])))
+        if "tier4_timer_secs"      in data: _cfg.PP_TIER4_TIMER_SECS        = max(1,   min(30,   int(data["tier4_timer_secs"])))
         if "tier4_trail_dist_pct"  in data: _cfg.PP_TIER4_TRAIL_DIST_PCT    = max(0.05,min(2.0,  float(data["tier4_trail_dist_pct"])))
-        if "tier5_tp_progress_pct" in data: _cfg.PP_TIER5_TP_PROGRESS_PCT   = max(50.0,min(99.0, float(data["tier5_tp_progress_pct"])))
+        if "tier5_trigger_pct"     in data: _cfg.PP_TIER5_TRIGGER_PCT       = max(0.5, min(30.0, float(data["tier5_trigger_pct"])))
+        if "tier5_timer_secs"      in data: _cfg.PP_TIER5_TIMER_SECS        = max(1,   min(30,   int(data["tier5_timer_secs"])))
         if "tier5_trail_dist_pct"  in data: _cfg.PP_TIER5_TRAIL_DIST_PCT    = max(0.05,min(1.0,  float(data["tier5_trail_dist_pct"])))
         if "apply_scan"            in data: _cfg.PP_APPLY_SCAN              = bool(data["apply_scan"])
         if "apply_pump"            in data: _cfg.PP_APPLY_PUMP              = bool(data["apply_pump"])
@@ -5733,9 +5753,11 @@ def api_pp_settings_save():
             "PP_TRAILING_TRIGGER_PCT":    str(round(_cfg.PP_TRAILING_TRIGGER_PCT, 2)),
             "PP_TRAILING_TIMER_SECS":     str(_cfg.PP_TRAILING_TIMER_SECS),
             "PP_TRAILING_DISTANCE_PCT":   str(round(_cfg.PP_TRAILING_DISTANCE_PCT, 2)),
-            "PP_TIER4_TP_PROGRESS_PCT":   str(round(_cfg.PP_TIER4_TP_PROGRESS_PCT, 1)),
+            "PP_TIER4_TRIGGER_PCT":       str(round(_cfg.PP_TIER4_TRIGGER_PCT, 2)),
+            "PP_TIER4_TIMER_SECS":        str(_cfg.PP_TIER4_TIMER_SECS),
             "PP_TIER4_TRAIL_DIST_PCT":    str(round(_cfg.PP_TIER4_TRAIL_DIST_PCT, 2)),
-            "PP_TIER5_TP_PROGRESS_PCT":   str(round(_cfg.PP_TIER5_TP_PROGRESS_PCT, 1)),
+            "PP_TIER5_TRIGGER_PCT":       str(round(_cfg.PP_TIER5_TRIGGER_PCT, 2)),
+            "PP_TIER5_TIMER_SECS":        str(_cfg.PP_TIER5_TIMER_SECS),
             "PP_TIER5_TRAIL_DIST_PCT":    str(round(_cfg.PP_TIER5_TRAIL_DIST_PCT, 2)),
             "PP_APPLY_SCAN":              str(_cfg.PP_APPLY_SCAN),
             "PP_APPLY_PUMP":              str(_cfg.PP_APPLY_PUMP),
