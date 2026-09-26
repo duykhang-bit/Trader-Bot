@@ -1,6 +1,7 @@
 # ============================================================
 # MULTI-COIN TRADING BOT — Dashboard + Auto Trade
 # ============================================================
+import atexit
 import time, logging, os, sys, threading
 
 # Đảm bảo thư mục chứa bot.py luôn có trong sys.path
@@ -11,6 +12,29 @@ from datetime import datetime
 
 # ── SINGLE INSTANCE LOCK — chỉ cho phép 1 bot chạy ──
 _LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
+_lock_fp = None
+
+
+def _release_single_instance():
+    """Idempotently release the process lock without unlinking its inode."""
+    global _lock_fp
+    lock_fp, _lock_fp = _lock_fp, None
+    if lock_fp is None or lock_fp.closed:
+        return
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            lock_fp.seek(0)
+            msvcrt.locking(lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fp, fcntl.LOCK_UN)
+    except (IOError, OSError):
+        pass
+    finally:
+        lock_fp.close()
+
+
 def _check_single_instance():
     global _lock_fp
     if sys.platform == "win32":
@@ -22,6 +46,8 @@ def _check_single_instance():
             _lock_fp.write(str(os.getpid()))
             _lock_fp.flush()
         except OSError:
+            _lock_fp.close()
+            _lock_fp = None
             print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
             sys.exit(0)
     else:
@@ -33,10 +59,13 @@ def _check_single_instance():
             _lock_fp.write(str(os.getpid()))
             _lock_fp.flush()
         except IOError:
+            _lock_fp.close()
+            _lock_fp = None
             print("⚠️ Bot đã đang chạy (instance khác). Thoát.")
             sys.exit(0)
 
 _check_single_instance()
+atexit.register(_release_single_instance)
 
 # Print server IP on startup (for Binance whitelist)
 try:
@@ -53,6 +82,11 @@ from scanner import scan_market, run_pump_scan, WATCHLIST, _klines_to_df, _pendi
 from notifier import Notifier
 from liquidation_tracker import LiquidationTracker
 from liq_strategy import LiqStrategy, SplitPosition
+from pump_entry_coordinator import (
+    PumpEntryCoordinator,
+    decide_short_entry,
+    detect_bearish_bos_1m,
+)
 
 os.makedirs("logs", exist_ok=True)
 
@@ -73,6 +107,47 @@ logging.basicConfig(
     handlers=[_log_handler]
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# PROTECTED PENDING-ORDER COINS
+# ============================================================
+_PROTECTED_PENDING_DEFAULTS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"
+]
+_PROTECTED_PENDING_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "protected_pending_order_coins.json",
+)
+
+
+def _normalize_protected_symbols(symbols) -> list:
+    """Return canonical, deduplicated Binance Futures symbols."""
+    normalized = []
+    for raw in symbols or []:
+        symbol = str(raw).strip().upper()
+        if symbol and symbol not in normalized:
+            normalized.append(symbol)
+    return normalized
+
+
+def _load_protected_pending_symbols() -> list:
+    """Load JSON as authoritative, including an intentionally empty list."""
+    import json
+    try:
+        with open(_PROTECTED_PENDING_PATH, "r", encoding="utf-8") as fh:
+            saved = json.load(fh)
+        if isinstance(saved, list):
+            return _normalize_protected_symbols(saved)
+        logger.warning("[OrderProtect] JSON is not a list; using config fallback")
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning(f"[OrderProtect] Load failed: {exc}; using config fallback")
+    configured = getattr(
+        config, "PROTECTED_PENDING_ORDER_COINS", _PROTECTED_PENDING_DEFAULTS
+    )
+    return _normalize_protected_symbols(configured)
+
 
 # ============================================================
 # SHARED STATE
@@ -97,8 +172,512 @@ state = {
     "split_positions": {},
     "liq_data":       {},
     "pending_smart_orders": {},
+    # JSON-backed list loaded before startup cleanup, so protected app orders
+    # survive process restarts as well as scheduled reviewers.
+    "protected_pending_order_coins": _load_protected_pending_symbols(),
 }
 lock = threading.RLock()  # RLock: cho phép cùng thread acquire lại (tránh deadlock _append_trade)
+_pump_entry_coordinator = PumpEntryCoordinator(
+    reservation_ttl_sec=getattr(config, "PUMP_ENTRY_RESERVATION_TTL_SEC", 20),
+    watch_ttl_sec=getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180),
+)
+
+
+def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
+                        current_price: float, planned_entry: float):
+    """Revalidate closed-1m bearish BOS and reserve this symbol for entry."""
+    if _pump_entry_coordinator.snapshot(symbol).value == "IN_TRADE":
+        try:
+            if _get_live_position_amt(exchange, symbol) != 0:
+                return None
+        except Exception as exc:
+            logger.warning(f"[PumpCoord] {source} {symbol}: position reconcile failed: {exc}")
+            return None
+        _pump_entry_coordinator.mark_flat(
+            symbol, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
+        )
+        return None
+    _pump_entry_coordinator.observe_pump(symbol, peak_price, source)
+    try:
+        from pump_detector import _to_df
+        klines = exchange.get_klines(
+            symbol, "1m", limit=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30)
+        )
+        bos = detect_bearish_bos_1m(
+            _to_df(klines),
+            now_ms=int(time.time() * 1000),
+            lookback=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30),
+        )
+    except Exception as exc:
+        logger.warning(f"[PumpCoord] {source} {symbol}: BOS revalidation failed: {exc}")
+        return None
+    if not _pump_entry_coordinator.confirm_bos(symbol, bos):
+        logger.info(f"[PumpCoord] {source} {symbol}: WATCHING_TOP ({bos.reason})")
+        return None
+
+    decision = decide_short_entry(
+        current_price=current_price,
+        planned_entry=planned_entry,
+        market_proximity_pct=getattr(config, "PUMP_MARKET_ENTRY_PROXIMITY_PCT", 0.20),
+        max_above_entry_pct=getattr(config, "PUMP_MAX_ABOVE_ENTRY_PCT", 0.75),
+        max_retest_distance_pct=getattr(config, "PUMP_MAX_RETEST_DISTANCE_PCT", 5.0),
+    )
+    if decision.action == "REJECT":
+        logger.info(f"[PumpCoord] {source} {symbol}: reject ({decision.reason})")
+        return None
+    reservation = _pump_entry_coordinator.reserve(symbol, source)
+    if reservation is None:
+        logger.info(f"[PumpCoord] {source} {symbol}: entry already reserved")
+        return None
+    return reservation, decision, bos
+
+
+def _finish_pump_reservation(prepared, *, placed: bool, in_trade: bool = True):
+    """Always release failed placements; retain successful LIMIT reservations."""
+    if not prepared:
+        return
+    reservation = prepared[0]
+    if placed:
+        _pump_entry_coordinator.placement_succeeded(reservation, in_trade=in_trade)
+    else:
+        _pump_entry_coordinator.placement_failed(reservation)
+
+
+def _is_protected_pending_symbol(symbol: str) -> bool:
+    """Whether automatic/bulk cleanup must preserve every order on symbol."""
+    symbol = str(symbol or "").strip().upper()
+    with lock:
+        protected = tuple(state.get("protected_pending_order_coins", []))
+    return any(
+        symbol == base or symbol.startswith(f"{base}_")
+        for base in protected
+    )
+
+
+def _is_reduce_only_order(order: dict) -> bool:
+    value = order.get("reduceOnly", False)
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return bool(value)
+
+
+def _delete_entry_order_if_unprotected(exchange, endpoint: str,
+                                         params: dict, symbol: str,
+                                         source: str) -> bool:
+    """Serialize protection check and exact entry-order deletion."""
+    with lock:
+        if _is_protected_pending_symbol(symbol):
+            logger.info(f"[{source}] Preserved protected entry order for {symbol}")
+            return False
+        exchange._delete(endpoint, params)
+        return True
+
+
+def _cancel_reduce_only_orders(exchange, symbol: str, source: str) -> int:
+    """Delete stale exits exactly while preserving manual entry orders."""
+    cancelled = 0
+    try:
+        for order in exchange._get(
+            "/fapi/v1/openOrders", {"symbol": symbol}, signed=True
+        ):
+            if not _is_reduce_only_order(order):
+                continue
+            exchange._delete(
+                "/fapi/v1/order",
+                {"symbol": symbol, "orderId": order.get("orderId")},
+            )
+            cancelled += 1
+    except Exception as exc:
+        logger.warning(f"[{source}] Regular exit cleanup {symbol}: {exc}")
+    try:
+        algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
+        if isinstance(algo_orders, list):
+            for order in algo_orders:
+                if (
+                    order.get("symbol") != symbol
+                    or not _is_reduce_only_order(order)
+                    or not order.get("algoId")
+                ):
+                    continue
+                exchange._delete(
+                    "/fapi/v1/algoOrder",
+                    {"symbol": symbol, "algoId": order.get("algoId")},
+                )
+                cancelled += 1
+    except Exception as exc:
+        logger.warning(f"[{source}] Algo exit cleanup {symbol}: {exc}")
+    return cancelled
+
+
+def _cancel_all_orders_if_unprotected(exchange, symbol: str, source: str) -> bool:
+    """Cancel broadly only when safe; protected symbols retain entry orders."""
+    with lock:
+        if _is_protected_pending_symbol(symbol):
+            exits = _cancel_reduce_only_orders(exchange, symbol, source)
+            logger.info(
+                f"[{source}] Preserved protected entries for {symbol}; "
+                f"removed {exits} stale reduce-only exits"
+            )
+            return False
+        exchange.cancel_all_orders(symbol)
+        return True
+
+# Serialize close/partial-close actions per symbol. The shared state lock only
+# protects Python data; it does not make Binance position reads + orders atomic.
+_position_close_locks_guard = threading.Lock()
+_position_close_locks: dict[str, threading.RLock] = {}
+_entry_capacity_lock = threading.Lock()  # serialize final account-wide entry checks
+
+
+def _position_close_lock(symbol: str) -> threading.RLock:
+    """Return the shared close lock for one symbol."""
+    with _position_close_locks_guard:
+        return _position_close_locks.setdefault(symbol, threading.RLock())
+
+
+def _get_live_position_amt(exchange, symbol: str) -> float:
+    """Fetch the current Binance one-way position amount for ``symbol``.
+
+    A failed live read is deliberately allowed to raise: skipping a close is
+    safer than acting on stale cached quantity and reversing the position.
+    """
+    positions = exchange._get(
+        "/fapi/v2/positionRisk", {"symbol": symbol}, signed=True
+    )
+    if isinstance(positions, dict):
+        positions = [positions]
+    return float(next(
+        (p.get("positionAmt", 0) for p in positions if p.get("symbol") == symbol),
+        0,
+    ))
+
+
+def _get_live_open_positions(exchange) -> list:
+    """Return authoritative non-zero Binance positions."""
+    positions = exchange._get("/fapi/v2/positionRisk", signed=True)
+    if isinstance(positions, dict):
+        positions = [positions]
+    return [p for p in positions if abs(float(p.get("positionAmt", 0))) > 0]
+
+
+def _place_entry_order_safely(exchange, symbol: str, side: str, quantity: float,
+                              order_type: str = "MARKET",
+                              price: float = 0.0, *,
+                              client_order_id: str = "",
+                              post_only: bool = False) -> dict | None:
+    """Atomically enforce live/pending capacity before any automated entry.
+
+    All realtime pump, CTD, and armed producers use this gate, so a pending
+    LIMIT counts as an occupied slot and same-symbol orders cannot stack.
+    """
+    with _entry_capacity_lock:
+        live_positions = _get_live_open_positions(exchange)
+        live_symbols = {p.get("symbol") for p in live_positions}
+        pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+        pending_symbols = {
+            o.get("symbol") for o in pending_orders
+            if not o.get("reduceOnly", False)
+        }
+        occupied_symbols = live_symbols | pending_symbols
+        if symbol in occupied_symbols:
+            logger.info(f"[EntryGate] Skip {symbol}: live/pending entry exists")
+            return False
+        if len(occupied_symbols) >= config.MAX_OPEN_POSITIONS:
+            logger.info(
+                f"[EntryGate] Skip {symbol}: capacity "
+                f"{len(occupied_symbols)}/{config.MAX_OPEN_POSITIONS}"
+            )
+            return False
+
+        with _position_close_lock(symbol):
+            # Recheck the symbol while serialized with close/partial actions.
+            if _get_live_position_amt(exchange, symbol) != 0:
+                logger.info(f"[EntryGate] Skip {symbol}: live position appeared")
+                return False
+            symbol_orders = exchange._get(
+                "/fapi/v1/openOrders", {"symbol": symbol}, signed=True
+            )
+            if any(not o.get("reduceOnly", False) for o in symbol_orders):
+                logger.info(f"[EntryGate] Skip {symbol}: pending entry appeared")
+                return False
+
+            if order_type == "LIMIT":
+                kwargs = {}
+                if post_only:
+                    kwargs["post_only"] = True
+                if client_order_id:
+                    kwargs["client_order_id"] = client_order_id
+                result = exchange.place_limit_order(
+                    symbol, side, quantity, price, **kwargs
+                )
+            else:
+                kwargs = ({"client_order_id": client_order_id}
+                          if client_order_id else {})
+                result = exchange.place_market_order(
+                    symbol, side, quantity, **kwargs
+                )
+            return result if isinstance(result, dict) else {"accepted": True}
+
+
+PUMP_LIMIT_CLIENT_PREFIX = "pump_retest_"
+PUMP_MARKET_CLIENT_PREFIX = "pump_market_"
+_PUMP_ACTIVE_STATUSES = {"NEW", "PARTIALLY_FILLED", "FILLED"}
+_PUMP_TERMINAL_STATUSES = {"CANCELED", "EXPIRED", "REJECTED"}
+
+
+def _pump_client_order_id(prepared, order_type: str) -> str:
+    reservation = prepared[0]
+    prefix = (PUMP_LIMIT_CLIENT_PREFIX if order_type == "LIMIT"
+              else PUMP_MARKET_CLIENT_PREFIX)
+    return f"{prefix}{reservation.token[:36 - len(prefix)]}"
+
+
+def _query_order_by_client_id(exchange, symbol: str, client_order_id: str):
+    return exchange._get(
+        "/fapi/v1/order",
+        {"symbol": symbol, "origClientOrderId": client_order_id},
+        signed=True,
+    )
+
+
+def _pump_order_params(info: dict, symbol: str) -> dict:
+    if info.get("order_id") is not None:
+        return {"symbol": symbol, "orderId": info["order_id"]}
+    return {
+        "symbol": symbol,
+        "origClientOrderId": info.get("client_order_id", ""),
+    }
+
+
+def _order_was_accepted(order: dict | None) -> bool:
+    if not isinstance(order, dict):
+        return False
+    status = str(order.get("status", "")).upper()
+    executed = float(order.get("executedQty", 0) or 0)
+    if executed > 0:
+        return True
+    if status in _PUMP_TERMINAL_STATUSES:
+        return False
+    return status in _PUMP_ACTIVE_STATUSES or bool(order.get("orderId"))
+
+
+def _place_reserved_pump_order(exchange, prepared, symbol: str, quantity: float,
+                               *, order_type: str,
+                               price: float = 0.0,
+                               limit_metadata: dict | None = None):
+    """Place and reconcile one reserved pump order, completing ownership once.
+
+    Every pump placement has a deterministic client ID. If submission raises,
+    Binance is queried by that ID before the reservation can be released.
+    Unknown LIMIT outcomes stay owned/monitored; unknown MARKET outcomes stay
+    owned unless an authoritative flat-position check proves no fill.
+    """
+    if not prepared:
+        return False
+    client_order_id = _pump_client_order_id(prepared, order_type)
+    result = None
+    accepted = False
+    try:
+        result = _place_entry_order_safely(
+            exchange, symbol, "SELL", quantity,
+            order_type=order_type, price=price,
+            client_order_id=client_order_id,
+            post_only=(order_type == "LIMIT"),
+        )
+        accepted = _order_was_accepted(result)
+    except Exception as placement_exc:
+        # Local post-only quote validation proves no request was submitted.
+        if isinstance(placement_exc, ValueError) and "post-only" in str(placement_exc):
+            logger.info(f"[PumpOrder] {symbol} rejected before submit: {placement_exc}")
+        else:
+            try:
+                result = _query_order_by_client_id(
+                    exchange, symbol, client_order_id
+                )
+                accepted = _order_was_accepted(result)
+                logger.warning(
+                    f"[PumpOrder] {symbol} placement raised but reconciled "
+                    f"clientId={client_order_id} status={result.get('status', '')}"
+                )
+            except Exception as reconcile_exc:
+                absent = (
+                    "-2013" in str(reconcile_exc)
+                    or "does not exist" in str(reconcile_exc).lower()
+                )
+                if order_type == "MARKET":
+                    try:
+                        accepted = _get_live_position_amt(exchange, symbol) != 0
+                    except Exception:
+                        accepted = not absent
+                else:
+                    # An inconclusive LIMIT query must remain owned so a late
+                    # exchange acknowledgement cannot become an orphan.
+                    accepted = not absent
+                if accepted:
+                    result = {
+                        "status": "UNKNOWN",
+                        "origClientOrderId": client_order_id,
+                    }
+                logger.warning(
+                    f"[PumpOrder] {symbol} reconciliation "
+                    f"{'retained' if accepted else 'absent'}: {reconcile_exc}"
+                )
+
+    if accepted and order_type == "LIMIT":
+        info = dict(limit_metadata or {})
+        info.update({
+            "entry_price": float((result or {}).get("price", 0) or price),
+            "qty": quantity,
+            "order_id": (result or {}).get("orderId"),
+            "client_order_id": client_order_id,
+            "ts": time.time(),
+        })
+        with lock:
+            state.setdefault("pump_limit_orders", {})[symbol] = info
+
+    _finish_pump_reservation(
+        prepared,
+        placed=accepted,
+        in_trade=(order_type == "MARKET"),
+    )
+    return result if accepted else False
+
+
+def _emergency_flatten(exchange, symbol: str, attempts: int = 5) -> bool:
+    """Retry a reduce-only flatten and verify Binance reports the symbol flat."""
+    for attempt in range(1, attempts + 1):
+        try:
+            live_amt = _get_live_position_amt(exchange, symbol)
+            if live_amt == 0:
+                return True
+            close_side = "SELL" if live_amt > 0 else "BUY"
+            exchange.place_market_order(
+                symbol, close_side, abs(live_amt), reduce_only=True
+            )
+            time.sleep(0.25)
+        except Exception as exc:
+            logger.error(
+                f"[EmergencyClose] {symbol} attempt {attempt}/{attempts}: {exc}"
+            )
+            time.sleep(0.25)
+    try:
+        return _get_live_position_amt(exchange, symbol) == 0
+    except Exception:
+        return False
+
+
+def _recover_unprotected_position(exchange, notifier, symbol: str,
+                                  source: str) -> bool:
+    """Flatten an entry whose SL failed; alert loudly if exposure remains."""
+    flattened = _emergency_flatten(exchange, symbol)
+    if flattened:
+        _remove_entry_cache(symbol)
+        _set_local_position_amt(symbol, 0.0)
+        _pump_entry_coordinator.mark_flat(
+            symbol, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
+        )
+        logger.error(f"[{source}] SL failed {symbol}; emergency position verified flat")
+        return True
+
+    # Keep entry cache/state so max-loss monitoring still sees the exposure.
+    logger.critical(
+        f"[{source}] UNPROTECTED POSITION {symbol}: emergency flatten unverified"
+    )
+    try:
+        notifier.telegram.send(
+            f"🚨 <b>KHẨN CẤP: {symbol} CHƯA CÓ SL</b>\n"
+            f"Nguồn: {source}\n"
+            f"Đóng reduce-only 5 lần nhưng chưa xác nhận flat.\n"
+            f"Kiểm tra Binance ngay!\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+    except Exception:
+        pass
+    return False
+
+
+def _cleanup_pump_limits_on_startup(exchange, notifier) -> int:
+    """Cancel only pump-owned retest LIMITs before volatile metadata resets.
+
+    Any partial fill is flattened after the exact remainder is cancelled. An
+    unresolved cancellation aborts startup, which is safer than allowing an
+    old order to fill without its SL/TP plan. Unrelated manual/scan LIMITs are
+    deliberately untouched.
+    """
+    all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
+    owned = [
+        order for order in all_orders
+        if (
+            not _is_reduce_only_order(order)
+            and str(order.get("type", "")).upper() == "LIMIT"
+            and str(order.get("clientOrderId", order.get("origClientOrderId", "")))
+            .startswith(PUMP_LIMIT_CLIENT_PREFIX)
+        )
+    ]
+    for order in owned:
+        symbol = order.get("symbol", "")
+        order_id = order.get("orderId")
+        client_id = str(
+            order.get("clientOrderId", order.get("origClientOrderId", ""))
+        )
+        try:
+            reconciled = exchange._delete(
+                "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}
+            )
+        except Exception as cancel_exc:
+            try:
+                reconciled = _query_order_by_client_id(exchange, symbol, client_id)
+            except Exception as query_exc:
+                raise RuntimeError(
+                    f"cannot reconcile pump LIMIT {symbol}/{client_id}: "
+                    f"cancel={cancel_exc}; query={query_exc}"
+                ) from query_exc
+
+        status = str((reconciled or {}).get("status", "")).upper()
+        executed = float((reconciled or {}).get("executedQty", 0) or 0)
+        if status in {"NEW", "PARTIALLY_FILLED"}:
+            raise RuntimeError(
+                f"pump LIMIT remains open after startup cancel: {symbol}/{client_id}"
+            )
+
+        live_amt = _get_live_position_amt(exchange, symbol)
+        if executed > 0 or live_amt != 0:
+            logger.critical(
+                f"[Startup] Pump LIMIT {symbol} had fill qty={executed}; "
+                "flattening before startup"
+            )
+            flattened = _emergency_flatten(exchange, symbol)
+            try:
+                notifier.telegram.send(
+                    f"🚨 <b>PUMP LIMIT RECOVERY: {symbol}</b>\n"
+                    f"Startup found a partial/filled old pump order "
+                    f"(qty={executed:g}). Remaining LIMIT was cancelled; "
+                    f"position flatten={'OK' if flattened else 'FAILED'}."
+                )
+            except Exception:
+                pass
+            if not flattened:
+                raise RuntimeError(
+                    f"unprotected pump position could not be flattened: {symbol}"
+                )
+        logger.info(f"[Startup] Cancelled pump-owned LIMIT {symbol}/{client_id}")
+    return len(owned)
+
+
+def _set_local_position_amt(symbol: str, amount: float) -> None:
+    """Immediately reflect a successful close instead of waiting for sync."""
+    with lock:
+        updated = []
+        for pos in state.get("open_positions", []):
+            if pos.get("symbol") != symbol:
+                updated.append(pos)
+                continue
+            if abs(amount) > 0:
+                current = dict(pos)
+                current["positionAmt"] = str(amount)
+                updated.append(current)
+        state["open_positions"] = updated
+
 
 def _append_trade(trade: dict):
     """
@@ -407,158 +986,401 @@ _dump_tracker: dict = {}    # {symbol: {"alert_ts": float, "ws_low": float}}
 
 
 def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
-    """
-    Được gọi từ WS on_message mỗi khi nhận tick giá.
-    Nếu phát hiện spike bất thường → lấy klines 1m (async) rồi chạy PumpDetector.
-    Cực kỳ nhẹ: chỉ lưu price + tính % change, không block WS thread.
+    """Track pump cycles and trigger a realtime SHORT after a fresh pullback.
+
+    The WS callback only performs in-memory calculations. Exchange calls run in
+    a daemon thread so the price stream is never blocked.
     """
     from collections import deque
     import time as _t
 
     now = _t.time()
+    with lock:
+        nhe_symbols = set(state.get("pump_nhe_coins", []))
+        strong_symbols = set(state.get("pump_watch_coins", []))
+        has_open_position = any(
+            p.get("symbol") == sym
+            and abs(float(p.get("positionAmt", 0))) > 0
+            for p in state.get("open_positions", [])
+        )
+    if sym not in nhe_symbols and sym not in strong_symbols:
+        return
 
-    # Khởi tạo tracker cho coin mới
-    if sym not in _pump_spike_tracker:
-        _pump_spike_tracker[sym] = {
-            "prices":    deque(maxlen=60),
-            "alerted":   False,
-            "alert_ts":  0.0,
-            "ws_high":   0.0,   # đỉnh cao nhất đã thấy qua WS (realtime)
-            "ws_high_ts": 0.0,  # timestamp khi đạt đỉnh
+    tracker = _pump_spike_tracker.get(sym)
+    if tracker is None:
+        tracker = {
+            "prices": deque(maxlen=1500),       # ~20-25 phút @ markPrice 1s
+            "active": False,
+            "alert_ts": 0.0,
+            "analysis_ts": 0.0,
+            "ws_high": price,
+            "ws_high_ts": now,
+            "pump_low": price,
+            "pump_pct": 0.0,
+            "below_peak_ticks": 0,
+            "entry_pending": False,
+            "rearm_high": 0.0,
+            "last_short_ts": 0.0,
+            "last_price": price,
         }
+        _pump_spike_tracker[sym] = tracker
 
-    tracker = _pump_spike_tracker[sym]
-    tracker["prices"].append((now, price))
+    prices = tracker["prices"]
+    prices.append((now, price))
+    lookback_sec = getattr(config, "PUMP_WS_LOOKBACK_SECONDS", 1200)
+    cutoff = now - lookback_sec
+    while prices and prices[0][0] < cutoff:
+        prices.popleft()
 
-    # Cập nhật đỉnh động realtime
-    if price > tracker["ws_high"]:
-        tracker["ws_high"]    = price
+    # While a position exists, only advance the re-arm reference. Never build
+    # another entry trigger behind an already-open trade.
+    if has_open_position:
+        if price > float(tracker.get("ws_high", 0.0)):
+            tracker["ws_high"] = price
+            tracker["ws_high_ts"] = now
+        tracker["rearm_high"] = max(
+            float(tracker.get("rearm_high", 0.0)),
+            float(tracker.get("ws_high", price)),
+        )
+        tracker["active"] = False
+        tracker["below_peak_ticks"] = 0
+        tracker["last_price"] = price
+        return
+
+    if len(prices) < 3:
+        tracker["last_price"] = price
+        return
+
+    previous_price = float(tracker.get("last_price", price))
+    tracker["last_price"] = price
+
+    # A finished trade is only re-armed after a genuinely new pump high.
+    rearm_high = float(tracker.get("rearm_high", 0.0))
+    rearm_pct = getattr(config, "PUMP_WS_REARM_NEW_HIGH_PCT", 2.0)
+    if not tracker.get("active") and rearm_high > 0:
+        if price < rearm_high * (1 + rearm_pct / 100):
+            return
+        tracker["rearm_high"] = 0.0
+        prices.clear()
+        prices.append((now, price))
+        tracker["pump_low"] = price
+        tracker["ws_high"] = price
         tracker["ws_high_ts"] = now
-
-    # Lấy giá cách đây SPIKE_WINDOW_SEC giây
-    cutoff = now - _SPIKE_WINDOW_SEC
-    old_ticks = [(ts, p) for ts, p in tracker["prices"] if ts <= cutoff]
-    if not old_ticks:
-        return   # Chưa đủ dữ liệu lịch sử
-
-    oldest_price = old_ticks[-1][1]   # giá cũ nhất trong cửa sổ
-    if oldest_price <= 0:
+        tracker["active"] = True
+        tracker["below_peak_ticks"] = 0
+        logger.info(
+            f"[WS-Pump] {sym}: re-armed on new high ${price:.6g} "
+            f"(+{rearm_pct:.1f}% above prior cycle)"
+        )
         return
 
-    pct_change = (price - oldest_price) / oldest_price * 100
+    if not tracker.get("active"):
+        window_low = min(p for _, p in prices)
+        window_high = max(p for _, p in prices)
+        if window_low <= 0:
+            return
+        pump_pct = (window_high - window_low) / window_low * 100
+        rise_threshold = (
+            getattr(config, "PUMP_PRICE_RISE_PCT", 15.0)
+            if sym in strong_symbols
+            else getattr(config, "PUMP_NHE_PRICE_RISE_PCT", 10.0)
+        )
+        near_high_pct = (window_high - price) / window_high * 100
+        if pump_pct < rise_threshold or near_high_pct > 1.0:
+            return
 
-    # Không đủ spike
-    if pct_change < _SPIKE_MIN_PCT:
-        # Reset alert flag khi giá bình thường trở lại
-        if pct_change < _SPIKE_MIN_PCT * 0.5:
-            tracker["alerted"] = False
+        high_ts = max(prices, key=lambda item: item[1])[0]
+        tracker.update({
+            "active": True,
+            "pump_low": window_low,
+            "pump_pct": pump_pct,
+            "ws_high": window_high,
+            "ws_high_ts": high_ts,
+            "below_peak_ticks": 1 if price < window_high else 0,
+        })
+        logger.info(
+            f"[WS-Pump] {sym}: armed +{pump_pct:.1f}% "
+            f"low=${window_low:.6g} high=${window_high:.6g}"
+        )
+
+        # Keep candle/order-book analysis for observability, but it must not
+        # place an early trade before realtime pullback confirmation.
+        if now - tracker.get("analysis_ts", 0.0) >= 60:
+            tracker["analysis_ts"] = now
+            import threading as _th
+            _th.Thread(
+                target=_ws_spike_full_analysis,
+                args=(sym, price, pump_pct, exchange_ref, notifier_ref),
+                daemon=True,
+            ).start()
         return
 
-    # Cooldown — không spam
-    if now - tracker["alert_ts"] < _SPIKE_COOLDOWN_SEC:
+    # Active cycle: every new high resets pullback confirmation.
+    if price >= tracker.get("ws_high", price):
+        tracker["ws_high"] = price
+        tracker["ws_high_ts"] = now
+        tracker["below_peak_ticks"] = 0
+        pump_low = float(tracker.get("pump_low", price))
+        if pump_low > 0:
+            tracker["pump_pct"] = (price - pump_low) / pump_low * 100
         return
 
-    # Đánh dấu đã alert để tránh duplicate trong cùng spike
-    tracker["alerted"] = True
-    tracker["alert_ts"] = now
+    ws_high = float(tracker.get("ws_high", price))
+    drawdown_pct = (ws_high - price) / ws_high * 100 if ws_high > 0 else 0.0
+    tracker["below_peak_ticks"] = tracker.get("below_peak_ticks", 0) + 1
+    pump_pct = float(tracker.get("pump_pct", 0.0))
+
+    # Strong-list coins and >=30% moves need more wick room than light pumps.
+    is_strong = sym in strong_symbols or pump_pct >= getattr(
+        config, "PUMP_WS_STRONG_RISE_PCT", 30.0
+    )
+    tier = "strong" if is_strong else "light"
+    pullback_pct = getattr(
+        config,
+        "PUMP_WS_STRONG_PULLBACK_PCT" if is_strong else "PUMP_WS_LIGHT_PULLBACK_PCT",
+        1.5 if is_strong else 0.6,
+    )
+    max_drop_pct = getattr(
+        config,
+        "PUMP_WS_STRONG_MAX_ENTRY_DROP_PCT" if is_strong else "PUMP_WS_LIGHT_MAX_ENTRY_DROP_PCT",
+        6.0 if is_strong else 3.0,
+    )
+    max_peak_age = getattr(
+        config,
+        "PUMP_WS_STRONG_PEAK_MAX_AGE_SEC" if is_strong else "PUMP_WS_LIGHT_PEAK_MAX_AGE_SEC",
+        12.0 if is_strong else 8.0,
+    )
+    peak_age = now - float(tracker.get("ws_high_ts", 0.0))
+
+    if drawdown_pct > max_drop_pct or peak_age > max_peak_age:
+        logger.info(
+            f"[WS-Pump-Skip] {sym} {tier}: late entry "
+            f"drop={drawdown_pct:.2f}% age={peak_age:.1f}s"
+        )
+        tracker["active"] = False
+        tracker["below_peak_ticks"] = 0
+        prices.clear()
+        prices.append((now, price))
+        return
+
+    auto_short = (
+        getattr(config, "PUMP_AUTO_SHORT", False)
+        if is_strong
+        else getattr(config, "PUMP_NHE_AUTO_SHORT", False)
+    )
+    confirm_ticks = getattr(config, "PUMP_WS_CONFIRM_TICKS", 2)
+    if (
+        not auto_short
+        or tracker.get("entry_pending")
+        or drawdown_pct < pullback_pct
+        or tracker.get("below_peak_ticks", 0) < confirm_ticks
+        or price > previous_price
+    ):
+        return
+
+    with lock:
+        open_syms = {
+            p.get("symbol") for p in state.get("open_positions", [])
+            if abs(float(p.get("positionAmt", 0))) > 0
+        }
+        if (
+            sym in open_syms
+            or sym in _executing_symbols
+            or len(open_syms) + len(_executing_symbols) >= config.MAX_OPEN_POSITIONS
+        ):
+            return
+        _executing_symbols.add(sym)
+        tracker["entry_pending"] = True
 
     logger.info(
-        f"[WS-PumpSpike] {sym}: +{pct_change:.1f}% trong {_SPIKE_WINDOW_SEC}s "
-        f"@ ${price:.6g} — triggering full analysis..."
+        f"[WS-Pump-Trigger] {sym} {tier}: pump=+{pump_pct:.1f}% "
+        f"pullback={drawdown_pct:.2f}% peak_age={peak_age:.1f}s"
     )
-
-    # Spawn thread riêng để lấy klines + chạy PumpDetector
-    # KHÔNG block WS on_message
     import threading as _th
     _th.Thread(
-        target=_ws_spike_full_analysis,
-        args=(sym, price, pct_change, exchange_ref, notifier_ref),
-        daemon=True
+        target=_ws_realtime_pump_short,
+        args=(sym, price, ws_high, pump_pct, tier, exchange_ref, notifier_ref),
+        daemon=True,
     ).start()
+
+
+def _ws_realtime_pump_short(sym: str, entry_price: float, ws_high: float,
+                             pump_pct: float, tier: str,
+                             exchange_ref, notifier_ref):
+    """Place one protected realtime pump SHORT after WS pullback confirmation."""
+    import time as _t
+
+    tracker = _pump_spike_tracker.get(sym, {})
+    is_strong = tier == "strong"
+    try:
+        # Final authoritative check prevents races with REST/CTD/scanner entries.
+        if _get_live_position_amt(exchange_ref, sym) != 0:
+            logger.info(f"[WS-Pump-Skip] {sym}: live position already exists")
+            return
+        try:
+            pending = exchange_ref._get(
+                "/fapi/v1/openOrders", {"symbol": sym}, signed=True
+            )
+            if any(not o.get("reduceOnly", False) for o in pending):
+                logger.info(f"[WS-Pump-Skip] {sym}: pending entry order exists")
+                return
+        except Exception as exc:
+            logger.warning(f"[WS-Pump-Skip] {sym}: cannot verify pending orders: {exc}")
+            return
+
+        sl_buffer_pct = getattr(
+            config,
+            "PUMP_WS_STRONG_SL_BUFFER_PCT" if is_strong else "PUMP_WS_LIGHT_SL_BUFFER_PCT",
+            6.0 if is_strong else 3.5,
+        )
+        tp_pct = getattr(
+            config,
+            "PUMP_WS_STRONG_TP_PCT" if is_strong else "PUMP_WS_LIGHT_TP_PCT",
+            15.0 if is_strong else 8.0,
+        )
+        sl_price = round(ws_high * (1 + sl_buffer_pct / 100), 8)
+        tp_price = round(entry_price * (1 - tp_pct / 100), 8)
+        risk = sl_price - entry_price
+        reward = entry_price - tp_price
+        rr = reward / risk if risk > 0 else 0.0
+        min_rr = getattr(config, "PUMP_WS_MIN_RR", 1.5)
+        if rr < min_rr:
+            logger.info(
+                f"[WS-Pump-Skip] {sym} {tier}: RR={rr:.2f}<{min_rr:.2f} "
+                f"entry=${entry_price:.6g} high=${ws_high:.6g}"
+            )
+            return
+
+        exchange_ref.set_leverage(sym, config.LEVERAGE)
+        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / entry_price
+        try:
+            step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
+            qty = max(round(int(qty / step) * step, decimals), step)
+        except Exception:
+            qty = round(qty, 3)
+        if qty <= 0 or qty * entry_price < 5.0:
+            logger.info(f"[WS-Pump-Skip] {sym}: order notional below $5")
+            return
+
+        try:
+            revalidated_price = exchange_ref.get_ticker_price(sym)
+        except Exception:
+            revalidated_price = 0.0
+        if not revalidated_price or revalidated_price <= 0:
+            logger.info(f"[WS-Pump-Skip] {sym}: cannot revalidate current price")
+            return
+        prepared = _prepare_pump_short(
+            exchange_ref, sym, f"ws_{tier}", ws_high,
+            revalidated_price, entry_price,
+        )
+        if not prepared or prepared[1].action != "MARKET":
+            _finish_pump_reservation(prepared, placed=False)
+            return
+        placed_order = _place_reserved_pump_order(
+            exchange_ref, prepared, sym, qty, order_type="MARKET"
+        )
+        if not placed_order:
+            return
+        _cache_entry(sym, "SHORT", entry_price, qty)
+        _t.sleep(0.2)
+
+        sl_ok = False
+        for _attempt in range(3):
+            try:
+                exchange_ref.place_stop_loss_order(sym, "BUY", qty, sl_price)
+                sl_ok = True
+                break
+            except Exception:
+                _t.sleep(0.25)
+        if not sl_ok:
+            # Transition this cycle to the new-high barrier before releasing
+            # reservations, even when emergency flattening encounters errors.
+            tracker.update({
+                "active": False,
+                "entry_pending": False,
+                "rearm_high": ws_high,
+                "below_peak_ticks": 0,
+            })
+            flattened = _emergency_flatten(exchange_ref, sym, attempts=5)
+            if flattened:
+                _remove_entry_cache(sym)
+                _set_local_position_amt(sym, 0.0)
+                _pump_entry_coordinator.mark_flat(
+                    sym, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
+                )
+                raise RuntimeError("SL placement failed; position verified flat")
+            try:
+                notifier_ref.telegram.send(
+                    f"🚨 <b>KHẨN CẤP: {sym} SHORT CHƯA CÓ SL</b>\n"
+                    f"Đã thử đóng reduce-only 5 lần nhưng chưa xác nhận flat.\n"
+                    f"Kiểm tra Binance ngay!\n"
+                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
+            except Exception:
+                pass
+            raise RuntimeError("SL failed and emergency flatten could not verify flat")
+
+        try:
+            exchange_ref.place_take_profit_order(sym, "BUY", qty, tp_price)
+        except Exception as exc:
+            logger.warning(f"[WS-Pump] TP {sym} failed, auto SL/TP will retry: {exc}")
+
+        _set_sltp_cooldown(sym)
+        with lock:
+            _append_trade({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": sym,
+                "side": "SHORT",
+                "entry": entry_price,
+                "sl": sl_price,
+                "tp": tp_price,
+                "qty": qty,
+                "status": "OPEN",
+                "note": f"ws_pump_{tier}_{pump_pct:.1f}pct",
+            })
+            state.setdefault("pump_trade_symbols", set()).add(sym)
+
+        tracker.update({
+            "active": False,
+            "entry_pending": False,
+            "last_short_ts": _t.time(),
+            "rearm_high": ws_high,
+            "below_peak_ticks": 0,
+        })
+        notifier_ref.telegram.send(
+            f"⚡ <b>REALTIME SHORT — PUMP {tier.upper()}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 {sym}  📈 +{pump_pct:.1f}%\n"
+            f"🔴 Entry : <b>${entry_price:,.6g}</b>\n"
+            f"📍 WS high: <b>${ws_high:,.6g}</b>\n"
+            f"🛑 SL    : <b>${sl_price:,.6g}</b> (+{sl_buffer_pct:.1f}% high)\n"
+            f"🎯 TP    : <b>${tp_price:,.6g}</b> (-{tp_pct:.1f}%)\n"
+            f"📐 RR    : 1:{rr:.1f}   📦 Qty: {qty}\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        logger.info(
+            f"[WS-Pump] SHORT placed {sym} tier={tier} qty={qty} RR=1:{rr:.2f}"
+        )
+    except Exception as exc:
+        logger.error(f"[WS-Pump] SHORT {sym} failed: {exc}")
+    finally:
+        tracker["entry_pending"] = False
+        with lock:
+            _executing_symbols.discard(sym)
 
 
 def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
                              exchange_ref, notifier_ref):
-    """
-    Chạy trong thread riêng sau khi WS phát hiện spike.
-    3 TẦNG XÁC NHẬN trước khi alert/short:
-      Tầng 1 — WS Spike   : giá tăng >= 3% (đã pass)
-      Tầng 2 — Order Book : ask wall áp đảo bid wall (dev đang xả)
-      Tầng 3 — PumpDetect : volume kiệt sức + wick rejection + RSI div
-    Cần >= 2/3 tầng pass → alert. Cần 3/3 → auto short.
+    """Run candle/order-book analysis for alerting and dashboard context.
 
-    FAST PATH: spike >= _SPIKE_CONFIRM_PCT (5%) trong 5s → SHORT ngay
-    không chờ klines/indicators — dev pump đỉnh tồn tại vài giây.
+    Realtime auto-entry is owned exclusively by ``_ws_realtime_pump_short``
+    after tier-specific pullback confirmation.
     """
-    import time as _t
     from pump_detector import PumpDetector, _to_df
     from orderbook_detector import get_ob_tracker, confirm_pump_top
 
     try:
-        # ── FAST PATH: spike >= 5% trong 5s → SHORT ngay, không chờ klines ──
-        # Dev pump đỉnh chỉ tồn tại 3-10 giây
-        # Chờ klines REST (300-500ms) + indicators là đã trễ
-        auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
-        if auto_short and spike_pct >= _SPIKE_CONFIRM_PCT:
-            with lock:
-                open_syms = {p["symbol"] for p in state.get("open_positions", [])
-                             if abs(float(p.get("positionAmt", 0))) > 0}
-                n_open = len(state.get("open_positions", []))
-
-            if sym not in open_syms and n_open < config.MAX_OPEN_POSITIONS:
-                try:
-                    cur_price = trigger_price  # dùng WS price, không gọi REST
-                    ws_high   = _pump_spike_tracker.get(sym, {}).get("ws_high", cur_price)
-
-                    exchange_ref.set_leverage(sym, config.LEVERAGE)
-                    qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_price
-                    try:
-                        step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
-                        qty = max(round(int(qty / step) * step, decimals), step)
-                    except Exception:
-                        qty = round(qty, 3)
-
-                    if qty * cur_price >= 5.0:
-                        # SL chặt: 2% trên đỉnh WS (không phải trigger_price)
-                        sl_price = round(ws_high * 1.035, 8)
-                        # TP: -15% từ entry (pump thường xả nhanh 10-20%)
-                        tp_price = round(cur_price * 0.85, 8)
-
-                        exchange_ref.place_market_order(sym, "SELL", qty)
-                        _cache_entry(sym, "SHORT", cur_price, qty)  # cache ngay sau lệnh
-                        _t.sleep(0.3)
-                        try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sl_price)
-                        except Exception as e: logger.error(f"[FastShort] SL {sym}: {e}")
-                        try: exchange_ref.place_take_profit_order(sym, "BUY", qty, tp_price)
-                        except Exception as e: logger.error(f"[FastShort] TP {sym}: {e}")
-
-                        rr = abs(cur_price - tp_price) / abs(sl_price - cur_price)
-                        with lock:
-                            _append_trade({
-                                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "symbol": sym, "side": "SHORT",
-                                "entry":  cur_price, "sl": sl_price, "tp": tp_price,
-                                "qty":    qty, "status": "OPEN",
-                                "note":   f"fast_spike_{spike_pct:.1f}pct",
-                            })
-                            state.setdefault("pump_trade_symbols", set()).add(sym)
-
-                        notifier_ref.telegram.send(
-                            f"⚡ <b>FAST SHORT — DEV PUMP</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🪙 {sym}  📈 <b>+{spike_pct:.1f}%</b> trong 5s\n"
-                            f"🔴 Entry : <b>${cur_price:,.6g}</b>  [MARKET]\n"
-                            f"🛑 SL    : <b>${sl_price:,.6g}</b>  (+2% đỉnh)\n"
-                            f"🎯 TP    : <b>${tp_price:,.6g}</b>  (-10%)\n"
-                            f"📐 RR    : 1:{rr:.1f}   📦 Qty: {qty}\n"
-                            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
-                        )
-                        logger.info(f"[FastShort] SHORT placed: {sym} +{spike_pct:.1f}% qty={qty}")
-                        return  # Không cần chạy slow path nữa
-                except Exception as e:
-                    logger.error(f"[FastShort] {sym} failed: {e}")
-
-        # ── SLOW PATH: spike 3-5% → chạy 3-tier analysis như cũ ──
+        # Analysis-only path; it must never place an early pre-pullback trade.
         # Lấy order book tracker (đã chạy sẵn)
         ob = get_ob_tracker(
             "wss://fstream.binance.com" if not config.USE_TESTNET
@@ -635,15 +1457,8 @@ def _ws_spike_full_analysis(sym: str, trigger_price: float, spike_pct: float,
             )
             return
 
-        # ── AUTO SHORT: cần 3/3 tầng hoặc confidence >= 75 ─
-        auto_short = getattr(config, "PUMP_AUTO_SHORT", False)
-        strong_enough = (
-            confirm["tiers_passed"] == 3 or
-            confirm["confidence"] >= 75
-        )
-        if auto_short and strong_enough and sig:
-            _ws_spike_do_short(sym, sig, exchange_ref, notifier_ref,
-                               confidence=confirm["confidence"])
+        # Auto-entry is intentionally handled only by the realtime pullback
+        # state machine; this analysis path only updates alerts/dashboard.
 
     except Exception as e:
         logger.error(f"[WS-Spike] Full analysis {sym} error: {e}")
@@ -685,62 +1500,6 @@ def _ws_spike_send_alert(sym: str, price: float, spike_pct: float,
             )
     except Exception as e:
         logger.warning(f"[WS-Spike] Alert failed: {e}")
-
-
-def _ws_spike_do_short(sym: str, sig, exchange_ref, notifier_ref, confidence: int = 0):
-    """Vào SHORT ngay sau khi WS phát hiện đỉnh pump."""
-    try:
-        with lock:
-            open_syms = {p["symbol"] for p in state.get("open_positions", [])
-                         if abs(float(p.get("positionAmt", 0))) > 0}
-            n_open = len(state.get("open_positions", []))
-
-        if sym in open_syms or n_open >= config.MAX_OPEN_POSITIONS:
-            return
-
-        exchange_ref.set_leverage(sym, config.LEVERAGE)
-        qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / sig.entry_price
-        try:
-            step, _, decimals, _ = exchange_ref.get_qty_precision(sym)
-            qty = max(round(int(qty / step) * step, decimals), step)
-        except Exception:
-            qty = round(qty, 3)
-
-        if qty * sig.entry_price < 5.0:
-            return
-
-        exchange_ref.place_market_order(sym, "SELL", qty)
-        _cache_entry(sym, "SHORT", sig.entry_price, qty)  # cache ngay sau lệnh
-        import time as _t; _t.sleep(0.3)
-        try: exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
-        except Exception as e: logger.error(f"[WS-Spike] SL {sym}: {e}")
-        try: exchange_ref.place_take_profit_order(sym, "BUY", qty, sig.tp1_price)
-        except Exception as e: logger.error(f"[WS-Spike] TP {sym}: {e}")
-
-        rr = abs(sig.entry_price - sig.tp1_price) / abs(sig.entry_price - sig.sl_price)
-        with lock:
-            _append_trade({
-                "time":   __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "symbol": sym, "side": "SHORT",
-                "entry":  sig.entry_price, "sl": sig.sl_price, "tp": sig.tp1_price,
-                "qty":    qty, "status": "OPEN",
-                "note":   f"ws_spike_s{sig.score}_c{confidence}",
-            })
-
-        notifier_ref.telegram.send(
-            f"🔴 <b>AUTO SHORT — 3-TẦNG XÁC NHẬN</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 {sym}  📈 +{sig.pump_pct:.1f}%  Score {sig.score}/100\n"
-            f"🎯 Confidence: <b>{confidence}%</b>\n"
-            f"💰 Entry: <b>${sig.entry_price:,.6g}</b>\n"
-            f"🛑 SL   : <b>${sig.sl_price:,.6g}</b>\n"
-            f"🎯 TP1  : <b>${sig.tp1_price:,.6g}</b>\n"
-            f"📐 RR   : 1:{rr:.1f}   📦 Qty: {qty}\n"
-            f"⏰ {__import__('datetime').datetime.now().strftime('%H:%M:%S')}"
-        )
-        logger.info(f"[WS-Spike] SHORT placed: {sym} qty={qty} score={sig.score}")
-    except Exception as e:
-        logger.error(f"[WS-Spike] Short {sym} failed: {e}")
 
 
 def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
@@ -817,14 +1576,41 @@ def _handle_confirmed_top(sig, exchange_ref, notifier_ref):
             logger.warning(f"[CTD] {sym} qty too small")
             return
 
-        # Vào lệnh SHORT
-        exchange_ref.place_market_order(sym, "SELL", qty)
-        _cache_entry(sym, "SHORT", sig.entry_price, qty)  # cache ngay sau lệnh
-        import time as _t; _t.sleep(0.3)
         try:
-            exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
-        except Exception as e:
-            logger.error(f"[CTD] SL failed {sym}: {e}")
+            current_price = exchange_ref.get_ticker_price(sym)
+        except Exception:
+            current_price = 0.0
+        if not current_price or current_price <= 0:
+            logger.info(f"[CTD] Skip SHORT {sym}: cannot revalidate current price")
+            return
+        prepared = _prepare_pump_short(
+            exchange_ref, sym, "confirmed_top", sig.peak_price,
+            current_price, sig.entry_price,
+        )
+        if not prepared or prepared[1].action != "MARKET":
+            _finish_pump_reservation(prepared, placed=False)
+            return
+        # Vào lệnh SHORT qua coordinator + unified live/pending/capacity gate.
+        placed_order = _place_reserved_pump_order(
+            exchange_ref, prepared, sym, qty, order_type="MARKET"
+        )
+        if not placed_order:
+            return
+        _cache_entry(sym, "SHORT", sig.entry_price, qty)
+        import time as _t; _t.sleep(0.3)
+        sl_ok = False
+        for _attempt in range(3):
+            try:
+                exchange_ref.place_stop_loss_order(sym, "BUY", qty, sig.sl_price)
+                sl_ok = True
+                break
+            except Exception:
+                _t.sleep(0.25)
+        if not sl_ok:
+            _recover_unprotected_position(
+                exchange_ref, notifier_ref, sym, "CTD"
+            )
+            return
         try:
             exchange_ref.place_take_profit_order(sym, "BUY", qty, sig.tp_price)
         except Exception as e:
@@ -945,7 +1731,11 @@ def _armed_execute(sym, info, trigger_price):
         if qty * trigger_price < 5.0:
             qty = round(5.0 / trigger_price + 0.001, 3)
 
-        exc.place_market_order(sym, info["side"], qty)
+        if not _place_entry_order_safely(
+            exc, sym, info["side"], qty, order_type="MARKET"
+        ):
+            return
+        _cache_entry(sym, info["signal"], trigger_price, qty)
         time.sleep(0.5)
 
         # SL retry 3x
@@ -958,14 +1748,14 @@ def _armed_execute(sym, info, trigger_price):
             except Exception:
                 time.sleep(0.3)
         if not sl_ok:
-            logger.warning(f"[Armed] SL FAILED {sym} — vẫn đặt TP, auto_sltp sẽ retry SL")
-            if noti:
+            flattened = _recover_unprotected_position(exc, noti, sym, "Armed")
+            if noti and flattened:
                 noti.telegram.send(
-                    f"⚠️ <b>SL FAILED</b>: {sym} {info['signal']}\n"
-                    f"Không đặt được SL — giữ lệnh, auto SL/TP sẽ thử lại\n"
+                    f"🚨 <b>ARMED SL FAILED</b>: {sym} {info['signal']}\n"
+                    f"Emergency flat: True\n"
                     f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                 )
-            # Không return — vẫn đặt TP và log trade
+            return
 
         # TP
         try:
@@ -1001,7 +1791,13 @@ def price_ws_streamer():
     import websocket as ws_lib
     import json as _json
 
-    symbols = [s.lower() for s in WATCHLIST]
+    initial_symbols = list(dict.fromkeys(
+        list(WATCHLIST)
+        + list(getattr(config, "PUMP_WATCH_COINS", []))
+        + list(getattr(config, "PUMP_NHE_COINS", []))
+    ))
+    symbols = [s.lower() for s in initial_symbols]
+    subscribed_syms = set(symbols)
     streams = "/".join([f"{s}@markPrice@1s" for s in symbols])
 
     base_ws = "wss://fstream.binance.com" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
@@ -1030,6 +1826,21 @@ def price_ws_streamer():
             if sym and mark > 0:
                 with lock:
                     state["prices"][sym] = mark
+                    desired_stream_syms = {
+                        s.lower() for s in (
+                            list(WATCHLIST)
+                            + list(state.get("pump_watch_coins", []))
+                            + list(state.get("pump_nhe_coins", []))
+                        )
+                    }
+
+                # Dashboard add/remove must take effect without waiting for an
+                # unrelated network disconnect. Closing triggers the outer
+                # reconnect loop, which rebuilds the combined stream URL.
+                if desired_stream_syms != subscribed_syms:
+                    logger.info("[PriceWS] Pump watchlist changed — reconnecting streams")
+                    wsapp.close()
+                    return
 
                 # ── MAX LOSS REALTIME CHECK — check ngay trên WS tick ──
                 if getattr(config, "MAX_LOSS_ENABLED", True):
@@ -1078,8 +1889,12 @@ def price_ws_streamer():
                                         import threading as _th_ml
                                         def _do_max_loss_close(_sym, _close_side, _qty, _pnl_val, _max_l):
                                             try:
-                                                exc.place_market_order(_sym, _close_side, _qty)
-                                                exc.cancel_all_orders(_sym)
+                                                exc.place_market_order(
+                                                    _sym, _close_side, _qty, reduce_only=True
+                                                )
+                                                _cancel_all_orders_if_unprotected(
+                                                    exc, _sym, "MaxLossWS"
+                                                )
                                                 _remove_entry_cache(_sym)
                                                 logger.info(f"[MAX LOSS WS] Closed {_sym} pnl=${_pnl_val:.2f}")
                                                 if noti:
@@ -1178,10 +1993,13 @@ def price_ws_streamer():
             # Rebuild stream URL mỗi lần reconnect (watchlist có thể thay đổi)
             with lock:
                 pump_watch = list(state.get("pump_watch_coins", []))
+                pump_nhe_watch = list(state.get("pump_nhe_coins", []))
             all_syms = list(dict.fromkeys(
-                [s.lower() for s in WATCHLIST] +
-                [s.lower() for s in pump_watch]
+                [s.lower() for s in WATCHLIST]
+                + [s.lower() for s in pump_watch]
+                + [s.lower() for s in pump_nhe_watch]
             ))
+            subscribed_syms = set(all_syms)
             streams = "/".join([f"{s}@markPrice@1s" for s in all_syms])
             url = f"{base_ws}/stream?streams={streams}"
 
@@ -1212,10 +2030,13 @@ def price_updater(exchange):
                     new_prices[sym] = exchange.get_ticker_price(sym)
                 except Exception:
                     pass
-            # Cập nhật giá pump coins (không có trong WATCHLIST)
+            # Cập nhật giá pump mạnh + pump nhẹ không có trong WATCHLIST
             with lock:
-                pump_coins_extra = [s for s in state.get("pump_watch_coins", [])
-                                    if s not in WATCHLIST]
+                pump_coins_extra = list(dict.fromkeys(
+                    list(state.get("pump_watch_coins", []))
+                    + list(state.get("pump_nhe_coins", []))
+                ))
+                pump_coins_extra = [s for s in pump_coins_extra if s not in WATCHLIST]
             for sym in pump_coins_extra:
                 try:
                     new_prices[sym] = exchange.get_ticker_price(sym)
@@ -1293,8 +2114,10 @@ def price_updater(exchange):
 
                 # Huỷ SL/TP mồ côi
                 try:
-                    exchange.cancel_all_orders(sym)
-                    logger.info(f"[Sync] Cancelled orphan orders for {sym}")
+                    if _cancel_all_orders_if_unprotected(
+                        exchange, sym, "ExternalClose"
+                    ):
+                        logger.info(f"[Sync] Cancelled orphan orders for {sym}")
                 except Exception:
                     pass
 
@@ -1334,6 +2157,28 @@ def price_updater(exchange):
                             })
                             # Không break — tiếp tục đóng các entry OPEN còn lại
                 _remove_entry_cache(sym)  # xóa cache khi lệnh đóng
+                _pump_entry_coordinator.mark_flat(
+                    sym, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
+                )
+
+                # Reset pump lifecycle after app/TP/SL external close. Re-entry is
+                # not immediate: the WS state machine requires a new high first.
+                with lock:
+                    state.get("pump_trade_symbols", set()).discard(sym)
+                    state.pop(f"_pump_mfe_{sym}", None)
+                    state.get("_pump_alert_cd", {}).pop(f"alert_{sym}", None)
+                    for detector_key in ("_pump_detector", "_nhe_detector"):
+                        detector_ref = state.get(detector_key)
+                        if detector_ref is not None and hasattr(detector_ref, "_cooldown"):
+                            detector_ref._cooldown.pop(sym, None)
+                    tracker = _pump_spike_tracker.get(sym)
+                    if tracker is not None:
+                        tracker["active"] = False
+                        tracker["entry_pending"] = False
+                        tracker["below_peak_ticks"] = 0
+                        tracker["rearm_high"] = max(
+                            float(tracker.get("ws_high", 0.0)), close_price
+                        )
 
                 logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
                 from trade_history import save_history
@@ -1400,9 +2245,11 @@ def price_updater(exchange):
                                 batch = min(remaining, 100000)
                                 if batch == int(batch):
                                     batch = int(batch)
-                                exchange.place_market_order(sym, close_side, batch)
+                                exchange.place_market_order(
+                                    sym, close_side, batch, reduce_only=True
+                                )
                                 remaining -= batch
-                            exchange.cancel_all_orders(sym)
+                            _cancel_all_orders_if_unprotected(exchange, sym, "AutoCleanup")
                             logger.info(f"[MAX LOSS] Closed {sym} pnl=${pnl:.2f} exceeded -${max_loss}")
                             try:
                                 notifier_inst = state.get("_notifier")
@@ -1774,8 +2621,8 @@ def position_reversal_monitor(exchange, notifier):
                         qty = abs(amt)
                         close_side = "SELL" if side == "LONG" else "BUY"
                         try:
-                            exchange.place_market_order(symbol, close_side, qty)
-                            exchange.cancel_all_orders(symbol)
+                            exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+                            _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
                             notifier.telegram.send(
                                 f"🔄 <b>⏱ HOLD EXIT (Pump)</b>: {symbol} {side}\n"
                                 f"Hold {held_secs:.0f}s · lời rút về {pnl_pct:.1f}% ≤ floor {pnl_floor:.1f}% → chốt\n"
@@ -1808,8 +2655,8 @@ def position_reversal_monitor(exchange, notifier):
                         qty = abs(amt)
                         close_side = "SELL" if side == "LONG" else "BUY"
                         try:
-                            exchange.place_market_order(symbol, close_side, qty)
-                            exchange.cancel_all_orders(symbol)
+                            exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+                            _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
                             notifier.telegram.send(
                                 f"🔄 <b>MFE EXIT</b>: {symbol} {side}\n"
                                 f"MFE={mfe_pct:.1f}% → hồi {retracement*100:.0f}% → lời {pnl_pct:.1f}%\n"
@@ -1918,8 +2765,8 @@ def position_reversal_monitor(exchange, notifier):
                     close_side = "BUY" if side == "SHORT" else "SELL"
                     cur_price  = exchange.get_ticker_price(symbol)
 
-                    exchange.place_market_order(symbol, close_side, qty)
-                    exchange.cancel_all_orders(symbol)
+                    exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+                    _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
 
                     # Lấy open_time từ trade_log để query PnL đúng lệnh
                     _open_ms = 0
@@ -2101,8 +2948,8 @@ def scan_position_protector(exchange, notifier):
                             close_side = "SELL" if side == "LONG" else "BUY"
                             cur_price  = exchange.get_ticker_price(symbol)
 
-                            exchange.place_market_order(symbol, close_side, qty)
-                            exchange.cancel_all_orders(symbol)
+                            exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+                            _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
 
                             _open_ms2 = 0
                             with lock:
@@ -2192,8 +3039,8 @@ def scan_position_protector(exchange, notifier):
                     close_side = "SELL" if side == "LONG" else "BUY"
                     cur_price  = exchange.get_ticker_price(symbol)
 
-                    exchange.place_market_order(symbol, close_side, qty)
-                    exchange.cancel_all_orders(symbol)
+                    exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+                    _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
 
                     _open_ms3 = 0
                     with lock:
@@ -2328,26 +3175,47 @@ def auto_profit_lock(exchange, notifier):
                     if now - _closed_symbols[sym] < 10:  # 10s cooldown
                         continue
 
-                # Đóng lệnh
-                qty        = abs(amt)
-                close_side = "SELL" if side == "LONG" else "BUY"
-                cur_price  = mark_price  # dùng mark price WS luôn, nhanh hơn REST
+                # Đóng lệnh. Re-read Binance under the shared symbol lock:
+                # another monitor may already have reduced/closed this snapshot.
+                cur_price = mark_price  # dùng mark price WS luôn, nhanh hơn REST
 
                 try:
-                    exchange.place_market_order(sym, close_side, qty)
-                    exchange.cancel_all_orders(sym)
-                    _closed_symbols[sym] = now  # Track để tránh re-close
+                    with _position_close_lock(sym):
+                        live_amt = _get_live_position_amt(exchange, sym)
+                        if live_amt == 0:
+                            logger.info(f"[ProfitLock] Skip {sym}: position already closed")
+                            _closed_symbols[sym] = now
+                            _set_local_position_amt(sym, 0.0)
+                            continue
+                        if (live_amt > 0) != (amt > 0):
+                            logger.warning(
+                                f"[ProfitLock] Skip {sym}: side changed "
+                                f"cached={amt:g}, live={live_amt:g}"
+                            )
+                            _set_local_position_amt(sym, live_amt)
+                            continue
 
-                    # ═══ XÓA ARMED ENTRY nếu có ═══
-                    with lock:
-                        state.get("armed_entries", {}).pop(sym, None)
-                        # Xóa pump trade symbol nếu có
-                        pump_syms = state.get("pump_trade_symbols", set())
-                        if sym in pump_syms:
-                            pump_syms.discard(sym)
+                        qty = abs(live_amt)
+                        close_side = "SELL" if live_amt > 0 else "BUY"
+                        exchange.place_market_order(
+                            sym, close_side, qty, reduce_only=True
+                        )
+                        _cancel_all_orders_if_unprotected(exchange, sym, "AutoCleanup")
+                        _closed_symbols[sym] = now
+                        _set_local_position_amt(sym, 0.0)
+                        _remove_entry_cache(sym)
+
+                        # ═══ XÓA ARMED ENTRY nếu có ═══
+                        with lock:
+                            state.get("armed_entries", {}).pop(sym, None)
+                            # Xóa pump trade symbol nếu có
+                            pump_syms = state.get("pump_trade_symbols", set())
+                            if sym in pump_syms:
+                                pump_syms.discard(sym)
 
                     _t.sleep(0.5)
                     pnl = _fetch_actual_pnl(exchange, sym, side, qty, entry, cur_price, 0)
+                    icon = "✅" if pnl >= 0 else "❌"
 
                     with lock:
                         for t in reversed(state.get("trade_log", [])):
@@ -2497,8 +3365,8 @@ def mfe_scan_monitor(exchange, notifier):
                             qty = abs(amt)
                             close_side = "SELL" if is_long else "BUY"
                             try:
-                                exchange.place_market_order(sym, close_side, qty)
-                                exchange.cancel_all_orders(sym)
+                                exchange.place_market_order(sym, close_side, qty, reduce_only=True)
+                                _cancel_all_orders_if_unprotected(exchange, sym, "AutoCleanup")
                                 _mfe_prices.pop(sym, None)
                                 with lock:
                                     state.pop(rev_key, None)
@@ -2528,8 +3396,8 @@ def mfe_scan_monitor(exchange, notifier):
                     qty = abs(amt)
                     close_side = "SELL" if is_long else "BUY"
                     try:
-                        exchange.place_market_order(sym, close_side, qty)
-                        exchange.cancel_all_orders(sym)
+                        exchange.place_market_order(sym, close_side, qty, reduce_only=True)
+                        _cancel_all_orders_if_unprotected(exchange, sym, "AutoCleanup")
                         _mfe_prices.pop(sym, None)
                         notifier.telegram.send(
                             f"🔄 <b>MFE EXIT (Scan)</b>: {sym} {'LONG' if is_long else 'SHORT'}\n"
@@ -2822,15 +3690,27 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
         exchange.set_leverage(symbol, config.LEVERAGE)
         cur_price = exchange.get_ticker_price(symbol)
         if not cur_price or cur_price <= 0:
-            cur_price = sig.entry_price
+            logger.info(f"[FastSpike] Skip {symbol}: cannot revalidate current price")
+            return
 
         from qty_utils import calc_qty_precise
         qty, _ = calc_qty_precise(exchange, symbol, config.MAX_ORDER_USDT, config.LEVERAGE, cur_price)
         if qty * cur_price < 5.0:
             return
 
-        exchange.place_market_order(symbol, "SELL", qty)
-        _cache_entry(symbol, "SHORT", cur_price, qty)  # cache ngay sau lệnh
+        prepared = _prepare_pump_short(
+            exchange, symbol, "fast_spike", max(cur_price, sig.entry_price),
+            cur_price, sig.entry_price,
+        )
+        if not prepared or prepared[1].action != "MARKET":
+            _finish_pump_reservation(prepared, placed=False)
+            return
+        placed_order = _place_reserved_pump_order(
+            exchange, prepared, symbol, qty, order_type="MARKET"
+        )
+        if not placed_order:
+            return
+        _cache_entry(symbol, "SHORT", cur_price, qty)
         time.sleep(0.8)
 
         sl_ok = False
@@ -2842,7 +3722,10 @@ def _execute_spike_short(symbol: str, sig, exchange, notifier) -> None:
             except Exception:
                 time.sleep(0.5)
         if not sl_ok:
-            logger.warning(f"[PumpShort] SL failed for {symbol} — keeping position, auto_sltp will retry")
+            _recover_unprotected_position(
+                exchange, notifier, symbol, "PumpShort"
+            )
+            return
 
         with lock:
             _append_trade({
@@ -2884,8 +3767,11 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
         if symbol in open_syms:
             return
 
-        exchange.place_market_order(symbol, "BUY", qty)
-        _cache_entry(symbol, "LONG", cur_price, qty)  # cache ngay sau lệnh
+        if not _place_entry_order_safely(
+            exchange, symbol, "BUY", qty, order_type="MARKET"
+        ):
+            return
+        _cache_entry(symbol, "LONG", cur_price, qty)
         time.sleep(0.8)
 
         sl_ok = False
@@ -2897,7 +3783,10 @@ def _execute_spike_long(symbol: str, cur_price: float, sl: float, tp: float,
             except Exception:
                 time.sleep(0.5)
         if not sl_ok:
-            logger.warning(f"[SpikeShort] SL failed for {symbol} — keeping position")
+            _recover_unprotected_position(
+                exchange, notifier, symbol, "SpikeLong"
+            )
+            return
 
         try:
             exchange.place_take_profit_order(symbol, "SELL", qty, tp)
@@ -3195,30 +4084,30 @@ def scan_engine(exchange, notifier):
                                 qty = calc_qty(bal, final_entry, final_sl, symbol=a_sym, exchange=exchange)
                                 if qty * final_entry < 5.0:
                                     qty = round(5.0 / final_entry + 0.001, 3)
-                                exchange.place_limit_order(a_sym, a_info["side"], qty, final_entry)
-                                # Retry lấy orderId để lưu pending_smart_orders (Binance cần ~300ms settle)
-                                _saved_psm = False
-                                for _retry in range(3):
-                                    try:
-                                        time.sleep(0.3)
-                                        ords = exchange._get("/fapi/v1/openOrders", {"symbol": a_sym}, signed=True)
-                                        for o in ords:
-                                            if not o.get("reduceOnly") and o.get("type") == "LIMIT" and o.get("symbol") == a_sym:
-                                                with lock:
-                                                    psm = state.setdefault("pending_smart_orders", {})
-                                                    psm[str(o["orderId"])] = {
-                                                        "symbol": a_sym, "side": a_info["signal"],
-                                                        "qty": float(o.get("origQty", qty)),
-                                                        "sl": final_sl, "tp": final_tp,
-                                                        "ts": time.time(),
-                                                    }
-                                                _saved_psm = True
-                                        if _saved_psm:
-                                            break
-                                    except Exception:
-                                        pass
-                                if not _saved_psm:
-                                    logger.warning(f"[Promote] ⚠️ pending_smart_orders NOT saved for {a_sym} — auto_sltp will handle")
+                                placed_order = _place_entry_order_safely(
+                                    exchange, a_sym, a_info["side"], qty,
+                                    order_type="LIMIT", price=final_entry,
+                                )
+                                if not placed_order:
+                                    continue
+                                order_id = placed_order.get("orderId")
+                                if order_id is not None:
+                                    with lock:
+                                        state.setdefault("pending_smart_orders", {})[
+                                            str(order_id)
+                                        ] = {
+                                            "symbol": a_sym,
+                                            "side": a_info["signal"],
+                                            "qty": qty,
+                                            "sl": final_sl,
+                                            "tp": final_tp,
+                                            "ts": time.time(),
+                                        }
+                                else:
+                                    logger.warning(
+                                        f"[Promote] No orderId returned for {a_sym}; "
+                                        "auto_sltp will handle protection after fill"
+                                    )
                                 with lock:
                                     state.get("armed_entries", {}).pop(a_sym, None)
                                 limit_count += 1
@@ -3275,7 +4164,12 @@ def scan_engine(exchange, notifier):
                             if qty * cur_p < 5.0:
                                 qty = round(5.0 / cur_p + 0.001, 3)
 
-                            exchange.place_market_order(a_sym, a_info["side"], qty)
+                            if not _place_entry_order_safely(
+                                exchange, a_sym, a_info["side"], qty,
+                                order_type="MARKET",
+                            ):
+                                continue
+                            _cache_entry(a_sym, a_info["signal"], cur_p, qty)
                             time.sleep(0.5)
 
                             # SL
@@ -3288,7 +4182,12 @@ def scan_engine(exchange, notifier):
                                 except Exception:
                                     time.sleep(0.3)
                             if not sl_ok:
-                                logger.debug(f"[Armed] SL FAILED {a_sym} — keeping position, auto_sltp will retry")
+                                _recover_unprotected_position(
+                                    exchange, notifier, a_sym, "Armed"
+                                )
+                                with lock:
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                continue
 
                             # TP
                             try:
@@ -4104,7 +5003,10 @@ def pump_scan_engine(exchange, notifier):
                                         exchange.set_leverage(symbol, config.LEVERAGE)
                                         cur_p_nhe = exchange.get_ticker_price(symbol)
                                         if not cur_p_nhe or cur_p_nhe <= 0:
-                                            cur_p_nhe = sig.entry_price
+                                            logger.info(
+                                                f"[PumpNhe] Skip {symbol}: cannot revalidate current price"
+                                            )
+                                            continue
 
                                         qty_nhe = (config.MAX_ORDER_USDT * config.LEVERAGE) / cur_p_nhe
                                         try:
@@ -4116,8 +5018,26 @@ def pump_scan_engine(exchange, notifier):
                                             qty_nhe = round(qty_nhe, 3)
 
                                         if qty_nhe * cur_p_nhe >= 5.0:
-                                            exchange.place_market_order(symbol, "SELL", qty_nhe)
-                                            _cache_entry(symbol, "SHORT", cur_p_nhe, qty_nhe)  # cache ngay sau lệnh
+                                            nhe_peak = max(
+                                                cur_p_nhe,
+                                                sig.entry_price / 0.995
+                                                if getattr(sig, "entry_type", "MARKET") == "LIMIT"
+                                                else sig.entry_price,
+                                            )
+                                            prepared = _prepare_pump_short(
+                                                exchange, symbol, "pump_nhe", nhe_peak,
+                                                cur_p_nhe, sig.entry_price,
+                                            )
+                                            if not prepared or prepared[1].action != "MARKET":
+                                                _finish_pump_reservation(prepared, placed=False)
+                                                continue
+                                            placed_order = _place_reserved_pump_order(
+                                                exchange, prepared, symbol, qty_nhe,
+                                                order_type="MARKET",
+                                            )
+                                            if not placed_order:
+                                                continue
+                                            _cache_entry(symbol, "SHORT", cur_p_nhe, qty_nhe)
                                             time.sleep(0.8)
 
                                             # SL với retry
@@ -4133,7 +5053,10 @@ def pump_scan_engine(exchange, notifier):
                                                     time.sleep(0.5)
 
                                             if not sl_ok_nhe:
-                                                logger.warning(f"[PumpNhe] SL failed for {symbol} — keeping position")
+                                                _recover_unprotected_position(
+                                                    exchange, notifier, symbol, "PumpNhe"
+                                                )
+                                                continue
                                             else:
                                                 try:
                                                     exchange.place_take_profit_order(
@@ -4334,9 +5257,11 @@ def pump_scan_engine(exchange, notifier):
                                             pass
                                         break
 
-                            # Đóng SHORT → BUY
-                            exchange.place_market_order(symbol, "BUY", qty)
-                            exchange.cancel_all_orders(symbol)
+                            # Đóng SHORT → BUY, nhưng tuyệt đối không được đảo LONG
+                            exchange.place_market_order(
+                                symbol, "BUY", qty, reduce_only=True
+                            )
+                            _cancel_all_orders_if_unprotected(exchange, symbol, "AutoCleanup")
 
                             time.sleep(0.5)
                             pnl = _fetch_actual_pnl(exchange, symbol, "SHORT", qty, entry, close_price, _pr_open_ms)
@@ -4428,10 +5353,16 @@ def pump_scan_engine(exchange, notifier):
                         # Lấy giá market HIỆN TẠI để tính qty chính xác
                         try:
                             current_price = exchange.get_ticker_price(symbol)
-                        except Exception:
-                            current_price = sig.entry_price
+                        except Exception as exc:
+                            logger.info(
+                                f"[PumpEngine] Skip {symbol}: current price revalidation failed: {exc}"
+                            )
+                            continue
                         if not current_price or current_price <= 0:
-                            current_price = sig.entry_price
+                            logger.info(
+                                f"[PumpEngine] Skip {symbol}: invalid revalidation price"
+                            )
+                            continue
 
                         qty = (config.MAX_ORDER_USDT * config.LEVERAGE) / current_price
                         try:
@@ -4443,47 +5374,61 @@ def pump_scan_engine(exchange, notifier):
                         if qty * current_price < 5.0:
                             continue
 
-                        entry_type = getattr(sig, "entry_type", "MARKET")
+                        pump_peak = (
+                            sig.entry_price / 0.995
+                            if getattr(sig, "entry_type", "MARKET") == "LIMIT"
+                            else max(current_price, sig.entry_price)
+                        )
+                        prepared = _prepare_pump_short(
+                            exchange, symbol, "pump_detector", pump_peak,
+                            current_price, sig.entry_price,
+                        )
+                        if not prepared:
+                            continue
+                        decision = prepared[1]
 
-                        if entry_type == "LIMIT":
-                            # Đặt LIMIT tại sig.entry_price (99.5% đỉnh)
-                            # Nếu giá đã dưới entry_price → dùng MARKET ngay
-                            if current_price <= sig.entry_price:
-                                exchange.place_market_order(symbol, "SELL", qty)
-                                _cache_entry(symbol, "SHORT", current_price, qty)  # cache ngay sau lệnh
-                                order_tag = "MARKET (đã dưới limit)"
-                            else:
-                                exchange.place_limit_order(symbol, "SELL", qty, sig.entry_price)
-                                order_tag = f"LIMIT @ ${sig.entry_price:.6g}"
-                                logger.info(f"[PumpEngine] LIMIT SHORT placed: {symbol} @ {sig.entry_price:.6g}")
-                                # Lưu vào state để theo dõi fill
-                                with lock:
-                                    state.setdefault("pump_limit_orders", {})[symbol] = {
-                                        "entry_price": sig.entry_price,
-                                        "sl_price":    sig.sl_price,
-                                        "tp1_price":   sig.tp1_price,
-                                        "qty":         qty,
-                                        "ts":          time.time(),
-                                    }
-                                # Gửi Telegram thông báo đặt lệnh chờ
-                                try:
-                                    notifier.telegram.send(
-                                        f"⏳ <b>LIMIT SHORT ĐẶT SẴN</b>\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%\n"
-                                        f"📌 Chờ giá quay về <b>${sig.entry_price:.6g}</b>\n"
-                                        f"🛑 SL: <b>${sig.sl_price:.6g}</b>\n"
-                                        f"🎯 TP: <b>${sig.tp1_price:.6g}</b>\n"
-                                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                                    )
-                                except Exception:
-                                    pass
-                                # Skip SL/TP setup — sẽ đặt sau khi lệnh fill
+                        if decision.action == "LIMIT":
+                            placed_order = _place_reserved_pump_order(
+                                exchange, prepared, symbol, qty,
+                                order_type="LIMIT", price=decision.price,
+                                limit_metadata={
+                                    "cycle_peak": pump_peak,
+                                    "sl_price": sig.sl_price,
+                                    "tp1_price": sig.tp1_price,
+                                },
+                            )
+                            if not placed_order:
                                 continue
-                        else:
-                            exchange.place_market_order(symbol, "SELL", qty)
-                            _cache_entry(symbol, "SHORT", current_price, qty)  # cache ngay sau lệnh
-                            order_tag = "MARKET"
+                            actual_price = float(
+                                placed_order.get("price", 0) or decision.price
+                            )
+                            order_tag = f"LIMIT @ ${actual_price:.6g}"
+                            logger.info(
+                                f"[PumpEngine] Retest GTX LIMIT SHORT placed: "
+                                f"{symbol} @ {actual_price:.6g}"
+                            )
+                            try:
+                                notifier.telegram.send(
+                                    f"⏳ <b>LIMIT SHORT CHỜ RETEST</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🪙 {symbol}  📈 +{sig.pump_pct:.1f}%\n"
+                                    f"📌 SELL LIMIT phía trên market: <b>${actual_price:.6g}</b>\n"
+                                    f"🛑 SL: <b>${sig.sl_price:.6g}</b>\n"
+                                    f"🎯 TP: <b>${sig.tp1_price:.6g}</b>\n"
+                                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                                )
+                            except Exception:
+                                pass
+                            continue
+
+                        placed_order = _place_reserved_pump_order(
+                            exchange, prepared, symbol, qty,
+                            order_type="MARKET",
+                        )
+                        if not placed_order:
+                            continue
+                        _cache_entry(symbol, "SHORT", current_price, qty)
+                        order_tag = "MARKET (near revalidated entry)"
 
                         time.sleep(0.8)  # đợi lệnh fill trước khi đặt SL/TP
 
@@ -4498,7 +5443,10 @@ def pump_scan_engine(exchange, notifier):
                                 logger.debug(f"[PumpEngine] SL attempt {_attempt+1} {symbol}: {e}")
                                 time.sleep(0.5)
                         if not sl_ok:
-                            logger.warning(f"[PumpEngine] SL FAILED for {symbol} — keeping position, auto_sltp will retry")
+                            _recover_unprotected_position(
+                                exchange, notifier, symbol, "PumpEngine"
+                            )
+                            continue
 
                         # Đặt TP (không bắt buộc, lỗi thì bỏ qua)
                         try:
@@ -4743,7 +5691,7 @@ def liq_engine(exchange, notifier, liq_tracker: LiquidationTracker):
                         # Đặt SL + TP sau khi lệnh 2 khớp
                         total_qty = sp.qty1 + sp.qty2
                         try:
-                            exchange.cancel_all_orders(sym)
+                            _cancel_all_orders_if_unprotected(exchange, sym, "AutoCleanup")
                             exchange.place_stop_loss_order(sym, side_close, total_qty, sp.sl)
                             exchange.place_take_profit_order(sym, side_close, total_qty, sp.tp)
                             with lock:
@@ -4793,7 +5741,9 @@ def _cancel_split(sym, sp, exchange, notifier, side_close, reason):
     """Huỷ split setup: đóng lệnh 1 nếu đã khớp, xoá khỏi state."""
     if sp.filled1 and not sp.filled2:
         try:
-            exchange.place_market_order(sym, side_close, sp.qty1)
+            exchange.place_market_order(
+                sym, side_close, sp.qty1, reduce_only=True
+            )
         except Exception as e:
             logger.error(f"[LiqEngine] Cancel split close failed {sym}: {e}")
     with lock:
@@ -4809,6 +5759,115 @@ def _cancel_split(sym, sp, exchange, notifier, side_close, reason):
 # Theo dõi pending limit orders, khi fill → đặt SL/TP
 # CŨNG: mỗi 30s check positions chưa có SL/TP → tự đặt
 # ============================================================
+def _protect_pump_limit_fill_once(exchange, notifier, sym, info):
+    """Cancel one pump LIMIT remainder, then protect its fresh live quantity."""
+    _pump_entry_coordinator.mark_in_trade(sym)
+    try:
+        order_params = _pump_order_params(info, sym)
+        if (order_params.get("orderId") is not None
+                or order_params.get("origClientOrderId")):
+            try:
+                cancel_result = exchange._delete("/fapi/v1/order", order_params)
+            except Exception:
+                cancel_result = exchange._get(
+                    "/fapi/v1/order", order_params, signed=True
+                )
+            status = str((cancel_result or {}).get("status", "")).upper()
+            if status not in {"CANCELED", "FILLED", "EXPIRED", "REJECTED"}:
+                cancel_result = exchange._get(
+                    "/fapi/v1/order", order_params, signed=True
+                )
+                status = str((cancel_result or {}).get("status", "")).upper()
+            if status in {"NEW", "PARTIALLY_FILLED"} or status not in {
+                "CANCELED", "FILLED", "EXPIRED", "REJECTED"
+            }:
+                raise RuntimeError("LIMIT remainder cancellation is unconfirmed")
+    except Exception as exc:
+        logger.critical(
+            f"[PumpLimit] Cannot cancel remainder {sym}: {exc}; "
+            "flattening current exposure and retaining ownership"
+        )
+        if _recover_unprotected_position(
+            exchange, notifier, sym, "PumpLimitCancel"
+        ):
+            with lock:
+                state.get("pump_limit_orders", {}).pop(sym, None)
+        return
+
+    # Cancellation can race a final fill. Re-read authoritative live quantity
+    # before placing protection; never use the pre-cancel snapshot/planned qty.
+    all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
+    pos = next((p for p in all_pos
+                if p["symbol"] == sym
+                and float(p.get("positionAmt", 0)) < 0), None)
+    if not pos:
+        with lock:
+            state.get("pump_limit_orders", {}).pop(sym, None)
+        _pump_entry_coordinator.mark_flat(
+            sym, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
+        )
+        return
+
+    qty = abs(float(pos["positionAmt"]))
+    sl_price = info["sl_price"]
+    tp_price = info["tp1_price"]
+    fill_price = float(pos.get("entryPrice", info["entry_price"]))
+    cur_mark = float(pos.get("markPrice", 0)) or exchange.get_ticker_price(sym)
+
+    time.sleep(0.3)
+
+    sl_ok = False
+    for _sl_try in range(3):
+        try:
+            exchange.place_stop_loss_order(sym, "BUY", qty, sl_price)
+            sl_ok = True
+            break
+        except Exception as exc:
+            if "price" in str(exc).lower() or "400" in str(exc):
+                new_sl = round(cur_mark * 1.03, 8)
+                try:
+                    exchange.place_stop_loss_order(sym, "BUY", qty, new_sl)
+                    sl_price = new_sl
+                    sl_ok = True
+                    logger.warning(
+                        f"[PumpLimit] SL adjusted: {sym} → ${new_sl:.6g} (giá đã bay)"
+                    )
+                    break
+                except Exception:
+                    pass
+            time.sleep(0.5)
+
+    if not sl_ok:
+        if _recover_unprotected_position(exchange, notifier, sym, "PumpLimit"):
+            with lock:
+                state.get("pump_limit_orders", {}).pop(sym, None)
+        return
+
+    logger.info(f"[PumpLimit] SL placed: {sym} @ {sl_price}")
+    try:
+        exchange.place_take_profit_order(sym, "BUY", qty, tp_price)
+        logger.info(f"[PumpLimit] TP placed: {sym} @ {tp_price}")
+    except Exception as exc:
+        logger.error(f"[PumpLimit] TP failed {sym}: {exc}")
+    notifier.telegram.send(
+        f"🔴 <b>PUMP LIMIT FILLED!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 {sym} SHORT\n"
+        f"💰 Fill: <b>${fill_price:.6g}</b>\n"
+        f"🛑 SL set: <b>${sl_price:.6g}</b>\n"
+        f"🎯 TP set: <b>${tp_price:.6g}</b>\n"
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+    )
+    with lock:
+        state.get("pump_limit_orders", {}).pop(sym, None)
+        _append_trade({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "symbol": sym, "side": "SHORT", "entry": fill_price,
+            "sl": sl_price, "tp": tp_price, "qty": qty,
+            "status": "OPEN", "note": "pump_limit_filled",
+        })
+
+
 def limit_order_monitor(exchange, notifier):
     """
     2 nhiệm vụ:
@@ -4847,15 +5906,82 @@ def limit_order_monitor(exchange, notifier):
                 for sym, info in list(pump_limits.items()):
                     try:
                         # Timeout 10 phút — nếu không khớp thì huỷ
-                        if time.time() - info["ts"] > 600:
-                            try:
-                                exchange.cancel_all_orders(sym)
-                            except Exception:
-                                pass
-                            with lock:
-                                state.get("pump_limit_orders", {}).pop(sym, None)
-                            logger.info(f"[PumpLimit] {sym} LIMIT expired, cancelled")
-                            continue
+                        if (time.time() - info["ts"] > 600
+                                and not info.get("cancelled_with_fill")):
+                            order_id = info.get("order_id")
+                            terminal = False
+                            filled = False
+                            if order_id is not None or info.get("client_order_id"):
+                                order_params = _pump_order_params(info, sym)
+                                try:
+                                    cancel_result = exchange._delete(
+                                        "/fapi/v1/order", order_params,
+                                    )
+                                    if not isinstance(cancel_result, dict) or "executedQty" not in cancel_result:
+                                        cancel_result = exchange._get(
+                                            "/fapi/v1/order", order_params,
+                                            signed=True,
+                                        )
+                                    executed_qty = float(
+                                        cancel_result.get("executedQty", 0) or 0
+                                    )
+                                    filled = executed_qty > 0
+                                    terminal = not filled
+                                    if filled:
+                                        info["cancelled_with_fill"] = True
+                                        with lock:
+                                            state.setdefault("pump_limit_orders", {}).setdefault(
+                                                sym, info
+                                            )["cancelled_with_fill"] = True
+                                        _pump_entry_coordinator.mark_in_trade(sym)
+                                except Exception as exc:
+                                    logger.warning(
+                                        f"[PumpLimit] Exact cancel failed {sym}/{order_id}: {exc}"
+                                    )
+                                    try:
+                                        order_state = exchange._get(
+                                            "/fapi/v1/order", order_params,
+                                            signed=True,
+                                        )
+                                        status = order_state.get("status", "")
+                                        executed_qty = float(
+                                            order_state.get("executedQty", 0) or 0
+                                        )
+                                        filled = status == "FILLED" or executed_qty > 0
+                                        terminal = (
+                                            status in {"CANCELED", "EXPIRED", "REJECTED"}
+                                            and not filled
+                                        )
+                                        if filled:
+                                            info["cancelled_with_fill"] = True
+                                            with lock:
+                                                state.setdefault("pump_limit_orders", {}).setdefault(
+                                                    sym, info
+                                                )["cancelled_with_fill"] = True
+                                            _pump_entry_coordinator.mark_in_trade(sym)
+                                    except Exception as state_exc:
+                                        logger.warning(
+                                            f"[PumpLimit] Reconcile failed "
+                                            f"{sym}/{order_id}: {state_exc}"
+                                        )
+                            else:
+                                logger.warning(
+                                    f"[PumpLimit] {sym} expired without exchange/client id; "
+                                    "retaining metadata to avoid an untracked late fill"
+                                )
+
+                            if terminal:
+                                with lock:
+                                    state.get("pump_limit_orders", {}).pop(sym, None)
+                                _pump_entry_coordinator.release_pending(sym)
+                                logger.info(
+                                    f"[PumpLimit] {sym} LIMIT expiry confirmed terminal"
+                                )
+                                continue
+                            if not filled:
+                                # Keep metadata and retry cancellation/reconciliation
+                                # on the next monitor cycle.
+                                continue
 
                         # Kiểm tra có position chưa (lệnh đã fill)
                         all_pos = exchange._get("/fapi/v2/positionRisk", signed=True)
@@ -4863,67 +5989,73 @@ def limit_order_monitor(exchange, notifier):
                                     if p["symbol"] == sym
                                     and float(p.get("positionAmt", 0)) < 0), None)  # SHORT = âm
 
-                        if pos:
-                            # Lệnh đã fill → đặt SL/TP ngay
-                            qty      = abs(float(pos["positionAmt"]))
-                            sl_price = info["sl_price"]
-                            tp_price = info["tp1_price"]
-                            fill_price = float(pos.get("entryPrice", info["entry_price"]))
-                            cur_mark = float(pos.get("markPrice", 0)) or exchange.get_ticker_price(sym)
-
-                            time.sleep(0.3)
-
-                            # SL retry 3 lần — nếu giá đã bay quá SL gốc → dùng SL mới
-                            sl_ok = False
-                            for _sl_try in range(3):
+                        # A fresh high invalidates the old BOS/retest order. If it
+                        # has not filled, cancel that exact order before re-arming.
+                        cycle_peak = float(info.get("cycle_peak", 0.0))
+                        with lock:
+                            observed_price = float(state.get("prices", {}).get(sym, 0.0) or 0.0)
+                        if (
+                            not pos
+                            and not info.get("cancelled_with_fill")
+                            and cycle_peak > 0
+                            and observed_price > cycle_peak
+                        ):
+                            order_id = info.get("order_id")
+                            if order_id is not None or info.get("client_order_id"):
+                                order_params = _pump_order_params(info, sym)
                                 try:
-                                    exchange.place_stop_loss_order(sym, "BUY", qty, sl_price)
-                                    sl_ok = True
-                                    break
-                                except Exception as e:
-                                    # SL fail → có thể giá đã vượt SL → tính SL mới
-                                    if "price" in str(e).lower() or "400" in str(e):
-                                        # SHORT: SL phải > giá hiện tại
-                                        new_sl = round(cur_mark * 1.03, 8)  # 3% trên giá hiện tại
-                                        try:
-                                            exchange.place_stop_loss_order(sym, "BUY", qty, new_sl)
-                                            sl_price = new_sl
-                                            sl_ok = True
-                                            logger.warning(f"[PumpLimit] SL adjusted: {sym} → ${new_sl:.6g} (giá đã bay)")
-                                            break
-                                        except Exception:
-                                            pass
-                                    time.sleep(0.5)
+                                    cancel_result = exchange._delete(
+                                        "/fapi/v1/order", order_params,
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        f"[PumpLimit] New-high cancel failed "
+                                        f"{sym}/{order_id}: {exc}"
+                                    )
+                                    continue
+                                if not isinstance(cancel_result, dict) or "executedQty" not in cancel_result:
+                                    try:
+                                        cancel_result = exchange._get(
+                                            "/fapi/v1/order", order_params,
+                                            signed=True,
+                                        )
+                                    except Exception as exc:
+                                        logger.warning(
+                                            f"[PumpLimit] New-high reconciliation failed "
+                                            f"{sym}/{order_id}: {exc}; retaining metadata"
+                                        )
+                                        continue
+                                executed_qty = float(
+                                    cancel_result.get("executedQty", 0) or 0
+                                )
+                                if executed_qty > 0:
+                                    info["cancelled_with_fill"] = True
+                                    with lock:
+                                        state.setdefault("pump_limit_orders", {}).setdefault(
+                                            sym, info
+                                        )["cancelled_with_fill"] = True
+                                    _pump_entry_coordinator.mark_in_trade(sym)
+                                    logger.warning(
+                                        f"[PumpLimit] {sym} new-high cancel had "
+                                        f"partial fill qty={executed_qty}; retaining protection metadata"
+                                    )
+                                else:
+                                    with lock:
+                                        state.get("pump_limit_orders", {}).pop(sym, None)
+                                    _pump_entry_coordinator.release_pending(sym)
+                                    _pump_entry_coordinator.observe_pump(
+                                        sym, observed_price, "new_high"
+                                    )
+                                    logger.info(
+                                        f"[PumpLimit] {sym} new high ${observed_price:.6g} "
+                                        f"> ${cycle_peak:.6g}; old retest LIMIT cancelled"
+                                    )
+                                    continue
 
-                            if not sl_ok:
-                                logger.warning(f"[PumpLimit] SL FAILED {sym} — keeping position, auto_sltp will retry")
-                            else:
-                                logger.info(f"[PumpLimit] SL placed: {sym} @ {sl_price}")
-
-                            try:
-                                exchange.place_take_profit_order(sym, "BUY", qty, tp_price)
-                                logger.info(f"[PumpLimit] TP placed: {sym} @ {tp_price}")
-                            except Exception as e:
-                                logger.error(f"[PumpLimit] TP failed {sym}: {e}")
-                            notifier.telegram.send(
-                                f"🔴 <b>PUMP LIMIT FILLED!</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🪙 {sym} SHORT\n"
-                                f"💰 Fill: <b>${fill_price:.6g}</b>\n"
-                                f"🛑 SL set: <b>${sl_price:.6g}</b>\n"
-                                f"🎯 TP set: <b>${tp_price:.6g}</b>\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        if pos:
+                            _protect_pump_limit_fill_once(
+                                exchange, notifier, sym, info
                             )
-                            with lock:
-                                state.get("pump_limit_orders", {}).pop(sym, None)
-                                _append_trade({
-                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    "symbol": sym, "side": "SHORT",
-                                    "entry":  fill_price,
-                                    "sl":     sl_price, "tp": tp_price,
-                                    "qty":    qty, "status": "OPEN",
-                                    "note":   "pump_limit_filled",
-                                })
 
                     except Exception as e:
                         logger.debug(f"[PumpLimit] Monitor {sym}: {e}")
@@ -5740,105 +6872,153 @@ def partial_tp_monitor(exchange, notifier):
                 else:
                     pnl_pct = (entry - mark) / entry * 100
 
-                ps = _partial_state.setdefault(symbol, {"tp1_done": False, "tp2_done": False})
-
-                qty_total = abs(amt)
-                close_side = "SELL" if is_long else "BUY"
+                position_key = (side_str, entry)
+                ps = _partial_state.get(symbol)
+                if not ps or ps.get("position_key") != position_key:
+                    ps = {
+                        "tp1_done": False,
+                        "tp2_done": False,
+                        "position_key": position_key,
+                    }
+                    _partial_state[symbol] = ps
 
                 # ── TP1 ──────────────────────────────────────────
                 if not ps["tp1_done"] and pnl_pct >= tp1_pct:
                     try:
-                        qty_close = round(qty_total * tp1_close_pct / 100, 8)
-                        # Lấy step size
-                        try:
-                            step, _, decimals, min_notional = exchange.get_qty_precision(symbol)
-                            if step >= 1:
-                                qty_close = int(qty_close // step) * int(step)
-                            else:
-                                qty_close = round(int(qty_close / step) * step, decimals)
-                        except Exception:
-                            pass
+                        with _position_close_lock(symbol):
+                            # The cached snapshot can already be flat after
+                            # ProfitLock/SL/TP. Never close from stale state.
+                            live_amt = _get_live_position_amt(exchange, symbol)
+                            if live_amt == 0:
+                                logger.info(
+                                    f"[PartialTP] Skip TP1 {symbol}: position already closed"
+                                )
+                                _partial_state.pop(symbol, None)
+                                _set_local_position_amt(symbol, 0.0)
+                                continue
+                            if (live_amt > 0) != is_long:
+                                logger.warning(
+                                    f"[PartialTP] Skip TP1 {symbol}: side changed "
+                                    f"cached={amt:g}, live={live_amt:g}"
+                                )
+                                _partial_state.pop(symbol, None)
+                                _set_local_position_amt(symbol, live_amt)
+                                continue
 
-                        if qty_close * mark < 5.0:
-                            logger.debug(f"[PartialTP] {symbol} TP1 qty too small, skip")
-                        else:
-                            exchange.place_market_order(symbol, close_side, qty_close)
+                            live_qty = abs(live_amt)
+                            close_side = "SELL" if live_amt > 0 else "BUY"
+                            qty_close = round(live_qty * tp1_close_pct / 100, 8)
+                            try:
+                                step, _, decimals, min_notional = exchange.get_qty_precision(symbol)
+                                if step >= 1:
+                                    qty_close = int(qty_close // step) * int(step)
+                                else:
+                                    qty_close = round(int(qty_close / step) * step, decimals)
+                            except Exception:
+                                pass
+
+                            if qty_close <= 0 or qty_close * mark < 5.0:
+                                logger.debug(f"[PartialTP] {symbol} TP1 qty too small, skip")
+                                continue
+
+                            exchange.place_market_order(
+                                symbol, close_side, qty_close, reduce_only=True
+                            )
                             ps["tp1_done"] = True
+                            try:
+                                remaining_amt = _get_live_position_amt(exchange, symbol)
+                            except Exception:
+                                remaining_qty = max(live_qty - qty_close, 0.0)
+                                remaining_amt = remaining_qty if live_amt > 0 else -remaining_qty
+                            remaining_qty = abs(remaining_amt)
+                            _set_local_position_amt(symbol, remaining_amt)
                             logger.info(f"[PartialTP] ✅ TP1 {symbol} {side_str}: "
                                         f"đóng {tp1_close_pct:.0f}% ({qty_close}) @ lời {pnl_pct:.1f}%")
 
-                            # Dời SL về breakeven
-                            if move_sl_be:
-                                try:
-                                    # Cancel SL cũ
-                                    all_orders = exchange._get("/fapi/v1/openOrders",
-                                                              {"symbol": symbol}, signed=True)
-                                    sl_orders = [o for o in all_orders
-                                                 if o.get("type") in ("STOP_MARKET", "STOP")
-                                                 and o.get("reduceOnly", False)]
-                                    for o in sl_orders:
-                                        exchange._delete("/fapi/v1/order",
-                                                        {"symbol": symbol, "orderId": o["orderId"]})
-                                    # Đặt SL mới tại entry
-                                    be_sl = round(entry * (1.001 if is_long else 0.999), 8)
-                                    exchange.place_stop_loss_order(symbol, close_side,
-                                                                   round(qty_total - qty_close, 8),
-                                                                   be_sl)
-                                    logger.info(f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}")
-                                except Exception as _e:
-                                    logger.debug(f"[PartialTP] Move SL BE {symbol}: {_e}")
+                            # Dời SL về breakeven cho đúng phần còn lại.
+                            if move_sl_be and remaining_qty > 0:
+                                be_sl = round(entry * (1.001 if is_long else 0.999), 8)
+                                if _update_sl(
+                                    exchange, symbol, side_str, be_sl,
+                                    remaining_qty, cancel_nearest=False,
+                                ):
+                                    logger.info(
+                                        f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}"
+                                    )
 
-                            notifier.telegram.send(
-                                f"💰 <b>PARTIAL TP1</b>: {symbol} {side_str}\n"
-                                f"Chốt {tp1_close_pct:.0f}% vị thế @ lời {pnl_pct:.1f}%\n"
-                                f"SL dời về breakeven {entry:.6f}\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
+                        notifier.telegram.send(
+                            f"💰 <b>PARTIAL TP1</b>: {symbol} {side_str}\n"
+                            f"Chốt {tp1_close_pct:.0f}% vị thế @ lời {pnl_pct:.1f}%\n"
+                            f"SL dời về breakeven {entry:.6f}\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
                     except Exception as e:
                         logger.error(f"[PartialTP] TP1 {symbol}: {e}")
 
                 # ── TP2 ──────────────────────────────────────────
                 elif tp2_enabled and ps["tp1_done"] and not ps["tp2_done"] and pnl_pct >= tp2_pct:
                     try:
-                        # Lấy lại qty hiện tại (đã giảm sau TP1)
-                        try:
-                            cur_pos = exchange._get("/fapi/v2/positionRisk",
-                                                   {"symbol": symbol}, signed=True)
-                            cur_amt = abs(float(next(
-                                (p["positionAmt"] for p in cur_pos
-                                 if p["symbol"] == symbol), 0
-                            )))
-                        except Exception:
-                            cur_amt = qty_total * (1 - tp1_close_pct / 100)
+                        with _position_close_lock(symbol):
+                            live_amt = _get_live_position_amt(exchange, symbol)
+                            if live_amt == 0:
+                                logger.info(
+                                    f"[PartialTP] Skip TP2 {symbol}: position already closed"
+                                )
+                                _partial_state.pop(symbol, None)
+                                _set_local_position_amt(symbol, 0.0)
+                                continue
+                            if (live_amt > 0) != is_long:
+                                logger.warning(
+                                    f"[PartialTP] Skip TP2 {symbol}: side changed "
+                                    f"cached={amt:g}, live={live_amt:g}"
+                                )
+                                _partial_state.pop(symbol, None)
+                                _set_local_position_amt(symbol, live_amt)
+                                continue
 
-                        qty_close2 = round(cur_amt * tp2_close_pct / 100, 8)
-                        try:
-                            step, _, decimals, _ = exchange.get_qty_precision(symbol)
-                            if step >= 1:
-                                qty_close2 = int(qty_close2 // step) * int(step)
-                            else:
-                                qty_close2 = round(int(qty_close2 / step) * step, decimals)
-                        except Exception:
-                            pass
+                            live_qty = abs(live_amt)
+                            close_side = "SELL" if live_amt > 0 else "BUY"
+                            qty_close2 = round(live_qty * tp2_close_pct / 100, 8)
+                            try:
+                                step, _, decimals, _ = exchange.get_qty_precision(symbol)
+                                if step >= 1:
+                                    qty_close2 = int(qty_close2 // step) * int(step)
+                                else:
+                                    qty_close2 = round(int(qty_close2 / step) * step, decimals)
+                            except Exception:
+                                pass
 
-                        if qty_close2 * mark < 5.0:
-                            logger.debug(f"[PartialTP] {symbol} TP2 qty too small, skip")
-                        else:
-                            exchange.place_market_order(symbol, close_side, qty_close2)
+                            if qty_close2 <= 0 or qty_close2 * mark < 5.0:
+                                logger.debug(f"[PartialTP] {symbol} TP2 qty too small, skip")
+                                continue
+
+                            exchange.place_market_order(
+                                symbol, close_side, qty_close2, reduce_only=True
+                            )
                             ps["tp2_done"] = True
+                            try:
+                                remaining_amt = _get_live_position_amt(exchange, symbol)
+                            except Exception:
+                                remaining_qty = max(live_qty - qty_close2, 0.0)
+                                remaining_amt = remaining_qty if live_amt > 0 else -remaining_qty
+                            remaining_qty = abs(remaining_amt)
+                            _set_local_position_amt(symbol, remaining_amt)
                             logger.info(f"[PartialTP] ✅ TP2 {symbol} {side_str}: "
                                         f"đóng {tp2_close_pct:.0f}% @ lời {pnl_pct:.1f}%")
-                            notifier.telegram.send(
-                                f"💰 <b>PARTIAL TP2</b>: {symbol} {side_str}\n"
-                                f"Chốt thêm {tp2_close_pct:.0f}% @ lời {pnl_pct:.1f}%\n"
-                                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                            )
+
+                        notifier.telegram.send(
+                            f"💰 <b>PARTIAL TP2</b>: {symbol} {side_str}\n"
+                            f"Chốt thêm {tp2_close_pct:.0f}% @ lời {pnl_pct:.1f}%\n"
+                            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        )
                     except Exception as e:
                         logger.error(f"[PartialTP] TP2 {symbol}: {e}")
 
-                # Reset nếu position đã đóng hoàn toàn
-                if abs(amt) == 0:
-                    _partial_state.pop(symbol, None)
+            # Drop state for symbols no longer present in the latest snapshot.
+            current_symbols = {p.get("symbol") for p in open_pos}
+            for stale_symbol in list(_partial_state):
+                if stale_symbol not in current_symbols:
+                    _partial_state.pop(stale_symbol, None)
 
         except Exception as e:
             logger.debug(f"[PartialTP] monitor error: {e}")
@@ -5990,22 +7170,8 @@ def position_advisor(exchange, notifier):
 # THREAD 11: Orphan Order Cleanup — mỗi 20 phút xóa SL/TP mồ côi
 # ============================================================
 def orphan_order_cleanup(exchange, notifier):
-    """Nếu coin có SL/TP order nhưng KHÔNG có position → hủy
-    NGOẠI TRỪ: BTC, ETH, BNB, XRP — giữ lệnh chờ cho user tự quản lý."""
+    """Every 2 minutes, remove true orphan orders except protected symbols."""
     time.sleep(60)  # Chờ 60s sau bot start rồi quét ngay
-
-    # Coin không bị auto cancel — user muốn tự hủy tay
-    # Check prefix để bao gồm cả quarterly futures (VD: ETHUSDT_260925)
-    EXCLUDE_AUTO_CANCEL = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"}
-
-    def is_excluded(sym):
-        if sym in EXCLUDE_AUTO_CANCEL:
-            return True
-        # Check prefix: ETHUSDT_260925 → starts with ETHUSDT
-        for ex in EXCLUDE_AUTO_CANCEL:
-            if sym.startswith(ex):
-                return True
-        return False
 
     while state["running"]:
         try:
@@ -6015,22 +7181,42 @@ def orphan_order_cleanup(exchange, notifier):
             cancelled = []
             logger.debug(f"[OrphanCleanup] cycle done, cancelled={len(cancelled)}")
 
-            # Algo orders — dùng cancel_all_orders cho coin mồ côi
+            # Algo orders — delete only the exact orphan algo order. Never use
+            # symbol-wide cancellation here because it can erase manual LIMITs.
             try:
                 algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
                 if isinstance(algo_orders, list):
-                    orphan_algo_syms = set()
                     for o in algo_orders:
                         sym = o.get("symbol", "")
-                        if sym and sym not in open_syms and not is_excluded(sym):
-                            orphan_algo_syms.add(sym)
-                    for sym in orphan_algo_syms:
+                        protected_entry = (
+                            _is_protected_pending_symbol(sym)
+                            and not _is_reduce_only_order(o)
+                        )
+                        if not sym or sym in open_syms or protected_entry:
+                            continue
+                        algo_id = o.get("algoId")
+                        if not algo_id:
+                            continue
                         try:
-                            exchange.cancel_all_orders(sym)
-                            cancelled.append(f"{sym} (algo)")
-                            logger.info(f"[OrphanCleanup] Cancelled algo orders: {sym}")
+                            params = {"symbol": sym, "algoId": algo_id}
+                            if _is_reduce_only_order(o):
+                                exchange._delete("/fapi/v1/algoOrder", params)
+                                was_deleted = True
+                            else:
+                                was_deleted = _delete_entry_order_if_unprotected(
+                                    exchange, "/fapi/v1/algoOrder", params,
+                                    sym, "OrphanCleanup",
+                                )
+                            if not was_deleted:
+                                continue
+                            cancelled.append(f"{sym} ({o.get('type', 'algo')})")
+                            logger.info(
+                                f"[OrphanCleanup] Cancelled exact algo {algo_id}: {sym}"
+                            )
                         except Exception as _ae:
-                            logger.warning(f"[OrphanCleanup] Cancel algo {sym} failed: {_ae}")
+                            logger.warning(
+                                f"[OrphanCleanup] Cancel algo {sym}/{algo_id} failed: {_ae}"
+                            )
             except Exception as _algo_e:
                 logger.warning(f"[OrphanCleanup] openAlgoOrders error: {_algo_e}")
 
@@ -6039,9 +7225,7 @@ def orphan_order_cleanup(exchange, notifier):
                 all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                 for o in all_orders:
                     sym = o.get("symbol", "")
-                    if is_excluded(sym):
-                        continue
-                    if sym and sym not in open_syms and o.get("reduceOnly", False):
+                    if sym and sym not in open_syms and _is_reduce_only_order(o):
                         try:
                             exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
                             cancelled.append(f"{sym} ({o.get('type', '')})")
@@ -6057,9 +7241,14 @@ def orphan_order_cleanup(exchange, notifier):
                     all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     for o in all_orders:
                         sym = o.get("symbol", "")
-                        if is_excluded(sym):
+                        if _is_protected_pending_symbol(sym):
                             continue
-                        if not (sym and sym not in open_syms and not o.get("reduceOnly", False)):
+                        if not (
+                            sym
+                            and sym not in open_syms
+                            and o.get("type") == "LIMIT"
+                            and not o.get("reduceOnly", False)
+                        ):
                             continue
                         # Check thời gian
                         order_time_ms = int(o.get("time", 0))
@@ -6096,15 +7285,21 @@ def orphan_order_cleanup(exchange, notifier):
 
                         if should_cancel:
                             try:
-                                exchange._delete("/fapi/v1/order", {"symbol": sym, "orderId": o.get("orderId")})
+                                was_deleted = _delete_entry_order_if_unprotected(
+                                    exchange,
+                                    "/fapi/v1/order",
+                                    {"symbol": sym, "orderId": o.get("orderId")},
+                                    sym,
+                                    "OrphanCleanup",
+                                )
+                                if not was_deleted:
+                                    continue
                                 cancelled.append(f"{sym} (entry {reason})")
-                                # Xóa khỏi pending_smart_orders
+                                # Xóa đúng pending state của order vừa hủy.
                                 with lock:
                                     psm = state.get("pending_smart_orders", {})
-                                    for k, v in list(psm.items()):
-                                        if v.get("symbol") == sym:
-                                            psm.pop(k, None)
-                                            break
+                                    order_key = str(o.get("orderId", ""))
+                                    psm.pop(order_key, None)
                             except Exception:
                                 pass
                 except Exception:
@@ -6167,17 +7362,6 @@ def pending_order_reviewer(exchange, notifier):
     # Đợi 5 phút sau khi bot start
     time.sleep(300)
 
-    # Coin không bị auto cancel pending review
-    EXCLUDE_PENDING_REVIEW = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
-
-    def is_excluded_pending(sym):
-        if sym in EXCLUDE_PENDING_REVIEW:
-            return True
-        for ex in EXCLUDE_PENDING_REVIEW:
-            if sym.startswith(ex):
-                return True
-        return False
-
     while state["running"]:
         try:
             # ── Chỉ chạy khi user bật toggle trên web ──────────
@@ -6201,7 +7385,7 @@ def pending_order_reviewer(exchange, notifier):
                 order_price = float(order.get("price", 0))
 
                 # Skip coin không bị auto cancel
-                if is_excluded_pending(sym):
+                if _is_protected_pending_symbol(sym):
                     continue
 
                 try:
@@ -6210,7 +7394,19 @@ def pending_order_reviewer(exchange, notifier):
                     # Check 1: giá đi xa quá 3%
                     dist_pct = abs(current_price - order_price) / order_price * 100
                     if dist_pct > 3:
-                        exchange.cancel_all_orders(sym)
+                        was_deleted = _delete_entry_order_if_unprotected(
+                            exchange,
+                            "/fapi/v1/order",
+                            {"symbol": sym, "orderId": order.get("orderId")},
+                            sym,
+                            "PendingReview",
+                        )
+                        if not was_deleted:
+                            continue
+                        with lock:
+                            state.get("pending_smart_orders", {}).pop(
+                                str(order.get("orderId", "")), None
+                            )
                         cancelled.append(f"{sym} (giá xa {dist_pct:.1f}%)")
                         logger.info(f"[PendingReview] Cancelled {sym}: price moved {dist_pct:.1f}%")
                         continue
@@ -6223,14 +7419,32 @@ def pending_order_reviewer(exchange, notifier):
                     ema9 = calculate_ema(close, 9).iloc[-1]
                     ema21 = calculate_ema(close, 21).iloc[-1]
 
+                    should_cancel = False
+                    cancel_reason = ""
                     if side == "BUY":
                         if rsi > 70 or (ema9 < ema21 and current_price < ema21):
-                            exchange.cancel_all_orders(sym)
-                            cancelled.append(f"{sym} LONG (xu hướng bearish, RSI={rsi:.0f})")
+                            should_cancel = True
+                            cancel_reason = f"LONG (xu hướng bearish, RSI={rsi:.0f})"
                     else:
                         if rsi < 30 or (ema9 > ema21 and current_price > ema21):
-                            exchange.cancel_all_orders(sym)
-                            cancelled.append(f"{sym} SHORT (xu hướng bullish, RSI={rsi:.0f})")
+                            should_cancel = True
+                            cancel_reason = f"SHORT (xu hướng bullish, RSI={rsi:.0f})"
+
+                    if should_cancel:
+                        was_deleted = _delete_entry_order_if_unprotected(
+                            exchange,
+                            "/fapi/v1/order",
+                            {"symbol": sym, "orderId": order.get("orderId")},
+                            sym,
+                            "PendingReview",
+                        )
+                        if not was_deleted:
+                            continue
+                        with lock:
+                            state.get("pending_smart_orders", {}).pop(
+                                str(order.get("orderId", "")), None
+                            )
+                        cancelled.append(f"{sym} {cancel_reason}")
 
                 except Exception as e:
                     logger.debug(f"[PendingReview] Skip {sym}: {e}")
@@ -6277,33 +7491,20 @@ if __name__ == "__main__":
     state["_notifier"] = notifier
     state["grids"]     = {}
 
-    # ═══════════════════════════════════════════════════════════════
-    # STARTUP CLEANUP: Cancel old LIMIT orders từ session trước
-    # Tránh khớp lệnh cũ với entry quality kém khi bot restart
-    # ═══════════════════════════════════════════════════════════════
+    # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
+    # before pump_limit_orders is initialized so no old order can fill after
+    # its SL/TP metadata has been discarded.
     try:
-        logger.info("[Startup] Checking for old LIMIT orders...")
-        all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
-        old_limits = [o for o in all_orders 
-                      if not o.get("reduceOnly", False) 
-                      and o.get("type") == "LIMIT"]
-        
-        if old_limits:
-            logger.info(f"[Startup] Found {len(old_limits)} old LIMIT orders, cancelling...")
-            for o in old_limits:
-                try:
-                    exchange._delete("/fapi/v1/order", 
-                                   {"symbol": o["symbol"], "orderId": o["orderId"]}, 
-                                   signed=True)
-                    logger.info(f"[Startup] ✅ Cancelled {o['symbol']} LIMIT @ {o['price']}")
-                except Exception as e:
-                    logger.warning(f"[Startup] Failed to cancel {o['symbol']}: {e}")
-            print(f"🗑️  Cleaned up {len(old_limits)} old LIMIT orders", flush=True)
+        cleaned = _cleanup_pump_limits_on_startup(exchange, notifier)
+        if cleaned:
+            print(f"🗑️  Reconciled {cleaned} old pump LIMIT orders", flush=True)
         else:
-            logger.info("[Startup] No old LIMIT orders to clean")
+            logger.info("[Startup] No pump-owned LIMIT orders to clean")
     except Exception as e:
-        logger.warning(f"[Startup] Failed to cleanup old orders: {e}")
-        print(f"⚠️ Order cleanup failed: {e}", flush=True)
+        logger.critical(f"[Startup] Unsafe pump LIMIT cleanup failure: {e}")
+        raise SystemExit(
+            "Startup aborted: unresolved pump LIMIT could fill without protection"
+        ) from e
 
     # Khởi động Liquidation Tracker (websocket — tích lũy theo thời gian)
     from scanner import WATCHLIST as _wl
@@ -6712,7 +7913,8 @@ if __name__ == "__main__":
             print(f"⚠️ Report failed: {e}")
         # Dừng tất cả grids (silent)
         for sym, g in state.get("grids", {}).items():
-            try: g.exchange.cancel_all_orders(sym)
+            try:
+                g.stop()
             except: pass
         # KHÔNG đóng position khi dừng bot — lệnh vẫn giữ trên Binance
         print("💡 Lệnh đang mở vẫn giữ trên Binance (SL/TP đã đặt sẵn)")

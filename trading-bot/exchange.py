@@ -291,103 +291,123 @@ class BinanceFutures:
             else:
                 raise
 
-    def place_market_order(self, symbol: str, side: str, quantity: float) -> dict:
+    def place_market_order(self, symbol: str, side: str, quantity: float,
+                           reduce_only: bool = False,
+                           client_order_id: str = "") -> dict:
         """
-        Đặt lệnh market
-        side: 'BUY' hoặc 'SELL'
+        Đặt lệnh market.
+
+        Args:
+            side: ``BUY`` hoặc ``SELL``.
+            reduce_only: Bắt buộc lệnh chỉ được giảm/đóng vị thế hiện tại.
+                Dùng ``True`` cho mọi close path để dữ liệu quantity cũ không
+                thể vô tình đảo SHORT thành LONG (hoặc ngược lại).
         """
         # Convert to int if whole number (Binance rejects "113295.0" for some coins)
         if quantity == int(quantity):
             quantity = int(quantity)
-        result = self._post("/fapi/v1/order", {
+        params = {
             "symbol": symbol,
             "side": side,
             "type": "MARKET",
-            "quantity": quantity
-        })
-        logger.info(f"Market order placed: {side} {quantity} {symbol} @ market")
-        return result
-
-    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float) -> dict:
-        """
-        Đặt lệnh LIMIT
-        side: 'BUY' hoặc 'SELL'
-        price: giá limit
-        """
-        if quantity == int(quantity):
-            quantity = int(quantity)
-        result = self._post("/fapi/v1/order", {
-            "symbol": symbol,
-            "side": side,
-            "type": "LIMIT",
             "quantity": quantity,
-            "price": price,
-            "timeInForce": "GTC"  # Good Till Cancel
-        })
-        logger.info(f"Limit order placed: {side} {quantity} {symbol} @ ${price}")
+        }
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        result = self._post("/fapi/v1/order", params)
+        tag = " reduce-only" if reduce_only else ""
+        logger.info(f"Market{tag} order placed: {side} {quantity} {symbol} @ market")
         return result
 
-    def _round_price(self, price: float, symbol: str = "") -> float:
-        """Làm tròn giá đúng theo tick size thật của từng coin từ Binance exchangeInfo.
-        Cache lại sau lần đọc đầu để không gọi API mỗi lần.
+    def _round_price(self, price: float, symbol: str = "", *, round_up: bool = False) -> float:
+        """Round to the symbol tick; ``round_up`` is safe for SELL maker orders."""
+        import math
 
-        Tại sao bậc thang cứng không đủ:
-          BANANA @ 3.6221 → price >= 1 → round(4) → 3.6221 (4 chữ số)
-          nhưng tick BANANA = 0.001 (3 chữ số) → Binance trả -4014
-          TUT @ 0.025284 → price < 0.1 → round(6) → 0.025284 (6 chữ số)
-          nhưng tick TUT = 0.00001 (5 chữ số) → Binance trả -4014
-        """
-        # Đọc tick size từ cache
         tick = self._tick_cache.get(symbol) if symbol else None
         if tick is None and symbol:
             try:
                 info = self._get("/fapi/v1/exchangeInfo", signed=False)
-                for s in info.get("symbols", []):
-                    for f in s.get("filters", []):
-                        if f.get("filterType") == "PRICE_FILTER":
-                            ts = float(f.get("tickSize", 0))
-                            if ts > 0:
-                                self._tick_cache[s["symbol"]] = ts
+                for item in info.get("symbols", []):
+                    for price_filter in item.get("filters", []):
+                        if price_filter.get("filterType") == "PRICE_FILTER":
+                            tick_size = float(price_filter.get("tickSize", 0))
+                            if tick_size > 0:
+                                self._tick_cache[item["symbol"]] = tick_size
                 tick = self._tick_cache.get(symbol)
             except Exception:
                 tick = None
 
-        if tick and tick > 0:
-            # Làm tròn đúng theo tick: round tới bội số gần nhất
-            import math
-            decimals = max(0, -int(math.floor(math.log10(tick))))
-            return round(round(price / tick) * tick, decimals)
-
-        # Fallback nếu không lấy được tick (không gọi API được)
-        if price >= 10000:
-            return round(price, 1)
-        elif price >= 1000:
-            return round(price, 2)
-        elif price >= 10:
-            return round(price, 2)
-        elif price >= 1:
-            return round(price, 3)
-        elif price >= 0.1:
-            return round(price, 4)
-        elif price >= 0.01:
-            return round(price, 5)
+        if not tick or tick <= 0:
+            if price >= 10000:
+                decimals = 1
+            elif price >= 10:
+                decimals = 2
+            elif price >= 1:
+                decimals = 3
+            elif price >= 0.1:
+                decimals = 4
+            elif price >= 0.01:
+                decimals = 5
+            else:
+                decimals = 6
+            tick = 10 ** -decimals
         else:
-            return round(price, 6)
+            decimals = max(0, -int(math.floor(math.log10(tick))))
 
-    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float) -> dict:
-        """Đặt lệnh LIMIT — chờ giá về mức price mới khớp"""
+        units = price / tick
+        rounded_units = math.ceil(units - 1e-12) if round_up else round(units)
+        return round(rounded_units * tick, decimals)
+
+    def place_limit_order(self, symbol: str, side: str, quantity: float,
+                          price: float, *, post_only: bool = False,
+                          client_order_id: str = "") -> dict:
+        """Place a LIMIT, optionally as a Binance Futures post-only GTX order.
+
+        Post-only SELLs are rounded upward and checked against a fresh best bid
+        immediately before submission. Binance GTX is the final race-safe guard:
+        a quote move that would make the order marketable causes rejection.
+        """
         if quantity == int(quantity):
             quantity = int(quantity)
-        limit_price = self._round_price(price, symbol)
-        result = self._post("/fapi/v1/order", {
+        side = side.upper()
+        limit_price = self._round_price(
+            price, symbol, round_up=post_only and side == "SELL"
+        )
+        if post_only:
+            book = self._get("/fapi/v1/ticker/bookTicker", {"symbol": symbol})
+            best_bid = float(book.get("bidPrice", 0) or 0)
+            best_ask = float(book.get("askPrice", 0) or 0)
+            if best_bid <= 0 or best_ask <= 0:
+                raise ValueError(f"invalid fresh book for post-only {symbol}")
+            if side == "SELL" and limit_price <= best_bid:
+                raise ValueError(
+                    f"post-only SELL {symbol} {limit_price} is marketable at bid {best_bid}"
+                )
+            if side == "BUY" and limit_price >= best_ask:
+                raise ValueError(
+                    f"post-only BUY {symbol} {limit_price} is marketable at ask {best_ask}"
+                )
+
+        params = {
             "symbol": symbol,
             "side": side,
             "type": "LIMIT",
             "quantity": quantity,
             "price": limit_price,
-            "timeInForce": "GTC"  # Good Till Cancel
-        })
-        logger.info(f"Limit order placed: {side} {quantity} {symbol} @ {limit_price}")
+            "timeInForce": "GTX" if post_only else "GTC",
+        }
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        result = self._post("/fapi/v1/order", params)
+        if isinstance(result, dict):
+            result.setdefault("price", str(limit_price))
+            result.setdefault("origClientOrderId", client_order_id)
+        logger.info(
+            f"Limit order placed: {side} {quantity} {symbol} @ {limit_price} "
+            f"({'GTX' if post_only else 'GTC'})"
+        )
         return result
 
     def place_stop_loss_order(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
@@ -477,7 +497,7 @@ class BinanceFutures:
             return
         side = "SELL" if amt > 0 else "BUY"
         quantity = abs(amt)
-        return self.place_market_order(symbol, side, quantity)
+        return self.place_market_order(symbol, side, quantity, reduce_only=True)
 
     def get_realized_pnl(self, symbol: str, start_time_ms: int) -> float:
         """

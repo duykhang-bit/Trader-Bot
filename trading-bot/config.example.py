@@ -3,6 +3,12 @@
 # và điền API key của bạn vào
 # ============================================================
 
+# Pending orders on these symbols are preserved by automatic cleanup.
+# The web dashboard persists runtime changes to a JSON sidecar file.
+PROTECTED_PENDING_ORDER_COINS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"
+]
+
 # --- Binance API ---
 API_KEY    = "YOUR_API_KEY_HERE"
 API_SECRET = "YOUR_API_SECRET_HERE"
@@ -56,3 +62,12 @@ COOLDOWN_AFTER_LOSS = 300
 LOOP_INTERVAL_SECONDS = 60
 LOG_LEVEL = "INFO"
 LOG_FILE  = "logs/bot.log"
+
+# --- Pump auto-entry safety (closed 1m BOS required) ---
+PUMP_BOS_LOOKBACK_CANDLES = 30
+PUMP_BOS_WATCH_TTL_SEC = 180
+PUMP_ENTRY_RESERVATION_TTL_SEC = 20
+PUMP_ENTRY_COOLDOWN_SEC = 7
+PUMP_MARKET_ENTRY_PROXIMITY_PCT = 0.20
+PUMP_MAX_ABOVE_ENTRY_PCT = 0.75
+PUMP_MAX_RETEST_DISTANCE_PCT = 5.0

@@ -402,7 +402,8 @@ class PumpDetector:
             return None
 
         is_top = (
-            score >= self.cfg["PUMP_TOP_MIN_SCORE"]
+            reversal_confirmed
+            and score >= self.cfg["PUMP_TOP_MIN_SCORE"]
             and rsi >= 72
             and pump_pct >= self.cfg["PUMP_PRICE_RISE_PCT"]   # dùng config, không hardcode 20%
             and (use_limit_top or use_market)
@@ -422,6 +423,8 @@ class PumpDetector:
                 reasons.append(f"score={score}<{self.cfg['PUMP_TOP_MIN_SCORE']}")
             if rsi < 72:
                 reasons.append(f"RSI={rsi:.0f}<72")
+            if not reversal_confirmed:
+                reasons.append("reversal_not_confirmed")
             if not (use_limit_top or use_market):
                 reasons.append(f"no_entry_signal")
             logger.info(f"[PumpDetector] {symbol}: NOT confirmed ({', '.join(reasons)}) | {signals}")
