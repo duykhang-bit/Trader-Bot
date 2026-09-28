@@ -6424,6 +6424,9 @@ def profit_protection_monitor(exchange, notifier):
                         "notified":          False,
                         "tp":                0.0,
                         "sl_last_update_ts": 0.0,
+                        # Tracking orderId của PP trailing SL để cancel đúng lần sau
+                        "pp_sl_order_id":    None,
+                        "pp_sl_algo_id":     None,
                     }
                     logger.info(f"[PP] {sym} initialized tier={init_tier} sl={cur_sl:.6f} (inferred from Binance SL)")
                     # Lấy TP từ Binance open orders
@@ -6463,7 +6466,7 @@ def profit_protection_monitor(exchange, notifier):
                             new_sl = round(entry * (1 + total_buf), 8)
                             # Chỉ update nếu tốt hơn SL cũ
                             if new_sl > ps["current_sl"]:
-                                if _update_sl(exchange, sym, side, new_sl, abs(amt)):
+                                if _update_sl(exchange, sym, side, new_sl, abs(amt), pp_state=ps):
                                     ps["tier"]       = 2
                                     ps["current_sl"] = new_sl
                                     logger.info(f"[PP] ✅ {sym} LONG tier2 Protection SL={new_sl:.6f} "
@@ -6477,7 +6480,7 @@ def profit_protection_monitor(exchange, notifier):
                         else:  # SHORT
                             new_sl = round(entry * (1 - total_buf), 8)
                             if new_sl < ps["current_sl"] or ps["current_sl"] == 0:
-                                if _update_sl(exchange, sym, side, new_sl, abs(amt)):
+                                if _update_sl(exchange, sym, side, new_sl, abs(amt), pp_state=ps):
                                     ps["tier"]       = 2
                                     ps["current_sl"] = new_sl
                                     logger.info(f"[PP] ✅ {sym} SHORT tier2 Protection SL={new_sl:.6f} (entry-{total_buf*100:.2f}%)")
@@ -6593,7 +6596,7 @@ def profit_protection_monitor(exchange, notifier):
                                     else:
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
                                 
-                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt), cancel_nearest=True):
+                                if _update_sl(exchange, sym, side, new_trail_sl, abs(amt), pp_state=ps):
                                     prev_tier = ps["tier"]
                                     ps["tier"] = max(ps["tier"], target_tier)
                                     if ps["tier"] > prev_tier:
@@ -6666,7 +6669,7 @@ def profit_protection_monitor(exchange, notifier):
                                         # Reset fail count sau cooldown
                                         _sl_fail_count[sym] = {"count": 0, "last_fail_ts": 0}
                                 
-                                update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt), cancel_nearest=True)
+                                update_ok = _update_sl(exchange, sym, side, new_trail_sl, abs(amt), pp_state=ps)
                                 if update_ok:
                                     prev_tier = ps["tier"]
                                     ps["tier"] = max(ps["tier"], target_tier)
@@ -6705,106 +6708,78 @@ def profit_protection_monitor(exchange, notifier):
     logger.warning(f"[PP] ========== EXITED MAIN LOOP ========== running={state.get('running')}")
 
 
-def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float, cancel_nearest: bool = False) -> bool:
+def _update_sl(exchange, symbol: str, side: str, new_sl: float, qty: float,
+               cancel_nearest: bool = False,
+               pp_state: dict = None) -> bool:
     """
-    Update SL trên Binance.
-    Fix 6: ĐẶT SL MỚI TRƯỚC, sau đó mới cancel cũ.
-    Đảm bảo không có khoảng trống không có SL bảo vệ.
-    cancel_nearest=True: sau khi đặt SL mới, cancel đúng 1 SL cũ gần nhất (dùng khi tier>=3)
-    cancel_nearest=False: cancel tất cả SL cũ (behavior cũ)
+    Đặt thêm trailing/protection SL mới cho Profit Protection.
+
+    Quy tắc bất biến:
+    - SL/TP GỐC (do entry logic đặt lúc vào lệnh) KHÔNG BAO GIỜ bị cancel.
+    - Chỉ cancel trailing SL do chính PP đặt lần trước (nhận biết qua
+      pp_state["pp_sl_order_id"] / pp_state["pp_sl_algo_id"]).
+    - Đặt SL mới TRƯỚC khi cancel cũ để không bao giờ có khoảng trống.
     """
     try:
         close_side = "SELL" if side == "LONG" else "BUY"
-        
-        # Validate SL price trước khi đặt (tránh Binance reject)
+
+        # Validate SL price (tránh Binance reject -2021)
         try:
             mark_price = exchange.get_ticker_price(symbol)
             sl_distance_pct = abs(new_sl - mark_price) / mark_price * 100
-            max_sl_distance = 10.0  # 10% max distance
-            
-            if sl_distance_pct > max_sl_distance:
-                logger.warning(f"[PP] _update_sl {symbol} SKIP: SL {new_sl:.6f} xa mark {mark_price:.6f} quá {sl_distance_pct:.1f}% > {max_sl_distance}%")
+            if sl_distance_pct > 10.0:
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: SL {new_sl:.6f} xa mark "
+                                f"{mark_price:.6f} quá {sl_distance_pct:.1f}%")
                 return False
-            
-            # LONG: SL phải dưới mark, SHORT: SL phải trên mark
-            # Nếu không → Binance reject -2021 "Order would immediately trigger"
             if close_side == "SELL" and new_sl >= mark_price * 0.9995:
-                logger.warning(f"[PP] _update_sl {symbol} SKIP: LONG SL {new_sl:.6f} >= mark {mark_price:.6f} → would trigger immediately")
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: LONG SL {new_sl:.6f} "
+                                f">= mark {mark_price:.6f} → would trigger immediately")
                 return False
             if close_side == "BUY" and new_sl <= mark_price * 1.0005:
-                logger.warning(f"[PP] _update_sl {symbol} SKIP: SHORT SL {new_sl:.6f} <= mark {mark_price:.6f} → would trigger immediately")
+                logger.warning(f"[PP] _update_sl {symbol} SKIP: SHORT SL {new_sl:.6f} "
+                                f"<= mark {mark_price:.6f} → would trigger immediately")
                 return False
-        except Exception as e:
-            logger.debug(f"[PP] _update_sl {symbol} skip validation: {e}")
-        
-        # Lấy TẤT CẢ SL orders cũ (cả regular và algo) TRƯỚC khi đặt mới
-        sl_orders = []
-        try:
-            orders = exchange._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
-            sl_orders = [o for o in orders
-                         if o.get("type") in ("STOP_MARKET", "STOP")
-                         and o.get("reduceOnly", False)]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[PP] _update_sl {symbol} skip validation: {exc}")
 
-        algo_sl_orders = []
-        try:
-            algo_orders = exchange._get("/fapi/v1/openAlgoOrders", signed=True)
-            if isinstance(algo_orders, list):
-                algo_sl_orders = [o for o in algo_orders
-                                  if o.get("symbol") == symbol
-                                  and o.get("type") not in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT")]
-        except Exception:
-            pass
+        # ── Đặt SL mới TRƯỚC ──────────────────────────────────────────────
+        result = exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
 
-        # ĐẶT SL MỚI TRƯỚC - nếu thành công mới cancel cũ
-        exchange.place_stop_loss_order(symbol, close_side, qty, new_sl)
+        # Ghi lại orderId của trailing SL vừa đặt để lần sau cancel đúng nó
+        new_order_id  = None
+        new_algo_id   = None
+        if isinstance(result, dict):
+            new_order_id = result.get("orderId") or result.get("clientOrderId")
+            new_algo_id  = result.get("algoId")
 
-        # ── Cancel SL cũ sau khi đặt mới thành công ──
-        if cancel_nearest:
-            # Chỉ cancel 1 SL cũ gần nhất với new_sl (tránh cancel SL ban đầu xa)
-            all_old = []
-            for o in sl_orders:
-                price = float(o.get("stopPrice", 0))
-                if price > 0:
-                    all_old.append(("regular", o, price))
-            for o in algo_sl_orders:
-                price = float(o.get("triggerPrice", o.get("stopPrice", 0)))
-                if price > 0:
-                    all_old.append(("algo", o, price))
+        # ── Cancel trailing SL CŨ do PP đặt lần trước ────────────────────
+        # Chỉ cancel đúng order mà PP đã ghi nhận, KHÔNG cancel SL gốc.
+        if pp_state is not None:
+            prev_algo_id  = pp_state.get("pp_sl_algo_id")
+            prev_order_id = pp_state.get("pp_sl_order_id")
 
-            if all_old:
-                # Tìm SL cũ gần new_sl nhất
-                nearest = min(all_old, key=lambda x: abs(x[2] - new_sl))
-                kind, order, price = nearest
-                try:
-                    if kind == "regular":
-                        exchange._delete("/fapi/v1/order",
-                                         {"symbol": symbol, "orderId": order["orderId"]})
-                        logger.debug(f"[PP] Cancelled nearest SL: {price:.6f}")
-                    else:
-                        exchange._delete("/fapi/v1/algoOrder",
-                                         {"algoId": order.get("algoId", ""), "symbol": symbol})
-                        logger.debug(f"[PP] Cancelled nearest algo SL: {price:.6f}")
-                except Exception as e:
-                    logger.debug(f"[PP] Cancel nearest SL failed: {e}")
-        else:
-            # Cancel TẤT CẢ SL cũ (behavior cũ)
-            for o in sl_orders:
-                try:
-                    exchange._delete("/fapi/v1/order",
-                                     {"symbol": symbol, "orderId": o["orderId"]})
-                except Exception:
-                    pass
-            for o in algo_sl_orders:
+            if prev_algo_id:
                 try:
                     exchange._delete("/fapi/v1/algoOrder",
-                                     {"algoId": o.get("algoId", ""), "symbol": symbol})
-                except Exception:
-                    pass
+                                     {"algoId": prev_algo_id, "symbol": symbol})
+                    logger.debug(f"[PP] Cancelled prev PP algo SL algoId={prev_algo_id}")
+                except Exception as exc:
+                    logger.debug(f"[PP] Cancel prev PP algo SL failed: {exc}")
+            elif prev_order_id:
+                try:
+                    exchange._delete("/fapi/v1/order",
+                                     {"symbol": symbol, "orderId": prev_order_id})
+                    logger.debug(f"[PP] Cancelled prev PP SL orderId={prev_order_id}")
+                except Exception as exc:
+                    logger.debug(f"[PP] Cancel prev PP SL failed: {exc}")
+
+            # Cập nhật id mới vào pp_state để lần sau cancel đúng
+            pp_state["pp_sl_algo_id"]  = new_algo_id
+            pp_state["pp_sl_order_id"] = new_order_id
+
         return True
-    except Exception as e:
-        logger.warning(f"[PP] _update_sl {symbol} failed: {e}")
+    except Exception as exc:
+        logger.warning(f"[PP] _update_sl {symbol} failed: {exc}")
         return False
 
 
@@ -6940,7 +6915,7 @@ def partial_tp_monitor(exchange, notifier):
                                 be_sl = round(entry * (1.001 if is_long else 0.999), 8)
                                 if _update_sl(
                                     exchange, symbol, side_str, be_sl,
-                                    remaining_qty, cancel_nearest=False,
+                                    remaining_qty, pp_state=None,
                                 ):
                                     logger.info(
                                         f"[PartialTP] SL dời về BE={be_sl:.6f} cho {symbol}"
