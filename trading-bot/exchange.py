@@ -69,47 +69,29 @@ class BinanceFutures:
                     raise
 
     def _post(self, endpoint: str, params: dict = None, retries: int = 3):
-        """POST with retries only for transient failures.
-
-        Binance 4xx business errors are deterministic and must return
-        immediately.  Re-sign each retry so rate-limit waits do not reuse an
-        expired timestamp/signature.
-        """
-        base_params = dict(params or {})
+        params = params or {}
+        params = self._sign(params)
         for attempt in range(retries):
             try:
-                request_params = self._sign(dict(base_params))
                 resp = self.session.post(
-                    f"{self.base_url}{endpoint}", params=request_params, timeout=10
+                    f"{self.base_url}{endpoint}", params=params, timeout=10
                 )
-                if resp.status_code in (418, 429):
-                    if attempt >= retries - 1:
-                        resp.raise_for_status()
-                    retry_after = resp.headers.get("Retry-After", "")
-                    try:
-                        wait = max(1, min(60, int(float(retry_after))))
-                    except (TypeError, ValueError):
-                        wait = min(60, 15 * (attempt + 1))
-                    logger.warning(
-                        f"Rate limited POST ({resp.status_code}), waiting {wait}s..."
-                    )
+                if resp.status_code == 418 or resp.status_code == 429:
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST ({resp.status_code}), waiting {wait}s...")
                     time.sleep(wait)
                     continue
                 if resp.status_code != 200:
-                    logger.error(
-                        f"POST {endpoint} failed ({resp.status_code}): {resp.text[:300]}"
-                    )
+                    logger.error(f"POST {endpoint} failed ({resp.status_code}): {resp.text[:300]}")
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as e:
-                status = getattr(getattr(e, "response", None), "status_code", None)
-                # Do not retry deterministic client/business errors.  Checking
-                # the numeric status avoids false 429 matches in signed URLs.
-                if status is not None and 400 <= status < 500:
-                    raise
-                logger.error(
-                    f"POST {endpoint} failed (attempt {attempt+1}/{retries}): {e}"
-                )
+                if "418" in str(e) or "429" in str(e):
+                    wait = min(60, 15 * (attempt + 1))
+                    logger.warning(f"Rate limited POST, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"POST {endpoint} failed (attempt {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt)
                 else:
@@ -256,70 +238,41 @@ class BinanceFutures:
 
     # ---- Trading ----
 
-    @staticmethod
-    def _binance_error_code(exc) -> Optional[int]:
-        """Extract Binance's numeric error code from an HTTP exception."""
-        try:
-            payload = exc.response.json()
-            return int(payload.get("code")) if isinstance(payload, dict) else None
-        except (AttributeError, TypeError, ValueError):
-            return None
-
     def set_leverage(self, symbol: str, leverage: int):
-        """Set leverage and return the confirmed value, or ``None`` on failure.
-
-        Only Binance ``-4028`` (unsupported leverage) permits lower-leverage
-        fallback. Insufficient margin (``-2028``) is terminal: retrying lower
-        values is slow and cannot fix the account constraint.
-        """
+        """Set đòn bẩy — tự động giảm nếu coin không hỗ trợ leverage yêu cầu.
+        Returns: int — leverage thực tế được set."""
         try:
             result = self._post("/fapi/v1/leverage", {
                 "symbol": symbol,
-                "leverage": leverage,
+                "leverage": leverage
             })
-            actual = int(result.get("leverage", leverage)) if isinstance(result, dict) else leverage
-            logger.info(f"Leverage set to {actual}x for {symbol}")
-            return actual
-        except Exception as exc:
-            code = self._binance_error_code(exc)
-            if code == -2028:
-                logger.warning(
-                    f"Leverage unchanged for {symbol}: insufficient margin balance"
-                )
-                return None
-            if code != -4028:
-                logger.error(f"set_leverage {symbol} failed: {exc}")
-                return None
-
-        # Requested leverage is unsupported. Each lower value is attempted once
-        # by _post because deterministic 4xx responses now fail immediately.
-        for try_lev in (10, 7, 5, 3, 2, 1):
-            if try_lev >= leverage:
-                continue
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
+            return int(result.get("leverage", leverage)) if isinstance(result, dict) else leverage
+        except Exception as e:
+            # Nếu leverage không hợp lệ → thử giảm dần
+            err_str = str(e).lower()
+            if "-4028" in str(e) or "not valid" in err_str or "400" in str(e) or "bad request" in err_str or "invalid" in err_str:
+                for try_lev in [10, 7, 5, 3, 2, 1]:
+                    if try_lev >= leverage:
+                        continue
+                    try:
+                        result = self._post("/fapi/v1/leverage", {
+                            "symbol": symbol,
+                            "leverage": try_lev
+                        })
+                        logger.info(f"Leverage fallback to {try_lev}x for {symbol} (requested {leverage}x)")
+                        return try_lev
+                    except Exception:
+                        continue
+            # Nếu vẫn fail → set 1x và log warning
             try:
-                result = self._post("/fapi/v1/leverage", {
-                    "symbol": symbol,
-                    "leverage": try_lev,
-                })
-                actual = int(result.get("leverage", try_lev)) if isinstance(result, dict) else try_lev
-                logger.info(
-                    f"Leverage fallback to {actual}x for {symbol} "
-                    f"(requested {leverage}x)"
-                )
-                return actual
-            except Exception as exc:
-                code = self._binance_error_code(exc)
-                if code == -2028:
-                    logger.warning(
-                        f"Leverage unchanged for {symbol}: insufficient margin balance"
-                    )
-                    return None
-                if code != -4028:
-                    logger.error(f"set_leverage fallback {symbol} failed: {exc}")
-                    return None
-
-        logger.error(f"No supported leverage found for {symbol} (requested {leverage}x)")
-        return None
+                result = self._post("/fapi/v1/leverage", {"symbol": symbol, "leverage": 1})
+                logger.warning(f"Leverage forced to 1x for {symbol}")
+                return 1
+            except Exception:
+                pass
+            logger.error(f"set_leverage {symbol} failed completely: {e}")
+            return 1  # default 1x nếu tất cả fail
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
         """Set margin type: ISOLATED hoặc CROSSED"""
