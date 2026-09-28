@@ -22,6 +22,105 @@ _state = None
 _lock = None
 _config = None
 _exchange = None
+_protected_pending_file_lock = threading.Lock()
+# Prevent a timed-out/repeated browser request from stacking market orders for
+# the same symbol while the first Quick Trade is still running.
+_quick_trade_guard = threading.Lock()
+_quick_trade_inflight: set[str] = set()
+
+
+def _normalize_protected_pending_symbol(raw: str) -> str:
+    """Normalize BASE/BASEUSDT/quarterly futures input or raise ValueError."""
+    import re
+    symbol = str(raw or "").strip().upper()
+    if not symbol:
+        raise ValueError("Thiếu symbol")
+    if "_" not in symbol and not symbol.endswith("USDT"):
+        symbol += "USDT"
+    if not re.fullmatch(r"[A-Z0-9]{1,20}USDT(?:_[0-9]{6})?", symbol):
+        raise ValueError("Symbol không hợp lệ")
+    return symbol
+
+
+def _save_protected_pending_coins_unlocked(coins: list) -> bool:
+    """Persist while caller owns ``_protected_pending_file_lock``."""
+    import os
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "protected_pending_order_coins.json",
+    )
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(coins, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        return True
+    except Exception as exc:
+        logger.error(f"[OrderProtect] Save failed: {exc}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
+def _save_protected_pending_coins(coins: list) -> bool:
+    """Atomically persist protected symbols beside bot.py/config.py."""
+    with _protected_pending_file_lock:
+        return _save_protected_pending_coins_unlocked(coins)
+
+
+def _web_is_protected_pending_symbol(symbol: str) -> bool:
+    symbol = str(symbol or "").strip().upper()
+    with _lock:
+        protected = tuple(_state.get("protected_pending_order_coins", []))
+    return any(
+        symbol == base or symbol.startswith(f"{base}_")
+        for base in protected
+    )
+
+
+def _web_order_is_reduce_only(order: dict) -> bool:
+    value = order.get("reduceOnly", False)
+    return value.lower() == "true" if isinstance(value, str) else bool(value)
+
+
+def _web_guarded_symbol_cancel(symbol: str, close_cleanup: bool = False) -> bool:
+    """Serialize protection check through cancellation for web actions."""
+    with _lock:
+        protected = _web_is_protected_pending_symbol(symbol)
+        if not protected:
+            _exchange.cancel_all_orders(symbol)
+            return True
+        if not close_cleanup:
+            return False
+
+        # Position is closed: remove exact stale reduce-only exits while
+        # retaining protected manual entry orders.
+        for order in _exchange._get(
+            "/fapi/v1/openOrders", {"symbol": symbol}, signed=True
+        ):
+            if _web_order_is_reduce_only(order):
+                _exchange._delete(
+                    "/fapi/v1/order",
+                    {"symbol": symbol, "orderId": order.get("orderId")},
+                )
+        algo_orders = _exchange._get("/fapi/v1/openAlgoOrders", signed=True)
+        if isinstance(algo_orders, list):
+            for order in algo_orders:
+                if (
+                    order.get("symbol") == symbol
+                    and _web_order_is_reduce_only(order)
+                    and order.get("algoId")
+                ):
+                    _exchange._delete(
+                        "/fapi/v1/algoOrder",
+                        {"symbol": symbol, "algoId": order.get("algoId")},
+                    )
+        return False
 
 
 def _web_append_trade(trade: dict):
@@ -677,18 +776,26 @@ async function apiPost(url, body={}) {
 }
 
 async function toggleBot() { await apiPost('/api/toggle'); refresh(); }
-async function quickShort() {
+async function runQuickTrade(side) {
+    if (window._quickTradeBusy) {
+        toast('Quick Trade đang xử lý — không bấm lại', false);
+        return;
+    }
     const sym = document.getElementById('qs-symbol').value.trim().toUpperCase();
     if (!sym) { toast('Nhập coin!', false); return; }
-    const r = await apiPost('/api/quick_trade', {symbol: sym, side: 'SHORT'});
-    if (r && r.ok) { toast(r.msg); refresh(); } else { toast(r?.msg || 'Lỗi', false); }
+    window._quickTradeBusy = true;
+    const buttons = [document.getElementById('qs-short-btn'), document.getElementById('qs-long-btn')];
+    buttons.forEach(btn => { if (btn) btn.disabled = true; });
+    try {
+        const r = await apiPost('/api/quick_trade', {symbol: sym, side});
+        if (r && r.ok) refresh();
+    } finally {
+        window._quickTradeBusy = false;
+        buttons.forEach(btn => { if (btn) btn.disabled = false; });
+    }
 }
-async function quickLong() {
-    const sym = document.getElementById('qs-symbol').value.trim().toUpperCase();
-    if (!sym) { toast('Nhập coin!', false); return; }
-    const r = await apiPost('/api/quick_trade', {symbol: sym, side: 'LONG'});
-    if (r && r.ok) { toast(r.msg); refresh(); } else { toast(r?.msg || 'Lỗi', false); }
-}
+async function quickShort() { return runQuickTrade('SHORT'); }
+async function quickLong()  { return runQuickTrade('LONG'); }
 async function toggleOrphan(enabled) {
     await apiPost('/api/set_auto_cancel', {enabled: enabled});
     refresh();
@@ -763,8 +870,8 @@ function initTVChart(watchlist) {
         </select>
         <input id="qs-symbol" placeholder="SYMBOL" value="${watchlist[0]||''}"
                style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#e6edf3;font-size:12px;width:100px">
-        <button onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
-        <button onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
+        <button id="qs-short-btn" onclick="quickShort()" style="background:#7a1a1a;color:#ff6b6b;border:1px solid #aa2a2a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🔴 SHORT</button>
+        <button id="qs-long-btn" onclick="quickLong()" style="background:#0d2a0d;color:#3fb950;border:1px solid #1a5a1a;border-radius:6px;padding:5px 12px;font-weight:700;font-size:12px;cursor:pointer">🟢 LONG</button>
       </div>
       <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:20px">
         <iframe id="tv-chart-frame"
@@ -856,10 +963,67 @@ async function setMaxLoss() {
     refresh();
 }
 async function cancelAllPending() {
-    if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (không có vị thế)?')) return;
+    if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (trừ coin được bảo vệ)?')) return;
     await apiPost('/api/cancel_all_pending');
     refresh();
 }
+
+let _protectedPendingCoins = [];
+
+function renderProtectedPendingCoins(coins) {
+    _protectedPendingCoins = Array.isArray(coins) ? coins : [];
+    const root = document.getElementById('protected-pending-coins');
+    if (!root) return;
+    root.replaceChildren();
+    if (_protectedPendingCoins.length === 0) {
+        const empty = document.createElement('span');
+        empty.style.cssText = 'font-size:11px;color:#f85149';
+        empty.textContent = 'Chưa có coin bảo vệ';
+        root.appendChild(empty);
+        return;
+    }
+    _protectedPendingCoins.forEach(symbol => {
+        const tag = document.createElement('span');
+        tag.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#2d2208;border:1px solid #6e550d;border-radius:12px;padding:3px 7px;color:#e3b341;font-size:10px;font-weight:700';
+        const label = document.createElement('span');
+        label.textContent = symbol;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.title = `Bỏ bảo vệ ${symbol}`;
+        remove.style.cssText = 'background:none;border:0;color:#f85149;cursor:pointer;padding:0;font-size:14px;line-height:10px';
+        remove.addEventListener('click', () => removeProtectedPendingCoin(symbol));
+        tag.append(label, remove);
+        root.appendChild(tag);
+    });
+}
+
+async function fetchProtectedPendingCoins() {
+    try {
+        const response = await fetch('/api/protected-pending-coins');
+        const data = await response.json();
+        if (data.ok) renderProtectedPendingCoins(data.coins);
+    } catch (e) {}
+}
+
+async function addProtectedPendingCoin() {
+    const input = document.getElementById('protected-order-coin-input');
+    const symbol = (input?.value || '').trim().toUpperCase();
+    if (!symbol) { toast('Nhập coin cần bảo vệ', false); return; }
+    const result = await apiPost('/api/protected-pending-coins/add', {symbol});
+    if (result.ok) {
+        input.value = '';
+        delete _savedInputs['protected-order-coin-input'];
+        renderProtectedPendingCoins(result.coins);
+    }
+}
+
+async function removeProtectedPendingCoin(symbol) {
+    if (!confirm(`Bỏ bảo vệ pending order của ${symbol}?`)) return;
+    const result = await apiPost('/api/protected-pending-coins/remove', {symbol});
+    if (result.ok) renderProtectedPendingCoins(result.coins);
+}
+
 async function addCoin() {
     const inp = document.getElementById('add-coin-input');
     let sym = inp.value.trim().toUpperCase();
@@ -1157,6 +1321,19 @@ function renderDashboard(d) {
             <button class="btn btn-red btn-sm" onclick="cancelAllPending()" style="margin-left:8px">
                 &#x1F5D1; Huỷ tất cả lệnh chờ ngay
             </button>
+        </div>
+        <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:#d29922">&#x1F6E1; Coin bảo vệ pending order:</span>
+            <input id="protected-order-coin-input" placeholder="VD: ADA hoặc ADAUSDT"
+                   onkeydown="if(event.key==='Enter') addProtectedPendingCoin()"
+                   style="width:155px;background:#0d1117;border:1px solid #30363d;border-radius:5px;padding:5px 7px;color:#c9d1d9;font-size:11px">
+            <button class="btn btn-green btn-sm" onclick="addProtectedPendingCoin()">+ Bảo vệ</button>
+            <div id="protected-pending-coins" style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+                <span style="font-size:11px;color:#484f58">Đang tải...</span>
+            </div>
+            <div style="width:100%;font-size:10px;color:#6e7681">
+                Bot không tự hủy order của các coin này khi restart, cleanup hoặc review 4h. Nút hủy từng order vẫn hoạt động.
+            </div>
         </div>
         <div class="control-row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="font-size:12px;color:#8b949e">&#x1F504; Reversal Monitor:</span>
@@ -3483,7 +3660,7 @@ function updateClock(){document.getElementById('clock').textContent=new Date().t
 // Lưu state input để không bị reset khi refresh
 let _savedInputs = {};
 function saveInputs() {
-    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','set-max-positions','add-coin-input','pump-coin-input'].forEach(id => {
+    ['order-symbol','order-side','order-usdt','order-sl','order-tp','order-lev','set-max-usdt','set-leverage','set-max-positions','add-coin-input','pump-coin-input','protected-order-coin-input'].forEach(id => {
         const el = document.getElementById(id);
         if (el) _savedInputs[id] = el.value;
     });
@@ -3542,6 +3719,7 @@ async function refresh(){
             _pumpRendered = false;  // pump-radar-root vừa được tạo lại → cần render lại
             restoreInputs();
             _firstRender = false;
+            fetchProtectedPendingCoins();
             // Các section render riêng vừa bị dựng lại rỗng → vẽ lại từ data đã có,
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_newsData) renderNews();
@@ -4318,6 +4496,71 @@ def api_state():
     return resp
 
 
+@app.route("/api/protected-pending-coins", methods=["GET"])
+@require_auth
+def api_protected_pending_coins():
+    """Return symbols whose manual pending orders automatic cleanup preserves."""
+    if _state is None or _lock is None:
+        return jsonify({"ok": False, "msg": "Bot chưa khởi động"}), 503
+    with _lock:
+        coins = list(_state.get("protected_pending_order_coins", []))
+    return jsonify({"ok": True, "coins": coins})
+
+
+@app.route("/api/protected-pending-coins/add", methods=["POST"])
+@require_auth
+def api_add_protected_pending_coin():
+    if _state is None or _lock is None:
+        return jsonify({"ok": False, "msg": "Bot chưa khởi động"}), 503
+    try:
+        symbol = _normalize_protected_pending_symbol(
+            (request.get_json() or {}).get("symbol", "")
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+
+    with _protected_pending_file_lock:
+        with _lock:
+            current = list(_state.get("protected_pending_order_coins", []))
+            if symbol in current:
+                return jsonify({"ok": False, "msg": f"{symbol} đã được bảo vệ"})
+            updated = current + [symbol]
+            if not _save_protected_pending_coins_unlocked(updated):
+                return jsonify({"ok": False, "msg": "Không lưu được danh sách"}), 500
+            _state["protected_pending_order_coins"] = updated
+            _config.PROTECTED_PENDING_ORDER_COINS = list(updated)
+
+    logger.info(f"[OrderProtect] Added {symbol}")
+    return jsonify({"ok": True, "msg": f"🛡 Đã bảo vệ order {symbol}", "coins": updated})
+
+
+@app.route("/api/protected-pending-coins/remove", methods=["POST"])
+@require_auth
+def api_remove_protected_pending_coin():
+    if _state is None or _lock is None:
+        return jsonify({"ok": False, "msg": "Bot chưa khởi động"}), 503
+    try:
+        symbol = _normalize_protected_pending_symbol(
+            (request.get_json() or {}).get("symbol", "")
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+
+    with _protected_pending_file_lock:
+        with _lock:
+            current = list(_state.get("protected_pending_order_coins", []))
+            if symbol not in current:
+                return jsonify({"ok": False, "msg": f"{symbol} không có trong danh sách"})
+            updated = [coin for coin in current if coin != symbol]
+            if not _save_protected_pending_coins_unlocked(updated):
+                return jsonify({"ok": False, "msg": "Không lưu được danh sách"}), 500
+            _state["protected_pending_order_coins"] = updated
+            _config.PROTECTED_PENDING_ORDER_COINS = list(updated)
+
+    logger.info(f"[OrderProtect] Removed {symbol}")
+    return jsonify({"ok": True, "msg": f"Đã bỏ bảo vệ {symbol}", "coins": updated})
+
+
 @app.route("/api/set_auto_cancel", methods=["POST"])
 def api_set_auto_cancel():
     """Bật/tắt tự động huỷ lệnh entry chờ không có vị thế."""
@@ -4352,22 +4595,30 @@ def api_cancel_all_pending():
             reduce   = o.get("reduceOnly", False)
             order_id = o.get("orderId")
 
-            # Chỉ huỷ lệnh ENTRY (không phải SL/TP reduceOnly)
-            # và coin đó không có position
-            if not reduce and sym not in open_syms:
-                try:
-                    _exchange._delete("/fapi/v1/order",
-                                      {"symbol": sym, "orderId": order_id})
-                    cancelled.append(f"{sym} {otype}")
-                except Exception as e:
-                    logger.error(f"Cancel order {sym} {order_id}: {e}")
-            else:
-                kept.append(f"{sym} {otype}")
+            # Bulk cleanup never overrides the protected list. Exact row-level
+            # cancel remains the explicit manual override.
+            with _lock:
+                if _web_is_protected_pending_symbol(sym):
+                    kept.append(f"{sym} {otype} (protected)")
+                    continue
+
+                # Chỉ huỷ đúng ENTRY LIMIT không có vị thế. Keep the
+                # protection lock held across check + destructive request so
+                # an add request cannot return before an older delete finishes.
+                if otype == "LIMIT" and not reduce and sym not in open_syms:
+                    try:
+                        _exchange._delete("/fapi/v1/order",
+                                          {"symbol": sym, "orderId": order_id})
+                        cancelled.append(f"{sym} {otype}")
+                    except Exception as e:
+                        logger.error(f"Cancel order {sym} {order_id}: {e}")
+                else:
+                    kept.append(f"{sym} {otype}")
 
         msg = (f"🗑 Đã huỷ {len(cancelled)} lệnh chờ:\n"
                + "\n".join(f"• {c}" for c in cancelled[:10])
                + (f"\n⚠️ Còn {len(cancelled)-10} lệnh..." if len(cancelled) > 10 else "")
-               + (f"\n✅ Giữ lại {len(kept)} lệnh có vị thế" if kept else ""))
+               + (f"\n✅ Giữ lại {len(kept)} lệnh protected/có vị thế" if kept else ""))
         logger.info(f"[CancelPending] {msg}")
         return jsonify({"ok": True, "msg": msg, "cancelled": len(cancelled)})
     except Exception as e:
@@ -4517,6 +4768,16 @@ def api_quick_trade():
         symbol += "USDT"
     if _exchange is None:
         return jsonify({"ok": False, "msg": "Exchange not connected"})
+
+    # Serialize by symbol. A browser timeout does not cancel Flask work, so a
+    # second click/tab must not be allowed to create another market order.
+    with _quick_trade_guard:
+        if symbol in _quick_trade_inflight:
+            return jsonify({
+                "ok": False,
+                "msg": f"Quick Trade {symbol} đang xử lý — không gửi lại",
+            }), 409
+        _quick_trade_inflight.add(symbol)
     try:
         usdt = float(getattr(_config, "MAX_ORDER_USDT", 15))
         leverage = int(getattr(_config, "LEVERAGE", 15))
@@ -4524,10 +4785,16 @@ def api_quick_trade():
         if not price or float(price) <= 0:
             return jsonify({"ok": False, "msg": f"Không lấy được giá {symbol}"})
 
-        # Set leverage (tự giảm nếu coin không hỗ trợ)
+        # Do not place a market order unless Binance confirmed leverage. In
+        # particular, -2028 (insufficient margin) must fail fast instead of
+        # cascading through 15→10→...→1 and executing after browser timeout.
         actual_lev = _exchange.set_leverage(symbol, leverage)
-        if actual_lev and actual_lev < leverage:
-            leverage = actual_lev
+        if actual_lev is None:
+            return jsonify({
+                "ok": False,
+                "msg": f"Không đổi được leverage {symbol} — kiểm tra margin",
+            }), 409
+        leverage = int(actual_lev)
 
         # Tính qty giữ position size = usdt × config.LEVERAGE gốc
         from qty_utils import calc_qty_precise
@@ -4575,6 +4842,9 @@ def api_quick_trade():
     except Exception as e:
         logger.error(f"[QuickTrade] {symbol} {side}: {e}")
         return jsonify({"ok": False, "msg": str(e)[:200]})
+    finally:
+        with _quick_trade_guard:
+            _quick_trade_inflight.discard(symbol)
 
 
 @app.route("/api/order", methods=["POST"])
@@ -4730,10 +5000,18 @@ def api_close_position():
             batch = min(remaining, max_market_qty)
             if batch == int(batch):
                 batch = int(batch)
-            _exchange.place_market_order(symbol, close_side, batch)
+            _exchange.place_market_order(
+                symbol, close_side, batch, reduce_only=True
+            )
             remaining -= batch
 
-        _exchange.cancel_all_orders(symbol)
+        broadly_cancelled = _web_guarded_symbol_cancel(
+            symbol, close_cleanup=True
+        )
+        if not broadly_cancelled:
+            logger.info(
+                f"[WebClose] Preserved protected entries and cleaned stale exits for {symbol}"
+            )
 
         # Tính PnL
         if side_pos == "LONG":
@@ -6101,6 +6379,11 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
             state["pump_watch_coins"] = list(getattr(config, "PUMP_WATCH_COINS", []))
         if "pump_nhe_coins" not in state:
             state["pump_nhe_coins"] = list(getattr(config, "PUMP_NHE_COINS", []))
+        if "protected_pending_order_coins" not in state:
+            state["protected_pending_order_coins"] = list(getattr(
+                config, "PROTECTED_PENDING_ORDER_COINS",
+                ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"],
+            ))
         if "pump_signals" not in state:
             state["pump_signals"] = []   # list PumpSignal gần nhất
         if "pump_scan_status" not in state:
