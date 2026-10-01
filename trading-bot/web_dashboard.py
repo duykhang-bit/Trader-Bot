@@ -22,6 +22,7 @@ _state = None
 _lock = None
 _config = None
 _exchange = None
+_ledger = None
 _protected_pending_file_lock = threading.Lock()
 
 
@@ -128,6 +129,187 @@ def _web_append_trade(trade: dict):
         _state.setdefault("trade_log", []).append(trade)
         snapshot = list(_state["trade_log"])
     save_history(snapshot)
+
+
+def _legacy_cycle(trade: dict) -> dict:
+    """Adapt one legacy CLOSED row without mixing it into Binance data."""
+    when = trade.get("close_time") or trade.get("time", "")
+    try:
+        closed_ms = int(datetime.strptime(when, "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+    except Exception:
+        closed_ms = 0
+    pnl = float(trade.get("pnl_usdt", 0) or 0)
+    return {
+        "cycle_id": f"legacy:{trade.get('symbol', '')}:{when}",
+        "symbol": trade.get("symbol", ""),
+        "position_side": "BOTH",
+        "side": trade.get("side", ""),
+        "opened_at": trade.get("time", ""),
+        "opened_at_ms": closed_ms,
+        "closed_at": when,
+        "closed_at_ms": closed_ms,
+        "entry_price": float(trade.get("entry", 0) or 0),
+        "close_price": float(trade.get("close", 0) or 0),
+        "gross_realized_pnl": pnl,
+        "commission": 0.0,
+        "funding": 0.0,
+        "net_pnl": pnl,
+        "commission_complete": True,
+        "funding_complete": True,
+        "net_complete": True,
+        "complete": False,
+        "boundary_start": True,
+    }
+
+
+def _cycle_financial_event(cycle: dict) -> dict:
+    """Legacy-only event adapter; Binance snapshots provide native events."""
+    net = cycle.get("net_pnl")
+    return {
+        "event_id": f"legacy-event:{cycle.get('cycle_id', '')}",
+        "event_type": "legacy_close",
+        "time_ms": int(cycle.get("closed_at_ms", 0) or 0),
+        "time": cycle.get("closed_at", ""),
+        "symbol": cycle.get("symbol", ""),
+        "gross": float(cycle.get("gross_realized_pnl", 0) or 0),
+        "commission": float(cycle.get("commission", 0) or 0),
+        "funding": float(cycle.get("funding", 0) or 0),
+        "net": float(net or 0) if net is not None else None,
+        "commission_complete": bool(cycle.get("commission_complete", True)),
+        "net_complete": bool(cycle.get("net_complete", net is not None)),
+        "allocation_status": "legacy",
+    }
+
+
+def _financial_snapshot(tlog: list, state_snapshot: dict) -> dict:
+    """Return one unmixed financial dataset; this function never performs I/O."""
+    cached = None
+    if _ledger is not None:
+        cached = _ledger.snapshot()
+        if cached.get("ready"):
+            return cached
+    legacy_cycles = [
+        _legacy_cycle(item) for item in tlog if item.get("status") == "CLOSED"
+    ]
+    legacy_events = [_cycle_financial_event(cycle) for cycle in legacy_cycles]
+    legacy_net = sum(float(event["net"] or 0) for event in legacy_events)
+    return {
+        "ready": False,
+        "source": "legacy",
+        "stale": True,
+        "syncing": bool(cached and cached.get("syncing")),
+        "errors": list(cached.get("errors", [])) if cached else ["Binance ledger not started"],
+        "synced_at": "",
+        "window_start": "",
+        "window_start_ms": 0,
+        "window_clipped": False,
+        "cycles": legacy_cycles,
+        "financial_events": legacy_events,
+        "transfers": [],
+        "aggregate": {
+            "gross": legacy_net,
+            "commission": 0.0,
+            "funding": 0.0,
+            "net": legacy_net,
+            "transfer": 0.0,
+            "commission_complete": True,
+            "net_complete": True,
+            "incomplete_event_count": 0,
+        },
+        "non_usdt_commission_assets": [],
+        "ambiguous_funding_event_ids": [],
+        "financial_warnings": ["Legacy rows are excluded from canonical trade outcomes"],
+        "account": {
+            # Explicitly legacy/available only; the UI warning prevents this
+            # fallback from being mistaken for canonical wallet equity.
+            "wallet_balance": float(state_snapshot.get("balance", 0) or 0),
+            "margin_balance": float(state_snapshot.get("balance", 0) or 0),
+            "available_balance": float(state_snapshot.get("balance", 0) or 0),
+            "positions": [],
+        },
+    }
+
+
+def _financial_events(financial: dict) -> list:
+    events = financial.get("financial_events")
+    if isinstance(events, list):
+        return sorted(
+            [dict(event) for event in events],
+            key=lambda event: (int(event.get("time_ms", 0) or 0), str(event.get("event_id", ""))),
+        )
+    return [_cycle_financial_event(cycle) for cycle in _closed_cycles(financial)]
+
+
+def _closed_cycles(financial: dict) -> list:
+    return sorted(
+        [cycle for cycle in financial.get("cycles", []) if cycle.get("closed_at_ms")],
+        key=lambda cycle: int(cycle.get("closed_at_ms", 0) or 0),
+    )
+
+
+def _complete_closed_cycles(financial: dict) -> list:
+    """Only complete, financially classifiable cycles count as outcomes."""
+    return [
+        cycle for cycle in _closed_cycles(financial)
+        if bool(cycle.get("complete", False))
+        and bool(cycle.get("net_complete", cycle.get("net_pnl") is not None))
+        and cycle.get("net_pnl") is not None
+    ]
+
+
+def _event_totals(events: list) -> dict:
+    gross = sum(float(event.get("gross", 0) or 0) for event in events)
+    commission = sum(float(event.get("commission", 0) or 0) for event in events)
+    funding = sum(float(event.get("funding", 0) or 0) for event in events)
+    net_complete = all(bool(event.get("net_complete", True)) for event in events)
+    net = sum(float(event.get("net", 0) or 0) for event in events) if net_complete else None
+    return {
+        "gross": gross,
+        "commission": commission,
+        "funding": funding,
+        "period_net_pnl": net,
+        "commission_complete": all(bool(event.get("commission_complete", True)) for event in events),
+        "net_complete": net_complete,
+        "incomplete_event_count": sum(1 for event in events if not bool(event.get("net_complete", True))),
+    }
+
+
+def _transfer_totals(transfers: list) -> dict:
+    unsupported_assets = sorted({
+        str(event.get("asset") or "UNKNOWN").upper()
+        for event in transfers
+        if abs(float(event.get("amount", 0) or 0)) > 0
+        and str(event.get("asset") or "UNKNOWN").upper() != "USDT"
+    })
+    transfer_usdt = sum(
+        float(event.get("amount", 0) or 0) for event in transfers
+        if str(event.get("asset") or "UNKNOWN").upper() == "USDT"
+    )
+    return {
+        "transfer": transfer_usdt if not unsupported_assets else None,
+        "transfer_excluding_unconverted": transfer_usdt,
+        "transfer_complete": not unsupported_assets,
+        "unsupported_transfer_assets": unsupported_assets,
+    }
+
+
+def _financial_totals(financial: dict, events: list = None, cycles: list = None) -> dict:
+    selected_events = _financial_events(financial) if events is None else list(events)
+    all_closed = _closed_cycles(financial)
+    outcomes = _complete_closed_cycles(financial) if cycles is None else list(cycles)
+    totals = _event_totals(selected_events)
+    transfer_totals = _transfer_totals(list(financial.get("transfers", [])))
+    wins = sum(1 for cycle in outcomes if float(cycle.get("net_pnl", 0)) > 0)
+    losses = sum(1 for cycle in outcomes if float(cycle.get("net_pnl", 0)) < 0)
+    totals.update({
+        **transfer_totals,
+        "closed_cycles": len(outcomes),
+        "incomplete_cycles": len(all_closed) - len(_complete_closed_cycles(financial)),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wins / len(outcomes) * 100 if outcomes else 0.0,
+    })
+    return totals
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def require_auth(f):
@@ -740,9 +922,9 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
     };
 })();
 
-function fmt(n,d=2){return Number(n).toFixed(d)}
-function fmtUsd(n){return '$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-function pnlColor(n){return n>=0?'green':'red'}
+function fmt(n,d=2){return n===null||n===undefined||!Number.isFinite(Number(n))?'—':Number(n).toFixed(d)}
+function fmtUsd(n){return n===null||n===undefined||!Number.isFinite(Number(n))?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function pnlColor(n){return n===null||n===undefined?'muted':(Number(n)>=0?'green':'red')}
 function sideHtml(s){return s==='LONG'?'<span class="badge badge-long">LONG</span>':'<span class="badge badge-short">SHORT</span>'}
 
 function toast(msg, ok=true) {
@@ -1709,14 +1891,29 @@ function renderDashboard(d) {
         </div>
     </div>`;
 
-    // Stats + PnL Chart gộp chung 1 section
+    // Canonical Binance financial cards. Legacy is shown only as an explicit
+    // temporary fallback while the first durable ledger snapshot is building.
+    const ledgerOk = d.financial_source === 'binance';
+    const syncState = d.syncing ? 'Syncing' : (d.stale ? 'Stale' : 'Fresh');
+    const syncColor = !ledgerOk || d.stale ? '#d29922' : '#3fb950';
+    const syncedLabel = d.synced_at ? new Date(d.synced_at).toLocaleString('vi-VN') : 'chưa sync';
+    const financialWarning = (d.financial_warnings || []).join(' · ');
     html += `<div class="stats">
-        <div class="card"><div class="label">Balance</div><div id="stat-balance" class="value blue">${fmtUsd(d.balance)}</div></div>
-        <div class="card"><div class="label">Today PnL</div><div id="stat-today-pnl" class="value ${pnlColor(d.today_pnl)}">${fmtUsd(d.today_pnl)}</div></div>
-        <div class="card"><div class="label">Total PnL</div><div id="stat-total-pnl" class="value ${pnlColor(d.total_pnl)}">${fmtUsd(d.total_pnl)}</div></div>
+        <div class="card"><div class="label">Wallet</div><div id="stat-wallet" class="value blue">${fmtUsd(d.wallet_balance)}</div></div>
+        <div class="card"><div class="label">Available</div><div id="stat-available" class="value blue">${fmtUsd(d.available_balance)}</div></div>
+        <div class="card"><div class="label">Margin Equity</div><div id="stat-margin" class="value blue">${fmtUsd(d.margin_balance)}</div></div>
+        <div class="card"><div class="label">Today Net</div><div id="stat-today-pnl" class="value ${pnlColor(d.today_net_pnl)}">${fmtUsd(d.today_net_pnl)}</div></div>
+        <div class="card"><div class="label">Period Net</div><div id="stat-period-pnl" class="value ${pnlColor(d.period_net_pnl)}">${fmtUsd(d.period_net_pnl)}</div></div>
         <div class="card"><div class="label">Unrealized</div><div id="stat-unrealized" class="value ${pnlColor(d.unrealized)}">${fmtUsd(d.unrealized)}</div></div>
         <div class="card"><div class="label">Win Rate</div><div id="stat-winrate" class="value">${fmt(d.win_rate,0)}%</div></div>
-        <div class="card"><div class="label">Trades</div><div id="stat-trades" class="value">${d.total_trades}</div></div>
+        <div class="card"><div class="label">Closed Trades</div><div id="stat-trades" class="value">${d.closed_cycles}</div></div>
+    </div>
+    <div id="ledger-detail" class="section" style="padding:10px 14px;margin-top:-8px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <span>Gross <b id="ledger-gross" class="${pnlColor(d.gross)}">${fmtUsd(d.gross)}</b></span>
+        <span>Fees <b id="ledger-fees" class="red">-${fmtUsd(Math.abs(d.commission))}</b></span>
+        <span>Funding <b id="ledger-funding" class="${pnlColor(d.funding)}">${fmtUsd(d.funding)}</b></span>
+        <span>Transfers <b id="ledger-transfer" class="${pnlColor(d.transfer)}">${fmtUsd(d.transfer)}</b></span>
+        <span id="ledger-sync" style="color:${syncColor}">${ledgerOk ? 'Binance ledger' : '⚠ LEGACY FALLBACK'} · ${syncState} · ${syncedLabel}${d.window_start ? ' · từ '+new Date(d.window_start).toLocaleDateString('vi-VN') : ''}${financialWarning ? ' · ⚠ '+financialWarning : ''}</span>
     </div>
     <div id="pnl-stats-section" style="margin-top:8px"><div style="color:#8b949e;font-size:13px">Đang tải PnL...</div></div>`;
 
@@ -2396,7 +2593,7 @@ function renderPnlStats() {
         } else {
             // Chỉ update tabs (active state) mà không xóa chart
             const tabsEl = el.querySelector('.pnl-stats-tabs');
-            if (tabsEl) tabsEl.outerHTML = html.match(/<div class="pnl-stats-tabs">[\s\S]*?<\/div>/)?.[0] || tabsEl.outerHTML;
+            if (tabsEl) tabsEl.outerHTML = html.match(/<div class="pnl-stats-tabs">[^]*?<[/]div>/)?.[0] || tabsEl.outerHTML;
         }
         return;
     }
@@ -2526,12 +2723,14 @@ async function fetchEquityCurve(range) {
 function renderEquityCurve() {
     const wrap = document.getElementById('equity-curve-wrap');
     if (!wrap || !_equityData) return;
-    const { points, start_balance, end_balance, change_usd, change_pct } = _equityData;
+    const { points, start_balance, end_balance, change_usd, change_pct, period_net, trade_count, reconstructed, forced_reconstruction, source } = _equityData;
 
-    const isUp    = change_usd >= 0;
+    const netAvailable = period_net !== null && period_net !== undefined;
+    const displayedNet = netAvailable ? Number(period_net) : null;
+    const isUp    = !netAvailable || displayedNet >= 0;
     const clrLine = isUp ? '#3fb950' : '#f85149';
     const clrText = isUp ? '#3fb950' : '#f85149';
-    const sign    = change_usd >= 0 ? '+' : '';
+    const sign    = displayedNet >= 0 ? '+' : '';
     const fmtMoney = v => v >= 1000 ? '$' + v.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : '$' + v.toFixed(2);
 
     // Range selector
@@ -2555,10 +2754,12 @@ function renderEquityCurve() {
     const lastTime  = points[points.length-1].time.substring(0, 10);
     const fmt10 = s => s.substring(5).replace('-','/');
 
-    // Header
+    // Header shows trading net; wallet transfers remain separate in the bridge.
     const headerHtml = `<div style="margin-bottom:12px">
-        <div style="font-size:30px;font-weight:700;color:${clrText};line-height:1.1">${sign}${fmtMoney(change_usd)}</div>
+        <div style="font-size:10px;color:#8b949e;text-transform:uppercase">Period Net PnL</div>
+        <div style="font-size:30px;font-weight:700;color:${clrText};line-height:1.1">${sign}${fmtMoney(displayedNet)}</div>
         <div style="font-size:15px;color:${clrText};font-weight:600;margin-top:2px">${sign}${change_pct.toFixed(2)}%</div>
+        <div style="font-size:10px;color:${source==='binance'?'#3fb950':'#d29922'};margin-top:4px">${source==='binance'?'Binance event ledger':'⚠ Legacy fallback'} · ${forced_reconstruction?'forced reconstruction from current wallet (not independently reconciled)':(reconstructed?'reconstructed wallet bridge':'estimated')}</div>
     </div>`;
 
     // SVG
@@ -2623,12 +2824,12 @@ function renderEquityCurve() {
     </div>
     <div id="${uid}t" style="position:absolute;display:none;background:#1c2128;border:1px solid #30363d;border-radius:8px;padding:8px 12px;font-size:12px;pointer-events:none;min-width:148px;box-shadow:0 4px 16px rgba(0,0,0,.5)"></div>
     </div>
-    <script>(function(){var d=${ptData};window.__eq=window.__eq||{};window.__eq['${uid}']={pts:d,clr:'${clrLine}',W:${W},H:${H},PT:${PT},PB:${PB},PL:${PL},PR:${PR}};})();<\/script>`;
+    <script>(function(){var d=${ptData};window.__eq=window.__eq||{};window.__eq['${uid}']={pts:d,clr:'${clrLine}',W:${W},H:${H},PT:${PT},PB:${PB},PL:${PL},PR:${PR}};})();<${'/'}script>`;
 
     const statsHtml = `<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:70px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
             <div style="font-size:10px;color:#8b949e">Số lệnh</div>
-            <div style="font-size:18px;font-weight:700;color:#c9d1d9">${points.length}</div>
+            <div style="font-size:18px;font-weight:700;color:#c9d1d9">${trade_count ?? 0}</div>
         </div>
         <div style="flex:1;min-width:80px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
             <div style="font-size:10px;color:#8b949e">Balance đầu</div>
@@ -2639,8 +2840,8 @@ function renderEquityCurve() {
             <div style="font-size:13px;font-weight:700;color:${clrLine}">${fmtMoney(end_balance)}</div>
         </div>
         <div style="flex:1;min-width:80px;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px 10px;text-align:center">
-            <div style="font-size:10px;color:#8b949e">Lợi nhuận</div>
-            <div style="font-size:13px;font-weight:700;color:${clrText}">${sign}${fmtMoney(change_usd)}</div>
+            <div style="font-size:10px;color:#8b949e">Period Net</div>
+            <div style="font-size:13px;font-weight:700;color:${clrText}">${sign}${fmtMoney(displayedNet)}</div>
         </div>
     </div>`;
 
@@ -3764,17 +3965,28 @@ function _patchDashboard(d) {
         toggleBtn.innerHTML = running ? '&#x23F8; Pause Bot' : '&#x25B6; Start Bot';
     }
 
-    // Stats cards — patch textContent không flash
-    const statIds = ['stat-balance','stat-today-pnl','stat-total-pnl','stat-unrealized','stat-winrate','stat-trades'];
+    // Canonical account/PnL cards — patch textContent không flash.
+    const statIds = ['stat-wallet','stat-available','stat-margin','stat-today-pnl','stat-period-pnl','stat-unrealized','stat-winrate','stat-trades'];
     const statVals = [
-        fmtUsd(d.balance),
-        fmtUsd(d.today_pnl),
-        fmtUsd(d.total_pnl),
+        fmtUsd(d.wallet_balance),
+        fmtUsd(d.available_balance),
+        fmtUsd(d.margin_balance),
+        fmtUsd(d.today_net_pnl),
+        fmtUsd(d.period_net_pnl),
         fmtUsd(d.unrealized),
         fmt(d.win_rate,0)+'%',
-        String(d.total_trades)
+        String(d.closed_cycles)
     ];
     statIds.forEach((id,i) => _setText(id, statVals[i]));
+    _setText('ledger-gross', fmtUsd(d.gross));
+    _setText('ledger-fees', '-' + fmtUsd(Math.abs(d.commission)));
+    _setText('ledger-funding', fmtUsd(d.funding));
+    _setText('ledger-transfer', fmtUsd(d.transfer));
+    const ledgerOk = d.financial_source === 'binance';
+    const syncState = d.syncing ? 'Syncing' : (d.stale ? 'Stale' : 'Fresh');
+    const syncedLabel = d.synced_at ? new Date(d.synced_at).toLocaleString('vi-VN') : 'chưa sync';
+    const financialWarning = (d.financial_warnings || []).join(' · ');
+    _setText('ledger-sync', `${ledgerOk ? 'Binance ledger' : '⚠ LEGACY FALLBACK'} · ${syncState} · ${syncedLabel}${d.window_start ? ' · từ '+new Date(d.window_start).toLocaleDateString('vi-VN') : ''}${financialWarning ? ' · ⚠ '+financialWarning : ''}`);
 
     // Scan info
     _setText('scan-info', `Scan #${d.scan_no} | Last: ${d.last_scan}`);
@@ -4202,7 +4414,7 @@ function updateRiskNote() {
     const riskPct  = parseFloat(document.getElementById('p0-risk-pct')?.value) || 1.0;
     const maxOrder = parseFloat(document.getElementById('p0-max-order')?.value) || 50;
     // Lấy balance từ dashboard
-    const balEl = document.getElementById('stat-balance');
+    const balEl = document.getElementById('stat-wallet');
     const balStr = balEl ? balEl.textContent.replace(/[^0-9.]/g,'') : '0';
     const balance = parseFloat(balStr) || 0;
 
@@ -4323,15 +4535,20 @@ def api_state():
     finally:
         _lock.release()
 
+    financial = _financial_snapshot(tlog, s)
+    all_closed = _closed_cycles(financial)
+    outcomes = _complete_closed_cycles(financial)
+    financial_events = _financial_events(financial)
+    totals = _financial_totals(financial, financial_events, outcomes)
     today = datetime.now().strftime("%Y-%m-%d")
-    all_closed = [t for t in tlog if t.get("status") == "CLOSED"]
-    closed = [t for t in all_closed if abs(t.get("pnl_usdt", 0)) > 0.001]
-    today_closed = [t for t in all_closed if t.get("time", "").startswith(today)]
-    today_pnl = sum(t.get("pnl_usdt", 0) for t in today_closed)
-    total_pnl = sum(t.get("pnl_usdt", 0) for t in closed)
-    wins = sum(1 for t in closed if t.get("pnl_usdt", 0) > 0)
-    wr = wins / len(closed) * 100 if closed else 0
+    today_events = [
+        event for event in financial_events
+        if str(event.get("time", "")).startswith(today)
+    ]
+    today_totals = _event_totals(today_events)
+    today_net_pnl = today_totals["period_net_pnl"]
     unrealized = sum(p.get("_pnl", 0) for p in open_pos)
+    account = financial.get("account", {})
 
     open_fmt = []
     for p in open_pos:
@@ -4343,10 +4560,22 @@ def api_state():
     # Pending orders — đọc từ state cache (không cần lock riêng)
     pending_orders = list(s.get("pending_orders_cache", []))
 
-    recent = sorted(closed, key=lambda t: t.get("time",""), reverse=True)[:15]
-    trades_fmt = [{"symbol":t.get("symbol",""),"side":t.get("side",""),"entry":t.get("entry",0),
-        "close":t.get("close",0),"pnl":t.get("pnl_usdt",0),"pct":t.get("pnl_pct",0),
-        "time":t.get("time","")} for t in recent]
+    # Keep incomplete rows visible and labelled, but never include them in the
+    # canonical complete-outcome denominator or win rate.
+    recent = list(reversed(all_closed[-15:]))
+    trades_fmt = [{
+        "symbol": c.get("symbol", ""), "side": c.get("side", ""),
+        "entry": c.get("entry_price", 0), "close": c.get("close_price", 0),
+        "pnl": c.get("net_pnl"), "pct": 0,
+        "time": c.get("closed_at", ""), "complete": bool(c.get("complete", False)),
+        "net_complete": bool(c.get("net_complete", c.get("net_pnl") is not None)),
+        "incomplete_reason": (
+            "window_boundary" if c.get("boundary_start")
+            else "funding_or_commission" if not c.get("net_complete", True)
+            else ""
+        ),
+        "cycle_id": c.get("cycle_id", ""),
+    } for c in recent]
 
     # Entry targets — vùng liq THẬT từ WS real-time (giống Coinglass)
     # Chỉ hiện khi liq tracker đã có đủ data thật, không fallback giá fake
@@ -4411,9 +4640,38 @@ def api_state():
     resp = jsonify({
         "running": s.get("running", False) and not s.get("paused", False),
         "auto_cancel_orphan": s.get("auto_cancel_orphan", False),
-        "balance": s.get("balance", 0),
-        "today_pnl": today_pnl, "total_pnl": total_pnl, "unrealized": unrealized,
-        "win_rate": wr, "total_trades": len(all_closed),
+        "balance": account.get("wallet_balance", 0),
+        "wallet_balance": account.get("wallet_balance", 0),
+        "margin_balance": account.get("margin_balance", 0),
+        "available_balance": account.get("available_balance", 0),
+        "today_pnl": today_net_pnl,
+        "today_net_pnl": today_net_pnl,
+        "total_pnl": totals["period_net_pnl"],
+        "period_net_pnl": totals["period_net_pnl"],
+        "gross": totals["gross"],
+        "commission": totals["commission"],
+        "funding": totals["funding"],
+        "transfer": totals["transfer"],
+        "unrealized": unrealized,
+        "win_rate": totals["win_rate"],
+        "wins": totals["wins"], "losses": totals["losses"],
+        "total_trades": totals["closed_cycles"],
+        "closed_cycles": totals["closed_cycles"],
+        "incomplete_cycles": totals["incomplete_cycles"],
+        "net_complete": totals["net_complete"],
+        "commission_complete": totals["commission_complete"],
+        "incomplete_financial_events": totals["incomplete_event_count"],
+        "financial_source": financial.get("source", "legacy"),
+        "source": financial.get("source", "legacy"),
+        "synced_at": financial.get("synced_at", ""),
+        "stale": bool(financial.get("stale", True)),
+        "syncing": bool(financial.get("syncing", False)),
+        "errors": financial.get("errors", []),
+        "window_start": financial.get("window_start", ""),
+        "window_clipped": bool(financial.get("window_clipped", False)),
+        "non_usdt_commission_assets": financial.get("non_usdt_commission_assets", []),
+        "ambiguous_funding_event_ids": financial.get("ambiguous_funding_event_ids", []),
+        "financial_warnings": financial.get("financial_warnings", []),
         "scan_no": s.get("scan_no", 0), "last_scan": s.get("last_scan", "--:--"),
         "liq_connected": s.get("liq_connected", False),
         "ai_analyzing": s.get("ai_analyzing", False),
@@ -6321,12 +6579,31 @@ def api_pump_nhe_remove():
 
 
 def start_web_dashboard(state, lock, config, port=5555, exchange=None):
-    """Start web dashboard in background thread."""
-    global _state, _lock, _config, _exchange
+    """Start web dashboard and its Binance ledger background cache."""
+    global _state, _lock, _config, _exchange, _ledger
     _state = state
     _lock = lock
     _config = config
     _exchange = exchange
+
+    # Start exactly one account/ledger worker. It serves any durable cache
+    # immediately and performs all Binance history/account I/O off Flask threads.
+    if exchange is not None:
+        existing_ledger = state.get("_binance_ledger")
+        if existing_ledger is None:
+            from binance_trade_ledger import BinanceTradeLedger
+            with lock:
+                legacy_history = list(state.get("trade_log", []))
+            existing_ledger = BinanceTradeLedger(
+                exchange,
+                legacy_history=legacy_history,
+                refresh_seconds=getattr(config, "BINANCE_LEDGER_REFRESH_SECONDS", 60),
+                retention_days=getattr(config, "BINANCE_LEDGER_RETENTION_DAYS", 365),
+            )
+            with lock:
+                state["_binance_ledger"] = existing_ledger
+        _ledger = existing_ledger
+        _ledger.start()
 
     # Set secret key từ config — session hết hạn khi restart bot
     app.config["SECRET_KEY"] = getattr(config, "WEB_SECRET_KEY", "fallback-secret-key-change-me")
@@ -6400,200 +6677,244 @@ def api_news():
 
 @app.route("/api/pnl_stats", methods=["GET"])
 def api_pnl_stats():
-    """
-    Trả về thống kê PnL theo ngày / tuần / tháng.
-    Mỗi entry: { label, pnl, trades, wins }
-    """
-    from datetime import datetime, timedelta, timezone
+    """Return event-basis PnL and complete-cycle outcome counts."""
+    from datetime import datetime, timedelta
     import collections
 
     with _lock:
         tlog = list(_state.get("trade_log", []))
+        state_snapshot = dict(_state)
+    financial = _financial_snapshot(tlog, state_snapshot)
+    events = _financial_events(financial)
+    outcomes = _complete_closed_cycles(financial)
 
-    # Chỉ lấy lệnh đã đóng có PnL thực
-    closed = [t for t in tlog
-              if t.get("status") == "CLOSED"
-              and abs(t.get("pnl_usdt", 0)) > 0.001]
+    def event_dt(event):
+        timestamp_ms = int(event.get("time_ms", 0) or 0)
+        return datetime.fromtimestamp(timestamp_ms / 1000) if timestamp_ms else None
 
-    def parse_time(t):
-        try:
-            return datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return None
+    def cycle_dt(cycle):
+        timestamp_ms = int(cycle.get("closed_at_ms", 0) or 0)
+        return datetime.fromtimestamp(timestamp_ms / 1000) if timestamp_ms else None
 
-    # ── DAILY: tất cả các ngày có trade ─────────────────────
-    day_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
-    for t in closed:
-        dt = parse_time(t)
-        if dt is None: continue
-        dk = dt.strftime("%Y-%m-%d")
-        day_map[dk]["pnl"]    += t.get("pnl_usdt", 0)
-        day_map[dk]["trades"] += 1
-        day_map[dk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+    def build_stats(event_key, cycle_key, keys):
+        buckets = collections.defaultdict(lambda: {
+            "gross": 0.0, "commission": 0.0, "funding": 0.0,
+            "net": 0.0, "net_complete": True, "trades": 0, "wins": 0,
+        })
+        for event in events:
+            dt = event_dt(event)
+            key = event_key(event, dt) if dt else None
+            if key is None:
+                continue
+            bucket = buckets[key]
+            bucket["gross"] += float(event.get("gross", 0) or 0)
+            bucket["commission"] += float(event.get("commission", 0) or 0)
+            bucket["funding"] += float(event.get("funding", 0) or 0)
+            if bool(event.get("net_complete", True)):
+                bucket["net"] += float(event.get("net", 0) or 0)
+            else:
+                bucket["net_complete"] = False
+        for cycle in outcomes:
+            dt = cycle_dt(cycle)
+            key = cycle_key(cycle, dt) if dt else None
+            if key is None:
+                continue
+            buckets[key]["trades"] += 1
+            buckets[key]["wins"] += 1 if float(cycle.get("net_pnl", 0)) > 0 else 0
+        result = []
+        for key in keys(buckets):
+            value = buckets[key]
+            result.append({
+                "key": key,
+                "pnl": round(value["net"], 2) if value["net_complete"] else None,
+                "gross": round(value["gross"], 2),
+                "commission": round(value["commission"], 2),
+                "funding": round(value["funding"], 2),
+                "net_complete": value["net_complete"],
+                "trades": value["trades"],
+                "wins": value["wins"],
+            })
+        return result
 
+    daily = build_stats(
+        lambda _event, dt: dt.strftime("%Y-%m-%d"),
+        lambda _cycle, dt: dt.strftime("%Y-%m-%d"),
+        lambda buckets: sorted(buckets.keys(), reverse=True),
+    )
     today_str = datetime.now().strftime("%Y-%m-%d")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    sorted_days = sorted(day_map.keys(), reverse=True)  # mới nhất lên đầu
-    daily = []
-    for dk in sorted_days:
-        v = day_map[dk]
-        if dk == today_str:
-            label = "Hôm nay"
-        elif dk == yesterday_str:
-            label = "Hôm qua"
-        else:
-            # dd/mm/yy
-            dt = datetime.strptime(dk, "%Y-%m-%d")
-            label = dt.strftime("%d/%m/%y")
-        daily.append({"label": label, "pnl": round(v["pnl"], 2),
-                      "trades": v["trades"], "wins": v["wins"]})
+    for item in daily:
+        key = item.pop("key")
+        item["label"] = (
+            "Hôm nay" if key == today_str else "Hôm qua" if key == yesterday_str
+            else datetime.strptime(key, "%Y-%m-%d").strftime("%d/%m/%y")
+        )
 
-    # ── WEEKLY: 8 tuần gần nhất ──────────────────────────────
-    def week_key(dt):
-        if dt is None: return None
-        # ISO week: năm-tuần
-        return dt.strftime("%G-W%V")
-
-    week_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0, "start": None})
-    for t in closed:
-        dt = parse_time(t)
-        if dt is None: continue
-        wk = week_key(dt)
-        week_map[wk]["pnl"]    += t.get("pnl_usdt", 0)
-        week_map[wk]["trades"] += 1
-        week_map[wk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
-        if week_map[wk]["start"] is None or dt < week_map[wk]["start"]:
-            week_map[wk]["start"] = dt
-
-    # Sort theo tuần, lấy 8 tuần gần nhất
-    sorted_weeks = sorted(week_map.keys())[-8:]
+    weekly = build_stats(
+        lambda _event, dt: dt.strftime("%G-W%V"),
+        lambda _cycle, dt: dt.strftime("%G-W%V"),
+        lambda buckets: sorted(buckets.keys())[-8:],
+    )
     current_week = datetime.now().strftime("%G-W%V")
-    weekly = []
-    for wk in sorted_weeks:
-        v = week_map[wk]
-        label = "Tuần này" if wk == current_week else f"T{wk.split('W')[1]}/{wk.split('-')[0][2:]}"
-        weekly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
+    for item in weekly:
+        key = item.pop("key")
+        item["label"] = "Tuần này" if key == current_week else f"T{key.split('W')[1]}/{key.split('-')[0][2:]}"
 
-    # ── MONTHLY: 6 tháng gần nhất ────────────────────────────
-    month_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
-    for t in closed:
-        dt = parse_time(t)
-        if dt is None: continue
-        mk = dt.strftime("%Y-%m")
-        month_map[mk]["pnl"]    += t.get("pnl_usdt", 0)
-        month_map[mk]["trades"] += 1
-        month_map[mk]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
-
-    sorted_months = sorted(month_map.keys())[-6:]
+    monthly = build_stats(
+        lambda _event, dt: dt.strftime("%Y-%m"),
+        lambda _cycle, dt: dt.strftime("%Y-%m"),
+        lambda buckets: sorted(buckets.keys())[-6:],
+    )
     current_month = datetime.now().strftime("%Y-%m")
-    monthly = []
-    for mk in sorted_months:
-        v = month_map[mk]
-        y, m = mk.split("-")
-        label = "Tháng này" if mk == current_month else f"T{int(m)}/{y[2:]}"
-        monthly.append({"label": label, "pnl": round(v["pnl"], 2), "trades": v["trades"], "wins": v["wins"]})
+    for item in monthly:
+        key = item.pop("key")
+        year, month = key.split("-")
+        item["label"] = "Tháng này" if key == current_month else f"T{int(month)}/{year[2:]}"
 
-    # ── BY COIN: PnL từng coin ──────────────────────────────
-    coin_map = collections.defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
-    for t in closed:
-        sym = t.get("symbol", "???")
-        coin_map[sym]["pnl"]    += t.get("pnl_usdt", 0)
-        coin_map[sym]["trades"] += 1
-        coin_map[sym]["wins"]   += 1 if t.get("pnl_usdt", 0) > 0 else 0
+    by_coin = build_stats(
+        lambda event, _dt: str(event.get("symbol") or "???"),
+        lambda cycle, _dt: str(cycle.get("symbol") or "???"),
+        lambda buckets: sorted(
+            buckets.keys(),
+            key=lambda key: buckets[key]["net"] if buckets[key]["net_complete"] else float("-inf"),
+            reverse=True,
+        ),
+    )
+    for item in by_coin:
+        item["label"] = item.pop("key").replace("USDT", "")
 
-    by_coin = []
-    for sym, v in sorted(coin_map.items(), key=lambda x: x[1]["pnl"], reverse=True):
-        by_coin.append({"label": sym.replace("USDT", ""), "pnl": round(v["pnl"], 2),
-                        "trades": v["trades"], "wins": v["wins"]})
-
-    return jsonify({"daily": daily, "weekly": weekly, "monthly": monthly, "by_coin": by_coin})
+    totals = _financial_totals(financial, events, outcomes)
+    return jsonify({
+        "daily": daily, "weekly": weekly, "monthly": monthly, "by_coin": by_coin,
+        "period_net": totals["period_net_pnl"],
+        "gross": totals["gross"],
+        "commission": totals["commission"],
+        "funding": totals["funding"],
+        "net_complete": totals["net_complete"],
+        "commission_complete": totals["commission_complete"],
+        "incomplete_cycles": totals["incomplete_cycles"],
+        "financial_warnings": financial.get("financial_warnings", []),
+        "source": financial.get("source", "legacy"),
+        "synced_at": financial.get("synced_at", ""),
+        "stale": bool(financial.get("stale", True)),
+        "errors": financial.get("errors", []),
+        "trade_count": totals["closed_cycles"],
+    })
 
 
 @app.route("/api/equity_curve", methods=["GET"])
 def api_equity_curve():
-    """
-    Trả về equity curve: balance tích lũy theo từng lệnh đã đóng.
-    Query param: range = 7d | 30d | 90d | all (default: 30d)
-    Response: { points: [{time, balance, pnl, symbol, side}], start_balance, end_balance, change_pct, change_usd }
-    """
-    from datetime import datetime, timedelta
+    """Build an explicitly forced wallet reconstruction from financial events."""
+    from datetime import datetime
 
     range_param = request.args.get("range", "30d")
+    range_days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - range_days[range_param] * 86_400_000 if range_param in range_days else None
 
     with _lock:
         tlog = list(_state.get("trade_log", []))
-        current_balance = float(_state.get("balance", 0))
+        state_snapshot = dict(_state)
+    financial = _financial_snapshot(tlog, state_snapshot)
+    financial_events = [
+        event for event in _financial_events(financial)
+        if cutoff_ms is None or int(event.get("time_ms", 0) or 0) >= cutoff_ms
+    ]
+    transfers = [
+        event for event in financial.get("transfers", [])
+        if cutoff_ms is None or int(event.get("time_ms", 0) or 0) >= cutoff_ms
+    ]
+    outcomes = [
+        cycle for cycle in _complete_closed_cycles(financial)
+        if cutoff_ms is None or int(cycle.get("closed_at_ms", 0) or 0) >= cutoff_ms
+    ]
+    totals = _financial_totals(financial, financial_events, outcomes)
+    period_net = totals["period_net_pnl"]
+    selected_transfer_totals = _transfer_totals(transfers)
+    transfer_total = selected_transfer_totals["transfer"]
+    current_wallet = float(financial.get("account", {}).get("wallet_balance", 0) or 0)
 
-    closed = sorted(
-        [t for t in tlog if t.get("status") == "CLOSED" and abs(t.get("pnl_usdt", 0)) > 0.001],
-        key=lambda t: t.get("time", "")
+    common = {
+        "period_net": round(period_net, 8) if period_net is not None else None,
+        "change_usd": round(period_net, 8) if period_net is not None else None,
+        "transfer": round(transfer_total, 8) if transfer_total is not None else None,
+        "transfer_complete": selected_transfer_totals["transfer_complete"],
+        "unsupported_transfer_assets": selected_transfer_totals["unsupported_transfer_assets"],
+        "gross": round(totals["gross"], 8),
+        "commission": round(totals["commission"], 8),
+        "funding": round(totals["funding"], 8),
+        "net_complete": totals["net_complete"],
+        "commission_complete": totals["commission_complete"],
+        "trade_count": len(outcomes),
+        "incomplete_cycles": totals["incomplete_cycles"],
+        "source": financial.get("source", "legacy"),
+        "synced_at": financial.get("synced_at", ""),
+        "stale": bool(financial.get("stale", True)),
+        "reconstructed": True,
+        "estimated": True,
+        "forced_reconstruction": True,
+        "reconstruction_method": "backsolved_from_current_wallet",
+        "independent_reconciliation": False,
+        "reconciles_to_wallet": False,
+        "financial_warnings": financial.get("financial_warnings", []),
+    }
+    if period_net is None or transfer_total is None:
+        return jsonify({
+            **common,
+            "points": [], "point_count": 0,
+            "start_balance": None, "end_balance": round(current_wallet, 2),
+            "change_pct": None, "wallet_change": None,
+        })
+
+    start_wallet = current_wallet - period_net - transfer_total
+    event_times = [int(event.get("time_ms", 0) or 0) for event in financial_events + transfers]
+    start_time_ms = cutoff_ms if cutoff_ms is not None else (
+        int(financial.get("window_start_ms", 0) or 0) or (min(event_times) if event_times else now_ms)
     )
+    replay_events = [{
+        "time_ms": int(event.get("time_ms", 0) or 0),
+        "pnl": float(event.get("net", 0) or 0),
+        "symbol": str(event.get("symbol", "")).replace("USDT", ""),
+        "side": "",
+        "event_type": str(event.get("event_type", "financial")),
+        "event_id": str(event.get("event_id", "")),
+    } for event in financial_events]
+    replay_events.extend({
+        "time_ms": int(event.get("time_ms", 0) or 0),
+        "pnl": float(event.get("amount", 0) or 0),
+        "symbol": "TRANSFER", "side": "", "event_type": "transfer",
+        "event_id": str(event.get("event_id", "")),
+    } for event in transfers)
+    replay_events.sort(key=lambda item: (item["time_ms"], item["event_type"], item["event_id"]))
 
-    # Filter theo range
-    now = datetime.now()
-    if range_param == "1d":
-        cutoff = now - timedelta(days=1)
-    elif range_param == "7d":
-        cutoff = now - timedelta(days=7)
-    elif range_param == "30d":
-        cutoff = now - timedelta(days=30)
-    elif range_param == "90d":
-        cutoff = now - timedelta(days=90)
-    else:
-        cutoff = None
-
-    if cutoff:
-        closed = [t for t in closed if t.get("time", "") >= cutoff.strftime("%Y-%m-%d %H:%M:%S")]
-
-    if not closed:
-        return jsonify({"points": [], "start_balance": current_balance,
-                        "end_balance": current_balance, "change_pct": 0, "change_usd": 0})
-
-    # Tính balance ngược từ hiện tại: balance hiện tại - tổng PnL từ range = start balance
-    total_pnl_in_range = sum(t.get("pnl_usdt", 0) for t in closed)
-    start_balance = current_balance - total_pnl_in_range
-
-    # Build equity curve: cộng dần PnL
-    points = []
-    running = start_balance
-
-    # Luôn thêm điểm bắt đầu
-    first_time = closed[0].get("time", now.strftime("%Y-%m-%d %H:%M:%S"))
+    running = start_wallet
+    points = [{
+        "time": datetime.fromtimestamp(start_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+        "balance": round(start_wallet, 2), "pnl": 0.0, "symbol": "", "side": "",
+        "pnl_pct": 0.0, "event_type": "forced_start",
+    }]
+    for event in replay_events:
+        running += event["pnl"]
+        points.append({
+            "time": datetime.fromtimestamp(event["time_ms"] / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+            "balance": round(running, 2), "pnl": round(event["pnl"], 8),
+            "symbol": event["symbol"], "side": event["side"], "pnl_pct": 0.0,
+            "event_type": event["event_type"],
+        })
     points.append({
-        "time":    first_time,
-        "balance": round(start_balance, 2),
-        "pnl":     0, "symbol": "", "side": "", "pnl_pct": 0,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "balance": round(current_wallet, 2), "pnl": 0.0, "symbol": "", "side": "",
+        "pnl_pct": 0.0, "event_type": "current_wallet_anchor",
     })
-
-    for t in closed:
-        running += t.get("pnl_usdt", 0)
-        points.append({
-            "time":    t.get("time", ""),
-            "balance": round(running, 2),
-            "pnl":     round(t.get("pnl_usdt", 0), 2),
-            "symbol":  t.get("symbol", "").replace("USDT", ""),
-            "side":    t.get("side", ""),
-            "pnl_pct": round(t.get("pnl_pct", 0), 2),
-        })
-
-    # Thêm điểm hiện tại (balance thực) nếu khác
-    if current_balance > 0 and abs(current_balance - running) > 0.01:
-        points.append({
-            "time":    now.strftime("%Y-%m-%d %H:%M:%S"),
-            "balance": round(current_balance, 2),
-            "pnl":     0, "symbol": "", "side": "", "pnl_pct": 0,
-        })
-
-    end_balance   = points[-1]["balance"] if points else current_balance
-    change_usd    = round(end_balance - start_balance, 2)
-    change_pct    = round(change_usd / start_balance * 100, 2) if start_balance > 0 else 0
-
+    change_pct = period_net / start_wallet * 100 if start_wallet > 0 else 0.0
     return jsonify({
-        "points":          points,
-        "start_balance":   round(start_balance, 2),
-        "end_balance":     round(end_balance, 2),
-        "change_usd":      change_usd,
-        "change_pct":      change_pct,
+        **common,
+        "points": points,
+        "start_balance": round(start_wallet, 2),
+        "end_balance": round(current_wallet, 2),
+        "change_pct": round(change_pct, 2),
+        "wallet_change": round(period_net + transfer_total, 8),
+        "point_count": len(points),
     })
 
 

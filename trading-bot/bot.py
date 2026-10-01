@@ -2143,19 +2143,32 @@ def price_updater(exchange):
                         pnl_pct = (close_price - entry) / entry * 100 if side == "LONG" else (entry - close_price) / entry * 100
                         pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
 
-                # Ghi lại state TRONG lock — nhanh, không có API call
+                # Ghi lại state TRONG lock — chỉ một local OPEN record nhận
+                # aggregate PnL. Các split/duplicate OPEN cũ hơn vẫn được giữ
+                # nguyên metadata nhưng bị loại khỏi mọi thống kê local.
+                history_snapshot = None
                 with lock:
-                    # Fix 7: đóng TẤT CẢ entries OPEN của symbol này (split position có 2 entries)
-                    for t in reversed(state.get("trade_log", [])):
-                        if t.get("symbol") == sym and t.get("status") == "OPEN":
-                            t.update({
-                                "status":   "CLOSED",
-                                "close":    close_price,
-                                "pnl_usdt": round(pnl_usd, 2),
-                                "pnl_pct":  round(pnl_pct, 2),
-                                "note":     "closed_external"
+                    matching = [
+                        t for t in state.get("trade_log", [])
+                        if t.get("symbol") == sym and t.get("status") == "OPEN"
+                    ]
+                    if matching:
+                        canonical_local = matching[-1]
+                        canonical_ref = canonical_local.get("time", "")
+                        canonical_local.update({
+                            "status": "CLOSED",
+                            "close": close_price,
+                            "pnl_usdt": round(pnl_usd, 2),
+                            "pnl_pct": round(pnl_pct, 2),
+                            "note": "closed_external",
+                        })
+                        for older in matching[:-1]:
+                            older.update({
+                                "status": "SUPERSEDED",
+                                "superseded_by": canonical_ref,
+                                "superseded_reason": "symbol_flat_external_close",
                             })
-                            # Không break — tiếp tục đóng các entry OPEN còn lại
+                        history_snapshot = list(state.get("trade_log", []))
                 _remove_entry_cache(sym)  # xóa cache khi lệnh đóng
                 _pump_entry_coordinator.mark_flat(
                     sym, getattr(config, "PUMP_ENTRY_COOLDOWN_SEC", 7)
@@ -2181,8 +2194,9 @@ def price_updater(exchange):
                         )
 
                 logger.info(f"[Sync] Detected external close: {sym} PnL=${pnl_usd:+.2f}")
-                from trade_history import save_history
-                save_history(state["trade_log"])
+                if history_snapshot is not None:
+                    from trade_history import save_history
+                    save_history(history_snapshot)
 
                 # Notify
                 try:
@@ -7541,49 +7555,95 @@ if __name__ == "__main__":
     with lock:
         state["trade_log"] = saved_history
 
-    # Startup sync: check lệnh OPEN trong file vs positions thực tế trên Binance
-    # Lệnh nào đã đóng (không còn trên Binance) → update CLOSED + lấy PnL
+    # Startup sync only repairs local metadata. Binance canonical ledger below
+    # owns dashboard financials, so one latest OPEN row receives the approximate
+    # aggregate and older same-symbol rows become SUPERSEDED (never duplicated).
     try:
         real_positions = exchange._get("/fapi/v2/positionRisk", signed=True)
-        real_syms = {p["symbol"] for p in real_positions if abs(float(p.get("positionAmt", 0))) > 0}
-        needs_save = False
+        real_syms = {
+            p["symbol"] for p in real_positions
+            if abs(float(p.get("positionAmt", 0))) > 0
+        }
         with lock:
-            for t in state["trade_log"]:
-                if t.get("status") != "OPEN":
-                    continue
-                sym = t.get("symbol", "")
-                if sym not in real_syms:
-                    # Lệnh đã đóng trên Binance — lấy PnL thật
-                    pnl_usd = 0.0
-                    try:
-                        entry = t.get("entry", 0)
-                        qty   = t.get("qty", 0)
-                        open_time_str = t.get("time", "")
-                        from datetime import datetime as _dtp
-                        open_ms = int(_dtp.strptime(open_time_str, "%Y-%m-%d %H:%M:%S").timestamp() * 1000) if open_time_str else 0
-                        start_ms = open_ms if open_ms > 0 else int(time.time() * 1000) - 86_400_000
-                        realized = exchange.get_realized_pnl(sym, start_ms)
-                        if realized != 0:
-                            pnl_usd = realized
-                        elif entry > 0 and qty > 0:
-                            # Fallback: lấy giá đóng từ Binance trades
-                            try:
-                                trades = exchange._get("/fapi/v1/userTrades", {"symbol": sym, "startTime": start_ms, "limit": 50}, signed=True)
-                                if trades:
-                                    close_price = float(trades[-1].get("price", entry))
-                                    side = t.get("side", "LONG")
-                                    pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
-                            except Exception:
-                                pass
-                    except Exception as _e:
-                        logger.debug(f"[Startup] get_pnl {sym}: {_e}")
+            flat_symbols = sorted({
+                t.get("symbol", "") for t in state["trade_log"]
+                if t.get("status") == "OPEN"
+                and t.get("symbol", "")
+                and t.get("symbol", "") not in real_syms
+            })
 
-                    t.update({"status": "CLOSED", "pnl_usdt": round(pnl_usd, 2), "note": "closed_startup_sync"})
-                    logger.info(f"[Startup] Sync closed: {sym} pnl=${pnl_usd:+.2f}")
-                    needs_save = True
+        needs_save = False
+        for sym in flat_symbols:
+            with lock:
+                matching = [
+                    t for t in state["trade_log"]
+                    if t.get("symbol") == sym and t.get("status") == "OPEN"
+                ]
+                latest = dict(matching[-1]) if matching else None
+            if latest is None:
+                continue
+
+            entry = float(latest.get("entry", 0) or 0)
+            qty = float(latest.get("qty", 0) or 0)
+            side = latest.get("side", "LONG")
+            close_price = entry
+            pnl_usd = 0.0
+            try:
+                from datetime import datetime as _dtp
+                open_time_str = latest.get("time", "")
+                open_ms = int(_dtp.strptime(open_time_str, "%Y-%m-%d %H:%M:%S").timestamp() * 1000) if open_time_str else 0
+                start_ms = open_ms if open_ms > 0 else int(time.time() * 1000) - 86_400_000
+                realized = exchange.get_realized_pnl(sym, start_ms)
+                if realized != 0:
+                    pnl_usd = realized
+                elif entry > 0 and qty > 0:
+                    trades = exchange._get(
+                        "/fapi/v1/userTrades",
+                        {"symbol": sym, "startTime": start_ms, "limit": 1000},
+                        signed=True,
+                    )
+                    if trades:
+                        close_price = float(trades[-1].get("price", entry))
+                        pnl_usd = qty * (close_price - entry) if side == "LONG" else qty * (entry - close_price)
+            except Exception as exc:
+                logger.debug(f"[Startup] local metadata PnL {sym}: {exc}")
+            pnl_pct = (
+                pnl_usd / (entry * qty / config.LEVERAGE) * 100
+                if entry > 0 and qty > 0 else 0.0
+            )
+
+            with lock:
+                matching = [
+                    t for t in state["trade_log"]
+                    if t.get("symbol") == sym and t.get("status") == "OPEN"
+                ]
+                if not matching:
+                    continue
+                canonical_local = matching[-1]
+                canonical_ref = canonical_local.get("time", "")
+                canonical_local.update({
+                    "status": "CLOSED",
+                    "close": close_price,
+                    "pnl_usdt": round(pnl_usd, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "note": "closed_startup_sync",
+                })
+                for older in matching[:-1]:
+                    older.update({
+                        "status": "SUPERSEDED",
+                        "superseded_by": canonical_ref,
+                        "superseded_reason": "symbol_flat_startup_sync",
+                    })
+                needs_save = True
+            logger.info(
+                f"[Startup] Local sync {sym}: one CLOSED, {max(0, len(matching)-1)} SUPERSEDED, pnl=${pnl_usd:+.2f}"
+            )
+
         if needs_save:
-            save_history(state["trade_log"])
-            logger.info("[Startup] Saved synced trade history")
+            with lock:
+                history_snapshot = list(state["trade_log"])
+            save_history(history_snapshot)
+            logger.info("[Startup] Saved non-duplicating local history sync")
     except Exception as _se:
         logger.warning(f"[Startup] Sync positions failed: {_se}")
     # Nếu muốn bật lại, uncomment block bên dưới
