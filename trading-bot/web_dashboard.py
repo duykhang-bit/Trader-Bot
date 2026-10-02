@@ -926,6 +926,15 @@ function fmt(n,d=2){return n===null||n===undefined||!Number.isFinite(Number(n))?
 function fmtUsd(n){return n===null||n===undefined||!Number.isFinite(Number(n))?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function pnlColor(n){return n===null||n===undefined?'muted':(Number(n)>=0?'green':'red')}
 function sideHtml(s){return s==='LONG'?'<span class="badge badge-long">LONG</span>':'<span class="badge badge-short">SHORT</span>'}
+function ppTierBadgeHtml(ppInfo) {
+    if (!ppInfo) return '';
+    const tier = Number(ppInfo.tier || 1);
+    if (tier >= 5) return '<span style="color:#f0883e;font-size:10px">🔥T5</span>';
+    if (tier === 4) return '<span style="color:#58a6ff;font-size:10px">⚡T4</span>';
+    if (tier === 3) return '<span style="color:#3fb950;font-size:10px">🎯T3</span>';
+    if (tier === 2) return '<span style="color:#d29922;font-size:10px">🛡T2</span>';
+    return '<span style="color:#484f58;font-size:10px">T1</span>';
+}
 
 function toast(msg, ok=true) {
     const el = document.createElement('div');
@@ -1941,7 +1950,8 @@ function renderDashboard(d) {
         <tbody id="positions-body">`;
     if (d.open_positions && d.open_positions.length > 0) {
         d.open_positions.forEach(p => {
-            html += `<tr><td><b>${p.symbol.replace('USDT','')}</b></td><td>${sideHtml(p.side)}</td>
+            const tierBadge = ppTierBadgeHtml(d.pp_state && d.pp_state[p.symbol]);
+            html += `<tr><td><b>${p.symbol.replace('USDT','')}</b> ${tierBadge}</td><td>${sideHtml(p.side)}</td>
                 <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
                 <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
                 <td class="${pnlColor(p.pct)}">${fmt(p.pct,1)}%</td><td>${p.lev}x</td>
@@ -3913,6 +3923,7 @@ async function refresh(){
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
+            updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
         } else {
             _patchDashboard(d);
         }
@@ -3998,11 +4009,7 @@ function _patchDashboard(d) {
         if (d.open_positions && d.open_positions.length > 0) {
             d.open_positions.forEach(p => {
                 const ppInfo = d.pp_state && d.pp_state[p.symbol];
-                const tierBadge = ppInfo ? (
-                    ppInfo.tier === 3 ? '<span style="color:#3fb950;font-size:10px">🛡T3</span>' :
-                    ppInfo.tier === 2 ? '<span style="color:#d29922;font-size:10px">🛡T2</span>' :
-                    '<span style="color:#484f58;font-size:10px">T1</span>'
-                ) : '';
+                const tierBadge = ppTierBadgeHtml(ppInfo);
                 rows += `<tr><td><b>${p.symbol.replace('USDT','')}</b> ${tierBadge}</td><td>${sideHtml(p.side)}</td>
                     <td>${fmtUsd(p.entry)}</td><td>${fmtUsd(p.mark)}</td>
                     <td class="${pnlColor(p.pnl)}"><b>${fmtUsd(p.pnl)}</b></td>
@@ -4093,6 +4100,19 @@ function updatePPMonitor(d) {
     const ppState = d.pp_state || {};
     const positions = d.open_positions || [];
     const prices = d.prices || {};
+    const cfg = d.pp_settings || {
+        t2_trigger_pct:0.6, t2_timer_secs:5, t2_lock_pct:0.4,
+        t3_trigger_pct:1.0, t3_timer_secs:3, t3_distance_pct:0.5,
+        t4_trigger_pct:2.0, t4_timer_secs:3, t4_distance_pct:0.3,
+        t5_trigger_pct:3.0, t5_timer_secs:3, t5_distance_pct:0.15
+    };
+    const serverTs = Number(d.server_ts || (Date.now()/1000));
+    const tierDefs = {
+        2:{label:'T2 Protection', icon:'🛡', color:'#d29922', trigger:Number(cfg.t2_trigger_pct), timer:Number(cfg.t2_timer_secs), distance:null},
+        3:{label:'T3 Trailing',   icon:'🎯', color:'#3fb950', trigger:Number(cfg.t3_trigger_pct), timer:Number(cfg.t3_timer_secs), distance:Number(cfg.t3_distance_pct)},
+        4:{label:'T4 Tight',      icon:'⚡', color:'#58a6ff', trigger:Number(cfg.t4_trigger_pct), timer:Number(cfg.t4_timer_secs), distance:Number(cfg.t4_distance_pct)},
+        5:{label:'T5 Max',        icon:'🔥', color:'#f0883e', trigger:Number(cfg.t5_trigger_pct), timer:Number(cfg.t5_timer_secs), distance:Number(cfg.t5_distance_pct)}
+    };
 
     if (!positions.length || !Object.keys(ppState).length) {
         el.innerHTML = '<span style="color:#484f58">Chưa có position nào kích hoạt PP</span>';
@@ -4122,109 +4142,73 @@ function updatePPMonitor(d) {
 
         const fmt = (v) => v >= 1 ? '$'+v.toFixed(4) : (v > 0 ? '$'+v.toFixed(6) : '-');
 
-        // ── Progress to next tier ──
-        const nowTs = Date.now() / 1000;
-        const ppTrigger = parseFloat(document.getElementById('pp-trigger-pct')?.value || 0.6);
-        const ppTimer   = parseFloat(document.getElementById('pp-timer')?.value || 5);
-        const trailTrigger = parseFloat(document.getElementById('pp-trail-trigger')?.value || 1.0);
-        const trailTimer   = parseFloat(document.getElementById('pp-trail-timer')?.value || 3);
+        // ── Current policy + exact progress to next tier ──
+        const activeDef = tierDefs[tier];
+        let activePolicy = 'Initial SL đang bảo vệ';
+        if (tier === 2) {
+            activePolicy = `Protection SL · khóa entry ${Number(cfg.t2_lock_pct).toFixed(2)}%`;
+        } else if (tier >= 3 && activeDef) {
+            activePolicy = `Trailing active · cách peak ${activeDef.distance.toFixed(2)}%`;
+        }
+        const lastUpdateAge = Number(ps.sl_last_update_ts || 0) > 0
+            ? Math.max(0, serverTs - Number(ps.sl_last_update_ts)).toFixed(0)
+            : null;
+        const activeHtml = `
+            <div style="font-size:10px;color:${tierColor};font-weight:700">${activePolicy}</div>
+            ${lastUpdateAge !== null ? `<div style="font-size:9px;color:#6e7681">SL update ${lastUpdateAge}s trước</div>` : ''}`;
 
         let progressHtml = '';
-        if (tier === 1) {
-            // Progress tới Tier 2
-            const pct = Math.max(0, Math.min(100, profit / ppTrigger * 100));
-            const barColor = profit >= ppTrigger ? '#d29922' : (profit >= 0 ? '#3fb950' : '#f85149');
-            const timerElapsed = ps.protection_ts > 0 ? Math.min(nowTs - ps.protection_ts, ppTimer) : 0;
-            const timerPct = ps.protection_ts > 0 ? Math.min(100, timerElapsed / ppTimer * 100) : 0;
-            const timerStr = ps.protection_ts > 0
-                ? `⏱ ${timerElapsed.toFixed(0)}s/${ppTimer}s`
-                : `${profit.toFixed(2)}% / ${ppTrigger}%`;
+        if (tier >= 5) {
             progressHtml = `
-                <div style="font-size:10px;color:#484f58">${timerStr}</div>
-                <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
-                    <div style="background:${barColor};height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
-                </div>
-                ${ps.protection_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
-        } else if (tier === 2) {
-            // Progress tới Tier 3 — hiện profit% / trigger% VÀ timer
-            const pct = Math.max(0, Math.min(100, profit / trailTrigger * 100));
-            const timerElapsed = ps.trailing_ts > 0 ? Math.min(nowTs - ps.trailing_ts, trailTimer) : 0;
-            const timerPct = ps.trailing_ts > 0 ? Math.min(100, timerElapsed / trailTimer * 100) : 0;
-            const profStr = `${profit.toFixed(2)}% / ${trailTrigger}%`;
-
-            // Check SL trailing có hợp lệ không (giá bật ngược?)
-            const trailDistPct = parseFloat(document.getElementById('pp-trail-dist')?.value || 0.5) / 100;
-            const peakForCheck = ps.peak_price || 0;
-            const markForCheck = p.mark || 0;
-            let slWouldTrigger = false;
-            if (peakForCheck > 0 && markForCheck > 0) {
-                if (p.side === 'SHORT') {
-                    const trailSLCheck = peakForCheck * (1 + trailDistPct);
-                    slWouldTrigger = trailSLCheck <= markForCheck * 1.0005;
-                } else {
-                    const trailSLCheck = peakForCheck * (1 - trailDistPct);
-                    slWouldTrigger = trailSLCheck >= markForCheck * 0.9995;
-                }
-            }
-
-            const timerReady = ps.trailing_ts > 0 && timerElapsed >= trailTimer;
-            let timerColor, timerStr;
-            if (timerReady && slWouldTrigger) {
-                timerColor = '#f85149';
-                timerStr = `⚠️ Giá bật ngược, chờ peak mới`;
-            } else if (timerReady) {
-                timerColor = '#3fb950';
-                timerStr = `✅ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3`;
-            } else {
-                timerColor = '#d29922';
-                timerStr = ps.trailing_ts > 0 ? `⏱ ${timerElapsed.toFixed(0)}s/${trailTimer}s → T3` : `→ T3`;
-            }
-
-            progressHtml = `
-                <div style="font-size:10px;color:#3fb950">${profStr}</div>
-                <div style="background:#21262d;border-radius:3px;height:5px;width:80px;margin-top:2px">
-                    <div style="background:#3fb950;height:5px;border-radius:3px;width:${pct}%;transition:width 0.5s"></div>
-                </div>
-                <div style="font-size:10px;color:${timerColor};margin-top:2px">${timerStr}</div>
-                ${ps.trailing_ts > 0 && timerPct < 100 ? `<div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px"><div style="background:#d29922;height:3px;border-radius:3px;width:${timerPct}%"></div></div>` : ''}`;
+                <div style="font-size:10px;color:#f0883e;font-weight:700">🔥 MAX TIER — T5 đang chạy</div>
+                <div style="font-size:9px;color:#8b949e">Trigger ${tierDefs[5].trigger.toFixed(2)}% · timer ${tierDefs[5].timer}s · dist ${tierDefs[5].distance.toFixed(2)}%</div>`;
         } else {
-            // T3/T4/T5 - hiện tp_progress và tier hiện tại
-            const tp = ps.tp || 0;
-            const tier4Threshold = parseFloat(document.getElementById('pp-tier4-threshold')?.value || 50);
-            const tier5Threshold = parseFloat(document.getElementById('pp-tier5-threshold')?.value || 80);
-            const peakVal = ps.peak_price || ps.peak || 0;
-            let tpProgress = 0;
-            if (tp > 0 && entry > 0 && peakVal > 0) {
-                const total = Math.abs(tp - entry);
-                const done  = Math.abs(peakVal - entry);
-                tpProgress  = total > 0 ? Math.min(100, done / total * 100) : 0;
+            const nextTier = tier + 1;
+            const next = tierDefs[nextTier];
+            const timerFields = {2:'protection_ts', 3:'trailing_ts', 4:'tier4_ts', 5:'tier5_ts'};
+            const timerStarted = Number(ps[timerFields[nextTier]] || 0);
+            const reached = profit >= next.trigger;
+            const remaining = Math.max(0, next.trigger - profit);
+            const profitPct = Math.max(0, Math.min(100, next.trigger > 0 ? profit / next.trigger * 100 : 0));
+            const elapsed = timerStarted > 0 ? Math.max(0, serverTs - timerStarted) : 0;
+            const timerPct = reached && timerStarted > 0
+                ? Math.max(0, Math.min(100, next.timer > 0 ? elapsed / next.timer * 100 : 100)) : 0;
+            let statusText = `Còn ${remaining.toFixed(2)}% lợi nhuận để kích hoạt`;
+            let statusColor = profit >= 0 ? '#8b949e' : '#f85149';
+            if (reached && timerStarted <= 0) {
+                statusText = 'Đã đạt ngưỡng · chờ monitor bắt đầu timer';
+                statusColor = '#d29922';
+            } else if (reached && elapsed < next.timer) {
+                statusText = `Đang xác nhận ${elapsed.toFixed(1)}s / ${next.timer}s`;
+                statusColor = '#d29922';
+            } else if (reached) {
+                statusText = `Timer đủ ${next.timer}s · chờ SL mới hợp lệ để pass`;
+                statusColor = '#3fb950';
             }
-            let nextTier = '', nextColor = '#484f58', nextPct = 0;
-            if (tier < 4) {
-                nextTier = 'T4'; nextColor = '#58a6ff';
-                nextPct = Math.min(100, tpProgress / tier4Threshold * 100);
-            } else if (tier < 5) {
-                nextTier = 'T5'; nextColor = '#f0883e';
-                nextPct = Math.min(100, tpProgress / tier5Threshold * 100);
-            }
-            const trailDistMap = {3: document.getElementById('pp-trail-dist')?.value||0.5,
-                                   4: document.getElementById('pp-tier4-dist')?.value||0.3,
-                                   5: document.getElementById('pp-tier5-dist')?.value||0.15};
-            const activeDist = trailDistMap[tier] || 0.5;
+            const nextPolicy = nextTier === 2
+                ? `Protection lock +${Number(cfg.t2_lock_pct).toFixed(2)}% trên entry`
+                : `Trailing distance ${next.distance.toFixed(2)}% từ peak`;
             progressHtml = `
-                <div style="font-size:10px;color:${tierColors[tier]}">✅ Trailing ON (dist ${activeDist}%)</div>
-                ${nextTier ? `<div style="font-size:10px;color:${nextColor}">${tpProgress.toFixed(0)}% / ${tier < 4 ? tier4Threshold : tier5Threshold}% → ${nextTier}</div>
-                <div style="background:#21262d;border-radius:3px;height:3px;width:80px;margin-top:1px">
-                    <div style="background:${nextColor};height:3px;border-radius:3px;width:${nextPct}%"></div>
-                </div>` : `<div style="font-size:10px;color:#f0883e">🔥 MAX TIER</div>`}`;
+                <div style="min-width:210px">
+                    <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px">
+                        <b style="color:${next.color}">${next.icon} Tiếp theo: ${next.label}</b>
+                        <span style="color:#c9d1d9">${profit.toFixed(2)}% / ${next.trigger.toFixed(2)}%</span>
+                    </div>
+                    <div style="background:#21262d;border-radius:4px;height:6px;margin-top:3px;overflow:hidden">
+                        <div style="background:${next.color};height:6px;width:${profitPct}%;transition:width .4s"></div>
+                    </div>
+                    <div style="font-size:9px;color:${statusColor};margin-top:3px">${statusText}</div>
+                    ${reached ? `<div style="background:#21262d;border-radius:3px;height:3px;margin-top:2px;overflow:hidden"><div style="background:#d29922;height:3px;width:${timerPct}%"></div></div>` : ''}
+                    <div style="font-size:9px;color:#6e7681;margin-top:2px">${nextPolicy}</div>
+                </div>`;
         }
 
         rows += `<tr style="border-bottom:1px solid #21262d">
             <td style="padding:3px 6px"><b>${p.symbol.replace('USDT','')}</b></td>
             <td style="padding:3px 6px">${p.side === 'LONG' ? '<span style="color:#3fb950">LONG</span>' : '<span style="color:#f85149">SHORT</span>'}</td>
             <td style="padding:3px 6px;color:${profitColor}"><b>${profit.toFixed(2)}%</b></td>
-            <td style="padding:3px 6px">${tierBadge}</td>
-            <td style="padding:3px 6px">${progressHtml}</td>
+            <td style="padding:5px 8px;min-width:155px">${tierBadge}${activeHtml}</td>
+            <td style="padding:5px 8px;min-width:225px">${progressHtml}</td>
             <td style="padding:3px 6px;color:#f85149">${fmt(sl)}</td>
             <td style="padding:3px 6px;color:#58a6ff">${fmt(peak)}</td>
             <td style="padding:3px 6px;color:#d29922">${trailSL > 0 ? fmt(trailSL) : '-'}</td>
@@ -4236,19 +4220,28 @@ function updatePPMonitor(d) {
         return;
     }
 
-    el.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    const ladderHtml = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        ${[2,3,4,5].map(t => {
+            const x = tierDefs[t];
+            const policy = t === 2 ? `lock +${Number(cfg.t2_lock_pct).toFixed(2)}% entry` : `dist ${x.distance.toFixed(2)}%`;
+            return `<span style="font-size:9px;padding:3px 6px;border:1px solid ${x.color}55;border-radius:5px;color:${x.color};background:${x.color}10"><b>${x.icon} T${t}</b> ≥${x.trigger.toFixed(2)}% · ${x.timer}s · ${policy}</span>`;
+        }).join('')}
+    </div>`;
+    el.innerHTML = `${ladderHtml}<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;min-width:900px;border-collapse:collapse">
         <tr style="color:#484f58;font-size:10px">
             <th style="text-align:left;padding:2px 6px">Coin</th>
             <th style="padding:2px 6px">Side</th>
-            <th style="padding:2px 6px">Lợi</th>
-            <th style="padding:2px 6px">Tier</th>
-            <th style="padding:2px 6px">Progress</th>
+            <th style="padding:2px 6px">Lợi hiện tại</th>
+            <th style="padding:2px 6px">Tier đang chạy</th>
+            <th style="padding:2px 6px">Điều kiện pass tier kế</th>
             <th style="padding:2px 6px">SL hiện tại</th>
             <th style="padding:2px 6px">Peak</th>
             <th style="padding:2px 6px">Trailing SL</th>
         </tr>
         ${rows}
-    </table>`;
+      </table>
+    </div>`;
 }
 
 async function savePP() {
@@ -4672,6 +4665,26 @@ def api_state():
         "non_usdt_commission_assets": financial.get("non_usdt_commission_assets", []),
         "ambiguous_funding_event_ids": financial.get("ambiguous_funding_event_ids", []),
         "financial_warnings": financial.get("financial_warnings", []),
+        # Profit Protection presentation snapshot. This mirrors the exact
+        # runtime config used by bot.py; it does not alter tier logic.
+        "server_ts": time.time(),
+        "pp_settings": {
+            "t2_trigger_pct": getattr(_config, "PP_TRIGGER_PCT", 0.6),
+            "t2_timer_secs": getattr(_config, "PP_TIMER_SECS", 5),
+            "t2_lock_pct": (
+                getattr(_config, "PP_FEE_BUFFER_PCT", 0.15)
+                + getattr(_config, "PP_PROTECTION_BUFFER_PCT", 0.25)
+            ),
+            "t3_trigger_pct": getattr(_config, "PP_TRAILING_TRIGGER_PCT", 1.0),
+            "t3_timer_secs": getattr(_config, "PP_TRAILING_TIMER_SECS", 3),
+            "t3_distance_pct": getattr(_config, "PP_TRAILING_DISTANCE_PCT", 0.5),
+            "t4_trigger_pct": getattr(_config, "PP_TIER4_TRIGGER_PCT", 2.0),
+            "t4_timer_secs": getattr(_config, "PP_TIER4_TIMER_SECS", 3),
+            "t4_distance_pct": getattr(_config, "PP_TIER4_TRAIL_DIST_PCT", 0.3),
+            "t5_trigger_pct": getattr(_config, "PP_TIER5_TRIGGER_PCT", 3.0),
+            "t5_timer_secs": getattr(_config, "PP_TIER5_TIMER_SECS", 3),
+            "t5_distance_pct": getattr(_config, "PP_TIER5_TRAIL_DIST_PCT", 0.15),
+        },
         "scan_no": s.get("scan_no", 0), "last_scan": s.get("last_scan", "--:--"),
         "liq_connected": s.get("liq_connected", False),
         "ai_analyzing": s.get("ai_analyzing", False),
@@ -4686,7 +4699,11 @@ def api_state():
                          "trailing_sl": v.get("trailing_sl",0), "peak": v.get("peak_price",0),
                          "peak_price": v.get("peak_price",0),
                          "tp": v.get("tp", 0),
-                         "protection_ts": v.get("protection_ts",0), "trailing_ts": v.get("trailing_ts",0)}
+                         "protection_ts": v.get("protection_ts",0),
+                         "trailing_ts": v.get("trailing_ts",0),
+                         "tier4_ts": v.get("tier4_ts",0),
+                         "tier5_ts": v.get("tier5_ts",0),
+                         "sl_last_update_ts": v.get("sl_last_update_ts",0)}
                      for k, v in s.get("_pp_state", {}).items()},
         "settings": {
             "max_order_usdt": getattr(_config, "MAX_ORDER_USDT", 15),
