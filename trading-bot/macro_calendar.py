@@ -34,6 +34,9 @@ DOL_CLAIMS_URL = "https://www.dol.gov/ui/data.pdf"
 ISM_CALENDAR_URL = "https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/"
 CENSUS_CALENDAR_URL = "https://www.census.gov/economic-indicators/calendar-listview.html"
 TE_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states"
+# Free, keyless public consensus feed (current week only, no Actual values).
+FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+FF_CALENDAR_PAGE = "https://www.forexfactory.com/calendar"
 
 _MONTHS = {
     name: number for number, name in enumerate(
@@ -535,6 +538,96 @@ def enrich_trading_economics(events: List[Dict[str, Any]], payload: Any) -> List
     return enriched
 
 
+# category -> (primary FF title regex, [(extra label, FF title regex), ...])
+_FF_TITLES: Dict[str, Tuple[str, List[Tuple[str, str]]]] = {
+    "CPI": (r"^CPI m/m$", [("CPI y/y", r"^CPI y/y$")]),
+    "CORE_CPI": (r"^Core CPI m/m$", [("Core CPI y/y", r"^Core CPI y/y$")]),
+    "PPI": (r"^PPI m/m$", [("Core PPI m/m", r"^Core PPI m/m$")]),
+    "PCE": (r"^PCE Price Index m/m$", [("PCE y/y", r"^PCE Price Index y/y$")]),
+    "CORE_PCE": (r"^Core PCE Price Index m/m$", [("Core PCE y/y", r"^Core PCE Price Index y/y$")]),
+    "NFP": (r"^Non-Farm Employment Change$", [("Average Hourly Earnings m/m", r"^Average Hourly Earnings m/m$")]),
+    "UNEMPLOYMENT": (r"^Unemployment Rate$", []),
+    "JOLTS": (r"^JOLTS Job Openings$", []),
+    "GDP": (r"^(Advance |Prelim |Final )?GDP q/q$", [("GDP Price Index q/q", r"^(Advance |Prelim |Final )?GDP Price Index q/q$")]),
+    "RETAIL_SALES": (r"^Retail Sales m/m$", [("Core Retail Sales m/m", r"^Core Retail Sales m/m$")]),
+    "JOBLESS_CLAIMS": (r"^Unemployment Claims$", []),
+    "ISM_MANUFACTURING": (r"^ISM Manufacturing PMI$", [("ISM Manufacturing Prices", r"^ISM Manufacturing Prices$")]),
+    "ISM_SERVICES": (r"^ISM Services PMI$", [("ISM Services Prices", r"^ISM Services Prices$")]),
+    "FOMC_RATE": (r"^Federal Funds Rate$", []),
+}
+
+
+def enrich_forexfactory(events: List[Dict[str, Any]], payload: Any) -> List[Dict[str, Any]]:
+    """Merge public Forex Factory forecast/previous into official USD events.
+
+    The feed only covers the current week and has no Actual values, so only
+    events whose official release falls within ±1 day of a feed row are touched.
+    """
+    if not isinstance(payload, list):
+        raise MacroCalendarError("Forex Factory response is not a list")
+    rows: List[Tuple[Dict[str, Any], datetime, str]] = []
+    for row in payload:
+        if not isinstance(row, dict) or row.get("country") != "USD":
+            continue
+        when = _parse_iso(row.get("date"))
+        title = str(row.get("title") or "").strip()
+        if when and title:
+            rows.append((row, when.astimezone(timezone.utc), title))
+
+    def best(pattern: str, scheduled: datetime) -> Optional[Dict[str, Any]]:
+        regex = re.compile(pattern, re.I)
+        found = [(row, abs((when - scheduled).total_seconds())) for row, when, title in rows
+                 if regex.match(title) and abs((when - scheduled).total_seconds()) <= 36 * 3600]
+        return min(found, key=lambda pair: pair[1])[0] if found else None
+
+    def clean(value: Any) -> Optional[str]:
+        text = str(value or "").strip()
+        return text or None
+
+    enriched = copy.deepcopy(events)
+    for event in enriched:
+        spec = _FF_TITLES.get(str(event.get("category") or ""))
+        scheduled = _parse_iso(event.get("scheduled_at_utc"))
+        if not spec or not scheduled:
+            continue
+        primary = best(spec[0], scheduled)
+        if not primary:
+            continue
+        forecast, previous = clean(primary.get("forecast")), clean(primary.get("previous"))
+        if forecast is None and previous is None:
+            continue
+        event["forecast"], event["previous"] = forecast, previous
+        event["consensus_label"] = primary.get("title")
+        extras = []
+        for label, pattern in spec[1]:
+            extra = best(pattern, scheduled)
+            if extra and (clean(extra.get("forecast")) or clean(extra.get("previous"))):
+                extras.append({"label": label, "forecast": clean(extra.get("forecast")),
+                               "previous": clean(extra.get("previous"))})
+        event["consensus_extra"] = extras
+        event["enrichment_provider"] = "Forex Factory"
+        event["enrichment_source_url"] = FF_CALENDAR_PAGE
+        event["enrichment_date"] = primary.get("date")
+        event["enrichment_event"] = primary.get("title")
+    return enriched
+
+
+_ENRICH_KEYS = ("forecast", "previous", "actual", "unit", "consensus_label", "consensus_extra",
+                "enrichment_provider", "enrichment_source_url", "enrichment_date",
+                "enrichment_event", "enrichment_importance", "surprise", "surprise_direction")
+
+
+def _carry_enrichment(events: List[Dict[str, Any]], old_events: List[Dict[str, Any]]) -> None:
+    """Keep consensus fetched earlier (feed only covers the current week)."""
+    old_by_id = {e.get("event_id"): e for e in old_events if e.get("enrichment_provider")}
+    for event in events:
+        old = old_by_id.get(event.get("event_id"))
+        if old and not event.get("enrichment_provider"):
+            for key in _ENRICH_KEYS:
+                if key in old:
+                    event[key] = copy.deepcopy(old[key])
+
+
 class MacroCalendarService:
     """Independent daemon service with immutable copy-on-write snapshots."""
 
@@ -565,6 +658,8 @@ class MacroCalendarService:
         self._thread: Optional[threading.Thread] = None
         self._reminder_thread: Optional[threading.Thread] = None
         self._refreshing = False
+        self._ff_payload: Optional[List[Any]] = None
+        self._ff_fetched_mono: Optional[float] = None
         self._data = self._empty_data()
         self._timezone_error: Optional[str] = None
         try:
@@ -748,6 +843,24 @@ class MacroCalendarService:
             by_id = {event["event_id"]: event for event in merged if event.get("event_id")}
             events = sorted(by_id.values(), key=lambda event: event.get("scheduled_at_utc", ""))
 
+            # Feed rate-limits aggressively (HTTP 429); fetch at most every 30 min
+            # and reuse the last payload otherwise.
+            ff_payload = self._ff_payload
+            if self._ff_fetched_mono is None or time.monotonic() - self._ff_fetched_mono >= 1800:
+                self._ff_fetched_mono = time.monotonic()
+                try:
+                    ff_payload = json.loads(self._get_text(FF_CALENDAR_URL))
+                    self._ff_payload = ff_payload
+                except Exception as exc:
+                    errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
+                    logger.warning("[MacroCalendar] Forex Factory consensus failed: %s", exc)
+            if ff_payload is not None:
+                try:
+                    events = enrich_forexfactory(events, ff_payload)
+                except Exception as exc:
+                    errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
+            _carry_enrichment(events, old_events)
+
             if self.te_key:
                 try:
                     te_response = self._http_get(
@@ -860,13 +973,20 @@ class MacroCalendarService:
 
         high = scenarios.get("higher", {})
         low = scenarios.get("lower", {})
+        extra_lines = ""
+        for extra in event.get("consensus_extra") or []:
+            extra_lines += (f"• {html.escape(str(extra.get('label') or ''))}: Forecast <b>{html.escape(str(extra.get('forecast') or 'Chưa có'))}</b>"
+                            f" · Previous <b>{html.escape(str(extra.get('previous') or 'Chưa có'))}</b>\n")
+        if event.get("enrichment_provider") and event.get("forecast") not in (None, ""):
+            extra_lines += f"<i>Consensus: {html.escape(str(event.get('enrichment_provider')))}</i>\n"
         source_url = _https_url(event.get("source_url"))
         source_line = f'<a href="{html.escape(source_url, quote=True)}">{html.escape(str(event.get("source") or "Nguồn chính thức"))}</a>' if source_url else html.escape(str(event.get("source") or "Nguồn chính thức"))
         return (
             "📅 <b>NHẮC LỊCH VĨ MÔ — HIGH IMPACT</b>\n"
             f"<b>{html.escape(str(event.get('title') or 'Sự kiện'))}</b>\n"
             f"🇻🇳 {vn.strftime('%d/%m/%Y %H:%M')} (còn {hours}h {minutes}p)\n"
-            f"Previous: <b>{html.escape(value('previous'))}</b> · Forecast: <b>{html.escape(value('forecast'))}</b> · Actual: <b>{html.escape(value('actual'))}</b>\n\n"
+            f"Previous: <b>{html.escape(value('previous'))}</b> · Forecast: <b>{html.escape(value('forecast'))}</b> · Actual: <b>{html.escape(value('actual'))}</b>\n"
+            f"{extra_lines}\n"
             f"📉 <b>{html.escape(str(high.get('label', 'Cao hơn kỳ vọng')))}</b> → BTC {html.escape(str(high.get('btc_direction', 'MIXED')))}\n"
             f"{html.escape(str(high.get('rationale', '')))}\n"
             f"📈 <b>{html.escape(str(low.get('label', 'Thấp hơn kỳ vọng')))}</b> → BTC {html.escape(str(low.get('btc_direction', 'MIXED')))}\n"

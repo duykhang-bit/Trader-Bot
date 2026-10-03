@@ -3107,11 +3107,21 @@ function renderMacroCalendar() {
         const scheduleLabel = event.schedule_method === 'derived' ? 'giờ suy ra từ chính sách công bố' :
             (event.schedule_method === 'recurring' ? 'lịch định kỳ' : 'lịch chính thức');
         const surprise = event.surprise_direction ? ` · Surprise: ${_macroEsc(event.surprise_direction)}` : '';
+        const extras = (event.consensus_extra || []).map(x =>
+            `<div>${_macroEsc(x.label || '')}: Forecast <b>${_macroEsc(x.forecast || 'Chưa có')}</b> · Previous <b>${_macroEsc(x.previous || 'Chưa có')}</b></div>`).join('');
+        const consUrl = _macroHttps(event.enrichment_source_url);
+        const consProvider = event.enrichment_provider
+            ? (consUrl ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(consUrl)}">${_macroEsc(event.enrichment_provider)}</a>` : _macroEsc(event.enrichment_provider))
+            : '';
+        const consensusHtml = (extras || consProvider)
+            ? `<div class="macro-meta">${event.consensus_label ? '<div>Forecast/Previous = ' + _macroEsc(event.consensus_label) + '</div>' : ''}${extras}${consProvider ? '<div>Consensus: ' + consProvider + '</div>' : ''}</div>`
+            : '';
         return `<article class="macro-event ${high?'high':''} ${event.status==='released'?'released':''}">
           <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
           <div class="macro-meta">${_macroEsc(event.subtitle || '')}<br><b>${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span><br>
           ${_macroEsc(event.status || 'upcoming')}${tentative?' · ⚠ thời gian tentative':''} · ${_macroEsc(scheduleLabel)}${surprise}<br>Nguồn: ${source}</div>
           <div class="macro-values"><div class="macro-value"><span>Actual</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div><div class="macro-value"><span>Forecast</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Previous</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div></div>
+          ${consensusHtml}
           <div class="macro-scenarios">${scenarioHtml}</div>
           <div class="macro-meta">Theo dõi DXY/lợi suất Mỹ. Xu hướng thường gặp, không đảm bảo; không phải lời khuyên tài chính.</div>
         </article>`;
