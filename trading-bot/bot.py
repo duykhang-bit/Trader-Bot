@@ -7480,6 +7480,16 @@ if __name__ == "__main__":
     state["_notifier"] = notifier
     state["grids"]     = {}
 
+    # Calendar infrastructure is independent of trading state['running'] so
+    # dashboard data and reminders continue while the bot is PAUSED.
+    from macro_calendar import MacroCalendarService
+    macro_calendar = state.get("_macro_calendar")
+    if macro_calendar is None:
+        macro_calendar = MacroCalendarService(config, notifier)
+        state["_macro_calendar"] = macro_calendar
+    macro_calendar.start()  # idempotent; never duplicated by _restart_fn
+    atexit.register(macro_calendar.stop)
+
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after
     # its SL/TP metadata has been discarded.

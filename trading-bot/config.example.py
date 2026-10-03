@@ -2,6 +2,7 @@
 # TRADING BOT CONFIG — Copy file này thành config.py
 # và điền API key của bạn vào
 # ============================================================
+import os
 
 # Pending orders on these symbols are preserved by automatic cleanup.
 # The web dashboard persists runtime changes to a JSON sidecar file.
@@ -62,6 +63,19 @@ COOLDOWN_AFTER_LOSS = 300
 LOOP_INTERVAL_SECONDS = 60
 LOG_LEVEL = "INFO"
 LOG_FILE  = "logs/bot.log"
+
+# --- Macro Economic Calendar ---
+# Official schedules work without a key. This optional key only enriches consensus/actual values.
+MACRO_CALENDAR_ENABLED = True
+MACRO_CALENDAR_TIMEZONE = "Asia/Ho_Chi_Minh"
+MACRO_CALENDAR_REFRESH_SECONDS = 21600
+MACRO_CALENDAR_STALE_SECONDS = 43200
+MACRO_CALENDAR_REMINDER_ENABLED = True
+MACRO_CALENDAR_REMINDER_HOURS = 24
+MACRO_CALENDAR_REMINDER_WINDOW_SECONDS = 3600
+MACRO_CALENDAR_REMINDER_ONLY_HIGH = True
+MACRO_CALENDAR_CACHE_FILE = "logs/macro_calendar.json"
+TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "")
 
 # --- Pump auto-entry safety (closed 1m BOS required) ---
 PUMP_BOS_LOOKBACK_CANDLES = 30

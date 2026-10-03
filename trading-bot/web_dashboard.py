@@ -817,6 +817,35 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .ta-progress { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px 12px; font-size:12px; color:#8b949e; margin-top:8px; }
 .ta-analyst-chip { padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600; border:1px solid #30363d; background:#0d1117; color:#8b949e; cursor:pointer; transition:all .2s; user-select:none; display:inline-block; margin:3px 2px; }
 .ta-analyst-chip.active { background:#1f3a5a; border-color:#58a6ff; color:#58a6ff; }
+/* Macro economic calendar */
+.macro-cal { border:1px solid #30363d; border-radius:10px; padding:12px; margin-bottom:16px; background:linear-gradient(135deg,rgba(88,166,255,.05),rgba(210,153,34,.04)); }
+.macro-cal-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+.macro-cal-title { color:#e6edf3; font-size:13px; font-weight:700; }
+.macro-cal-status { color:#6e7681; font-size:10px; }
+.macro-cal-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:8px; }
+.macro-event { background:#0d1117; border:1px solid #21262d; border-left:3px solid #d29922; border-radius:8px; padding:10px; min-width:0; }
+.macro-event.high { border-left-color:#f85149; box-shadow:inset 0 0 0 1px rgba(248,81,73,.12); }
+.macro-event.released { opacity:.82; border-left-color:#6e7681; }
+.macro-event-top { display:flex; gap:7px; align-items:flex-start; }
+.macro-event-title { color:#e6edf3; font-size:12px; font-weight:700; line-height:1.35; flex:1; }
+.macro-badge { display:inline-block; padding:2px 6px; border-radius:4px; font-size:9px; font-weight:800; letter-spacing:.4px; }
+.macro-badge.high { color:#f85149; background:rgba(248,81,73,.15); }
+.macro-badge.medium { color:#d29922; background:rgba(210,153,34,.15); }
+.macro-meta { color:#8b949e; font-size:10px; line-height:1.55; margin-top:5px; }
+.macro-values { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin-top:8px; }
+.macro-value { background:#161b22; border-radius:5px; padding:5px; text-align:center; min-width:0; }
+.macro-value span { display:block; color:#6e7681; font-size:8px; text-transform:uppercase; }
+.macro-value b { display:block; color:#c9d1d9; font-size:10px; overflow-wrap:anywhere; margin-top:2px; }
+.macro-scenarios { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+.macro-scenario { border-radius:5px; padding:6px 7px; background:#161b22; font-size:9.5px; color:#8b949e; line-height:1.4; }
+.macro-scenario .bull { color:#3fb950; font-weight:800; }
+.macro-scenario .bear { color:#f85149; font-weight:800; }
+.macro-scenario .mixed { color:#d29922; font-weight:800; }
+.macro-source { color:#58a6ff; text-decoration:none; }
+.macro-source:hover { text-decoration:underline; }
+.macro-more { width:100%; margin-top:8px; padding:5px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#8b949e; cursor:pointer; font-family:inherit; font-size:10px; }
+.rss-news-head { display:flex;align-items:center;gap:8px;margin:4px 0 10px;color:#8b949e;font-size:11px;font-weight:700; }
+@media (max-width:768px) { .macro-cal-grid{grid-template-columns:1fr}.macro-cal{padding:9px}.macro-event{padding:9px} }
 /* Tin tức thị trường */
 .news-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
 .news-chip { padding:3px 11px; border-radius:20px; font-size:11px; font-weight:600; cursor:pointer;
@@ -1926,18 +1955,39 @@ function renderDashboard(d) {
     </div>
     <div id="pnl-stats-section" style="margin-top:8px"><div style="color:#8b949e;font-size:13px">Đang tải PnL...</div></div>`;
 
-    // Tin tức thị trường — render riêng bởi renderNews(), không nằm trong refresh() 5s
+    // Market News: macro calendar is cache-only and sits above the existing RSS feed.
     html += `<div class="section" id="news-section">
-        <h2 style="display:flex;align-items:center;gap:8px">
-          &#x1F4F0; Tin Tức Thị Trường
-          <span id="news-updated" style="font-size:11px;color:#484f58;font-weight:400"></span>
+        <h2>&#x1F4F0; Tin Tức Thị Trường</h2>
+        <div class="macro-cal">
+          <div class="macro-cal-head">
+            <span class="macro-cal-title">&#x1F4C5; Lịch vĩ mô sắp công bố</span>
+            <span id="macro-calendar-updated" class="macro-cal-status"></span>
+            <span style="flex:1"></span>
+            <button onclick="refreshMacroCalendar()" id="macro-calendar-refresh-btn"
+                    style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;font-family:inherit">
+              &#x21BB; Cập nhật lịch
+            </button>
+          </div>
+          <div id="macro-calendar-filters" class="news-filters"></div>
+          <div class="macro-meta" style="margin:-3px 0 9px">Nguồn lịch chính thức:
+            <a class="macro-source" href="https://www.bls.gov/schedule/news_release/bls.ics" target="_blank" rel="noopener noreferrer">BLS</a> ·
+            <a class="macro-source" href="https://www.bea.gov/news/schedule" target="_blank" rel="noopener noreferrer">BEA</a> ·
+            <a class="macro-source" href="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" target="_blank" rel="noopener noreferrer">Federal Reserve</a> ·
+            <a class="macro-source" href="https://www.dol.gov/ui/data.pdf" target="_blank" rel="noopener noreferrer">DOL</a> ·
+            <a class="macro-source" href="https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/" target="_blank" rel="noopener noreferrer">ISM</a> ·
+            <a class="macro-source" href="https://www.census.gov/economic-indicators/calendar-listview.html" target="_blank" rel="noopener noreferrer">Census</a>
+          </div>
+          <div id="macro-calendar-list"><div style="color:#8b949e;font-size:12px">Đang tải lịch vĩ mô...</div></div>
+        </div>
+        <div class="rss-news-head">
+          <span>&#x1F310; Tin RSS mới nhất</span>
+          <span id="news-updated" style="font-size:10px;color:#484f58;font-weight:400"></span>
           <span style="flex:1"></span>
           <button onclick="refreshNews()" id="news-refresh-btn"
-                  style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;
-                         padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit">
-            &#x21BB; Làm mới
+                  style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;font-family:inherit">
+            &#x21BB; Làm mới RSS
           </button>
-        </h2>
+        </div>
         <div id="news-filters" class="news-filters"></div>
         <div id="news-list"><div style="color:#8b949e;font-size:13px">Đang tải tin tức...</div></div>
     </div>`;
@@ -2900,6 +2950,176 @@ function eqML(uid) {
     if (tip) tip.style.display = 'none';
 }
 
+// ── MACRO ECONOMIC CALENDAR ─────────────────────────────────
+let _macroCalendarData = null;
+let _macroCalendarFilter = 'upcoming';
+let _macroCalendarExpanded = false;
+let _macroCalendarFetching = false;
+
+function _macroEsc(value) {
+    return String(value === null || value === undefined ? '' : value)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function _macroHttps(value) {
+    try {
+        const parsed = new URL(String(value || ''), window.location.href);
+        return parsed.protocol === 'https:' ? parsed.href : null;
+    } catch (_) { return null; }
+}
+function _macroDate(value) {
+    const parsed = new Date(value || '');
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function _macroVnTime(value) {
+    const parsed = _macroDate(value);
+    if (!parsed) return 'Chưa xác định';
+    return new Intl.DateTimeFormat('vi-VN', {
+        timeZone:'Asia/Ho_Chi_Minh', weekday:'short', day:'2-digit', month:'2-digit',
+        year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false
+    }).format(parsed);
+}
+function _macroCountdown(value) {
+    const parsed = _macroDate(value);
+    if (!parsed) return 'Chưa xác định';
+    const seconds = Math.floor((parsed.getTime() - Date.now()) / 1000);
+    const past = seconds < 0;
+    const absolute = Math.abs(seconds);
+    const days = Math.floor(absolute / 86400);
+    const hours = Math.floor((absolute % 86400) / 3600);
+    const minutes = Math.floor((absolute % 3600) / 60);
+    const secs = absolute % 60;
+    const body = days > 0 ? `${days}ng ${hours}h` : (hours > 0 ? `${hours}h ${minutes}p` : `${minutes}p ${secs}gi`);
+    return past ? `đã qua ${body}` : `còn ${body}`;
+}
+function _macroValue(event, key) {
+    const value = event[key];
+    if (value === null || value === undefined || value === '')
+        return key === 'forecast' ? 'Chưa có consensus' : 'Chưa có';
+    const text = String(value), unit = String(event.unit || '');
+    return unit && text.trim().endsWith(unit) ? text : text + unit;
+}
+function _macroDirection(direction) {
+    const value = String(direction || 'MIXED').toUpperCase();
+    if (value === 'BULLISH') return {cls:'bull', icon:'↑', text:'BULLISH'};
+    if (value === 'BEARISH') return {cls:'bear', icon:'↓', text:'BEARISH'};
+    return {cls:'mixed', icon:'↕', text:'MIXED'};
+}
+function setMacroCalendarFilter(filter) {
+    _macroCalendarFilter = filter;
+    renderMacroCalendar();
+}
+function toggleMacroCalendarRange() {
+    _macroCalendarExpanded = !_macroCalendarExpanded;
+    renderMacroCalendar();
+}
+async function fetchMacroCalendar() {
+    if (_macroCalendarFetching) return;
+    _macroCalendarFetching = true;
+    try {
+        const response = await fetch('/api/macro-calendar');
+        const data = await response.json();
+        if (data && Array.isArray(data.events)) {
+            _macroCalendarData = data;
+            renderMacroCalendar();
+        }
+    } catch (_) {
+        const el = document.getElementById('macro-calendar-list');
+        if (el && !_macroCalendarData) el.textContent = 'Không đọc được cache lịch vĩ mô.';
+    } finally { _macroCalendarFetching = false; }
+}
+async function refreshMacroCalendar() {
+    const button = document.getElementById('macro-calendar-refresh-btn');
+    if (button) { button.disabled = true; button.textContent = '⏳ Đã xếp lịch...'; }
+    try {
+        const response = await fetch('/api/macro-calendar/refresh', {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+        });
+        const data = await response.json();
+        if (data && data.snapshot) _macroCalendarData = data.snapshot;
+        renderMacroCalendar();
+        toast(data.queued ? 'Đã yêu cầu cập nhật nền' : 'Đang có lượt cập nhật nền', true);
+    } catch (_) { toast('Không thể yêu cầu cập nhật lịch', false); }
+    finally {
+        if (button) { button.disabled = false; button.innerHTML = '&#x21BB; Cập nhật lịch'; }
+    }
+}
+function _updateMacroCountdowns() {
+    document.querySelectorAll('[data-macro-time]').forEach(el => {
+        el.textContent = _macroCountdown(el.getAttribute('data-macro-time'));
+    });
+}
+function renderMacroCalendar() {
+    const root = document.getElementById('macro-calendar-list');
+    if (!root || !_macroCalendarData) return;
+    const all = Array.isArray(_macroCalendarData.events) ? _macroCalendarData.events : [];
+    const now = Date.now();
+    const horizon = 14 * 86400000;
+    const upcoming = all.filter(e => e.status !== 'released');
+    const released = all.filter(e => e.status === 'released');
+    const counts = {upcoming:upcoming.length, released:released.length, high:all.filter(e => e.impact === 'HIGH').length};
+    const filters = document.getElementById('macro-calendar-filters');
+    if (filters) filters.innerHTML = [
+        ['upcoming','Sắp tới',counts.upcoming], ['released','Đã công bố',counts.released], ['high','🔴 High',counts.high]
+    ].map(([key,label,count]) => `<div class="news-chip ${key==='high'?'impact-chip':''} ${_macroCalendarFilter===key?'active':''}" onclick="setMacroCalendarFilter('${key}')">${label} <span style="opacity:.6">${count}</span></div>`).join('');
+
+    let rows = all.filter(event => {
+        if (_macroCalendarFilter === 'released' && event.status !== 'released') return false;
+        if (_macroCalendarFilter === 'upcoming' && event.status === 'released') return false;
+        if (_macroCalendarFilter === 'high' && event.impact !== 'HIGH') return false;
+        if (_macroCalendarExpanded) return true;
+        const scheduled = _macroDate(event.scheduled_at_utc);
+        if (!scheduled) return false;
+        const delta = scheduled.getTime() - now;
+        return event.status === 'released' ? delta >= -horizon : delta <= horizon && delta >= -3600000;
+    }).sort((a,b) => (_macroDate(a.scheduled_at_utc)?.getTime() || 0) - (_macroDate(b.scheduled_at_utc)?.getTime() || 0));
+
+    const status = document.getElementById('macro-calendar-updated');
+    if (status) {
+        const age = _macroCalendarData.age_seconds;
+        const ageLabel = age === null || age === undefined ? 'chưa có cache' : `cache ${_newsAgo(Math.floor(Date.now()/1000)-age)} trước`;
+        const flags = [];
+        if (_macroCalendarData.refreshing) flags.push('đang cập nhật nền');
+        if (_macroCalendarData.stale) flags.push('⚠ dữ liệu cũ');
+        const errors = Object.keys(_macroCalendarData.source_errors || {}).length;
+        if (errors) flags.push(`⚠ ${errors} nguồn lỗi`);
+        status.textContent = [ageLabel, ...flags].join(' · ');
+    }
+    if (!rows.length) {
+        const error = _macroCalendarData.error ? ` ${_macroCalendarData.error}` : '';
+        root.innerHTML = `<div style="color:#8b949e;font-size:11px;padding:8px">Không có sự kiện trong phạm vi này.${_macroEsc(error)}</div>` +
+            `<button class="macro-more" onclick="toggleMacroCalendarRange()">${_macroCalendarExpanded?'Chỉ xem 14 ngày':'Mở rộng toàn bộ cache'}</button>`;
+        return;
+    }
+    const cards = rows.map(event => {
+        const high = event.impact === 'HIGH';
+        const tentative = event.status === 'tentative' || event.timing_confirmed === false;
+        const sourceUrl = _macroHttps(event.source_url);
+        const source = sourceUrl
+            ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(sourceUrl)}">${_macroEsc(event.source || event.provider || 'Nguồn chính thức')}</a>`
+            : `<span>${_macroEsc(event.source || 'Không có liên kết nguồn')}</span>`;
+        const scenarios = event.scenarios || {};
+        const scenarioHtml = ['higher','lower'].map(key => {
+            const scenario = scenarios[key] || {};
+            const direction = _macroDirection(scenario.btc_direction);
+            return `<div class="macro-scenario"><b>${_macroEsc(scenario.label || (key==='higher'?'Actual > Forecast':'Actual < Forecast'))}</b> → BTC <span class="${direction.cls}">${direction.icon} ${direction.text}</span><br>${_macroEsc(scenario.rationale || '')}</div>`;
+        }).join('');
+        const scheduleLabel = event.schedule_method === 'derived' ? 'giờ suy ra từ chính sách công bố' :
+            (event.schedule_method === 'recurring' ? 'lịch định kỳ' : 'lịch chính thức');
+        const surprise = event.surprise_direction ? ` · Surprise: ${_macroEsc(event.surprise_direction)}` : '';
+        return `<article class="macro-event ${high?'high':''} ${event.status==='released'?'released':''}">
+          <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
+          <div class="macro-meta">${_macroEsc(event.subtitle || '')}<br><b>${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span><br>
+          ${_macroEsc(event.status || 'upcoming')}${tentative?' · ⚠ thời gian tentative':''} · ${_macroEsc(scheduleLabel)}${surprise}<br>Nguồn: ${source}</div>
+          <div class="macro-values"><div class="macro-value"><span>Actual</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div><div class="macro-value"><span>Forecast</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Previous</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div></div>
+          <div class="macro-scenarios">${scenarioHtml}</div>
+          <div class="macro-meta">Theo dõi DXY/lợi suất Mỹ. Xu hướng thường gặp, không đảm bảo; không phải lời khuyên tài chính.</div>
+        </article>`;
+    }).join('');
+    root.innerHTML = `<div class="macro-cal-grid">${cards}</div><button class="macro-more" onclick="toggleMacroCalendarRange()">${_macroCalendarExpanded?'Chỉ xem 14 ngày':'Mở rộng toàn bộ cache'}</button>`;
+    _updateMacroCountdowns();
+}
+
 // ── TIN TỨC THỊ TRƯỜNG ──────────────────────────────────────
 let _newsFilter = 'all';
 let _newsLimit = 12;
@@ -3845,6 +4065,10 @@ fetchPump();
 // PnL stats refresh mỗi 30s (không cần nhanh)
 setInterval(fetchPnlStats, 30000);
 fetchPnlStats();
+// Macro calendar: snapshot-only API every 60s, request coalescing, local countdown every second.
+setInterval(fetchMacroCalendar, 60000);
+fetchMacroCalendar();
+setInterval(_updateMacroCountdowns, 1000);
 // Tin tức: 5 phút/lần — khớp TTL cache server, không thêm tải cho web.
 // Riêng nhãn thời gian ("5p trước") tự cập nhật mỗi 60s mà không gọi API.
 setInterval(() => fetchNews(false), 300000);
@@ -3921,6 +4145,7 @@ async function refresh(){
             fetchProtectedPendingCoins();
             // Các section render riêng vừa bị dựng lại rỗng → vẽ lại từ data đã có,
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
+            if (_macroCalendarData) renderMacroCalendar();
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
@@ -6666,6 +6891,33 @@ def start_web_dashboard(state, lock, config, port=5555, exchange=None):
     t.start()
     logger.info(f"Web dashboard started at http://localhost:{port}")
     return t
+
+
+@app.route("/api/macro-calendar", methods=["GET"])
+@require_auth
+def api_macro_calendar():
+    """Return the service's in-memory/disk snapshot; never perform network I/O."""
+    with _lock:
+        service = _state.get("_macro_calendar") if _state is not None else None
+    if service is None:
+        return jsonify({
+            "schema_version": 1, "events": [], "enabled": False, "stale": True,
+            "refreshing": False, "source_errors": {},
+            "error": "Macro calendar service is not initialized",
+        })
+    return jsonify(service.snapshot())
+
+
+@app.route("/api/macro-calendar/refresh", methods=["POST"])
+@require_auth
+def api_macro_calendar_refresh():
+    """Coalesce an asynchronous refresh request and return the current snapshot."""
+    with _lock:
+        service = _state.get("_macro_calendar") if _state is not None else None
+    if service is None:
+        return jsonify({"ok": False, "queued": False, "error": "Macro calendar service is not initialized"}), 503
+    queued = service.request_refresh()
+    return jsonify({"ok": True, "queued": queued, "snapshot": service.snapshot()}), 202
 
 
 @app.route("/api/news", methods=["GET"])
