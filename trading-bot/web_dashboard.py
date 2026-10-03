@@ -1979,17 +1979,6 @@ function renderDashboard(d) {
           </div>
           <div id="macro-calendar-list"><div style="color:#8b949e;font-size:12px">Đang tải lịch vĩ mô...</div></div>
         </div>
-        <div class="rss-news-head">
-          <span>&#x1F310; Tin RSS mới nhất</span>
-          <span id="news-updated" style="font-size:10px;color:#484f58;font-weight:400"></span>
-          <span style="flex:1"></span>
-          <button onclick="refreshNews()" id="news-refresh-btn"
-                  style="background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:3px 10px;font-size:10px;cursor:pointer;font-family:inherit">
-            &#x21BB; Làm mới RSS
-          </button>
-        </div>
-        <div id="news-filters" class="news-filters"></div>
-        <div id="news-list"><div style="color:#8b949e;font-size:13px">Đang tải tin tức...</div></div>
     </div>`;
 
     // Open Positions
@@ -4109,11 +4098,7 @@ fetchPnlStats();
 setInterval(fetchMacroCalendar, 60000);
 fetchMacroCalendar();
 setInterval(_updateMacroCountdowns, 1000);
-// Tin tức: 5 phút/lần — khớp TTL cache server, không thêm tải cho web.
-// Riêng nhãn thời gian ("5p trước") tự cập nhật mỗi 60s mà không gọi API.
-setInterval(() => fetchNews(false), 300000);
-fetchNews(false);
-setInterval(() => { if (_newsData) renderNews(); }, 60000);
+// Tin RSS đã gỡ khỏi web theo yêu cầu: không còn polling /api/news.
 
 // TradingAgents — check kết quả cũ khi load trang
 taCheckLastResult();
