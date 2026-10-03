@@ -3109,6 +3109,35 @@ function renderMacroCalendar() {
         const surprise = event.surprise_direction ? ` · Surprise: ${_macroEsc(event.surprise_direction)}` : '';
         const extras = (event.consensus_extra || []).map(x =>
             `<div>${_macroEsc(x.label || '')}: Forecast <b>${_macroEsc(x.forecast || 'Chưa có')}</b> · Previous <b>${_macroEsc(x.previous || 'Chưa có')}</b></div>`).join('');
+        const pct = p => (Number(p) * 100).toFixed(0) + '%';
+        const oddsHtml = (event.market_odds || []).map(o => {
+            const link = _macroHttps(o.url);
+            const head = link
+                ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(link)}">${_macroEsc(o.question || 'Kalshi')}</a>`
+                : _macroEsc(o.question || 'Kalshi');
+            let body = '';
+            if (o.kind === 'outcomes') {
+                body = (o.outcomes || []).slice(0, 4).map(x =>
+                    `<div>${_macroEsc(x.label)}: <b>${pct(x.prob)}</b></div>`).join('');
+            } else {
+                body = (o.thresholds || []).slice(0, 6).map(t =>
+                    `<div>${_macroEsc(t.label)}: <b>${pct(t.prob)}</b></div>`).join('');
+                if (o.most_likely) body += `<div>Nhiều khả năng nhất: <b>${_macroEsc(o.most_likely.label)} (${pct(o.most_likely.prob)})</b></div>`;
+                if (o.p_above_forecast !== undefined && o.p_above_forecast !== null) {
+                    let t = `Cao hơn Forecast: <b>${pct(o.p_above_forecast)}</b>`;
+                    if (o.p_inline_forecast !== undefined && o.p_inline_forecast !== null)
+                        t += ` · Đúng: <b>${pct(o.p_inline_forecast)}</b> · Thấp hơn: <b>${pct(o.p_below_forecast)}</b>`;
+                    else if (o.p_below_forecast !== undefined && o.p_below_forecast !== null)
+                        t += ` · Thấp hơn: <b>${pct(o.p_below_forecast)}</b> <span class="macro-meta">(nội suy)</span>`;
+                    if (o.lean && o.lean.btc_direction) {
+                        const d = _macroDirection(o.lean.btc_direction);
+                        t += ` → BTC <span class="${d.cls}">${d.icon} ${d.text}</span>`;
+                    }
+                    body += `<div>${t}</div>`;
+                }
+            }
+            return `<div class="macro-scenario"><b>🎲 Thị trường dự đoán</b> · ${head}${body}</div>`;
+        }).join('') + ((event.market_odds || []).length && event.market_odds_stale ? '<div class="macro-meta">Tỷ lệ từ lần cập nhật trước</div>' : '');
         const consUrl = _macroHttps(event.enrichment_source_url);
         const consProvider = event.enrichment_provider
             ? (consUrl ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(consUrl)}">${_macroEsc(event.enrichment_provider)}</a>` : _macroEsc(event.enrichment_provider))
@@ -3122,6 +3151,7 @@ function renderMacroCalendar() {
           ${_macroEsc(event.status || 'upcoming')}${tentative?' · ⚠ thời gian tentative':''} · ${_macroEsc(scheduleLabel)}${surprise}<br>Nguồn: ${source}</div>
           <div class="macro-values"><div class="macro-value"><span>Actual</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div><div class="macro-value"><span>Forecast</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Previous</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div></div>
           ${consensusHtml}
+          ${oddsHtml ? `<div class="macro-scenarios">${oddsHtml}</div>` : ''}
           <div class="macro-scenarios">${scenarioHtml}</div>
           <div class="macro-meta">Theo dõi DXY/lợi suất Mỹ. Xu hướng thường gặp, không đảm bảo; không phải lời khuyên tài chính.</div>
         </article>`;

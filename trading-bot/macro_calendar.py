@@ -612,6 +612,194 @@ def enrich_forexfactory(events: List[Dict[str, Any]], payload: Any) -> List[Dict
     return enriched
 
 
+KALSHI_EVENTS_URL = "https://api.elections.kalshi.com/trade-api/v2/events"
+# category -> Kalshi series tickers (first = primary market, rest = extra markets)
+KALSHI_SERIES: Dict[str, List[str]] = {
+    "FOMC_RATE": ["KXFEDDECISION"],
+    "CPI": ["KXCPI", "KXCPIYOY"],
+    "CORE_CPI": ["KXCPICORE", "KXCPICOREYOY"],
+    "CORE_PCE": ["KXPCECORE"],
+    "PPI": ["KXUSPPI"],
+    "NFP": ["KXPAYROLLS"],
+    "UNEMPLOYMENT": ["KXU3"],
+    "GDP": ["KXGDP"],
+    "RETAIL_SALES": ["KXUSRETAIL"],
+    "JOBLESS_CLAIMS": ["KXJOBLESSCLAIMS"],
+    "ISM_MANUFACTURING": ["KXISMPMI"],
+}
+
+
+def _kalshi_prob(market: Dict[str, Any]) -> Optional[float]:
+    """Implied YES probability: bid/ask mid when the book is tight, else last trade."""
+    bid, ask = _number(market.get("yes_bid_dollars")), _number(market.get("yes_ask_dollars"))
+    last = _number(market.get("last_price_dollars"))
+    if bid is not None and ask is not None and ask > 0 and ask - bid <= 0.10:
+        return round((bid + ask) / 2, 4)
+    return last
+
+
+def _kalshi_summary(event: Dict[str, Any], series: str) -> Optional[Dict[str, Any]]:
+    markets = [m for m in event.get("markets") or [] if isinstance(m, dict)]
+    rows = []
+    for market in markets:
+        prob = _kalshi_prob(market)
+        if prob is None:
+            continue
+        rows.append((market, prob))
+    if not rows:
+        return None
+    summary: Dict[str, Any] = {
+        "provider": "Kalshi", "series": series, "event_ticker": event.get("event_ticker"),
+        "question": event.get("title"), "url": f"https://kalshi.com/markets/{series.lower()}",
+    }
+    ladder_types = {"greater", "greater_or_equal"}
+    is_ladder = (not event.get("mutually_exclusive")
+                 and sum(1 for m, _ in rows if m.get("strike_type") in ladder_types) >= 2)
+    if not is_ladder:
+        outcomes = sorted(({"label": str(m.get("yes_sub_title") or m.get("subtitle") or m.get("ticker")),
+                            "prob": p} for m, p in rows), key=lambda o: -o["prob"])
+        summary.update({"kind": "outcomes", "outcomes": outcomes[:5]})
+        return summary
+    # Threshold ladders: only trust strikes with a live, tight order book; stale
+    # last trades on illiquid strikes produce impossible (non-monotone) curves.
+    ladder = []
+    for market in markets:
+        strike = _number(market.get("floor_strike"))
+        bid, ask = _number(market.get("yes_bid_dollars")), _number(market.get("yes_ask_dollars"))
+        if (market.get("strike_type") in ladder_types and strike is not None
+                and bid is not None and ask is not None and ask > 0 and ask - bid <= 0.10):
+            ladder.append((market, strike, (bid + ask) / 2))
+    if len(ladder) < 2 or not any(0.05 <= prob <= 0.95 for _, _, prob in ladder):
+        return None
+    ladder.sort(key=lambda item: item[1])
+    # P(X > s) must be non-increasing in s; clamp residual noise.
+    running = 1.0
+    monotone = []
+    for market, strike, prob in ladder:
+        running = min(running, prob)
+        monotone.append((market, strike, round(running, 4)))
+    strict = ladder[0][0].get("strike_type") == "greater"
+    value = lambda m: re.sub(r"^\s*(Above|At least)\s+", "", str(m.get("yes_sub_title") or m.get("floor_strike")), flags=re.I)
+    thresholds = [{"label": f"{'>' if strict else '≥'} {value(m)}", "strike": s, "prob": p} for m, s, p in monotone]
+    buckets = []
+    for (lo, _, p_lo), (hi, _, p_hi) in zip(monotone, monotone[1:]):
+        text = f"> {value(lo)} và ≤ {value(hi)}" if strict else f"≥ {value(lo)} và < {value(hi)}"
+        buckets.append({"label": text, "prob": round(max(0.0, p_lo - p_hi), 4)})
+    summary.update({
+        "kind": "ladder", "strict": strict,
+        # keep only the informative part of the ladder
+        "thresholds": [t for t in thresholds if 0.03 <= t["prob"] <= 0.97] or thresholds[-3:],
+        "thresholds_all": thresholds,
+        "most_likely": max(buckets, key=lambda b: b["prob"]) if buckets else None,
+    })
+    return summary
+
+
+def enrich_kalshi(events: List[Dict[str, Any]], payloads: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Attach prediction-market probabilities (market crowd odds, not advice)."""
+    by_series: Dict[str, List[Tuple[Dict[str, Any], datetime]]] = {}
+    for series, payload in payloads.items():
+        for item in (payload or {}).get("events") or []:
+            closes = [_parse_iso(m.get("close_time")) for m in item.get("markets") or [] if isinstance(m, dict)]
+            closes = [c for c in closes if c]
+            strike = _parse_iso(item.get("strike_date"))
+            when = strike or (min(closes) if closes else None)
+            if when:
+                by_series.setdefault(series, []).append((item, when))
+    enriched = copy.deepcopy(events)
+    for event in enriched:
+        series_list = KALSHI_SERIES.get(str(event.get("category") or ""))
+        scheduled = _parse_iso(event.get("scheduled_at_utc"))
+        if not series_list or not scheduled:
+            continue
+        found = []
+        for series in series_list:
+            options = [(item, abs((when - scheduled).total_seconds())) for item, when in by_series.get(series, [])]
+            options = [pair for pair in options if pair[1] <= 36 * 3600]
+            if options:
+                summary = _kalshi_summary(min(options, key=lambda pair: pair[1])[0], series)
+                if summary:
+                    found.append(summary)
+        if not found:
+            continue
+        primary = found[0]
+        forecast = _number(event.get("forecast"))
+        # Forecast-relative odds only for strict "Above X" ladders in the same
+        # unit as the forecast (e.g. CPI "0.3%" vs strike 0.3).
+        if primary.get("kind") == "ladder" and forecast is not None:
+            ladder_all = primary["thresholds_all"]
+            exact = [t for t in ladder_all if abs(t["strike"] - forecast) < 1e-9] if primary.get("strict") else []
+            below = [t for t in ladder_all if t["strike"] < forecast]
+            above = [t for t in ladder_all if t["strike"] > forecast]
+            if not exact and below and above:
+                # Continuous series (NFP, claims): interpolate between strikes.
+                lo, hi = below[-1], above[0]
+                frac = (forecast - lo["strike"]) / (hi["strike"] - lo["strike"])
+                p_higher = round(lo["prob"] + (hi["prob"] - lo["prob"]) * frac, 4)
+                primary["p_above_forecast"] = p_higher
+                primary["p_below_forecast"] = round(1 - p_higher, 4)
+                primary["p_interpolated"] = True
+                key = "higher" if p_higher >= 0.5 else "lower"
+                primary["lean"] = {"scenario": key, "prob": max(p_higher, 1 - p_higher),
+                                   "btc_direction": (event.get("scenarios") or {}).get(key, {}).get("btc_direction")}
+            if exact:
+                ladder = primary["thresholds_all"]
+                idx = ladder.index(exact[0])
+                p_higher = exact[0]["prob"]
+                primary["p_above_forecast"] = p_higher
+                if idx > 0:
+                    # Discrete strikes: P(< forecast) = 1 - P(> previous strike).
+                    p_lower = round(max(0.0, 1 - ladder[idx - 1]["prob"]), 4)
+                    p_inline = round(max(0.0, 1 - p_higher - p_lower), 4)
+                    primary["p_below_forecast"], primary["p_inline_forecast"] = p_lower, p_inline
+                    choices = {"higher": p_higher, "inline": p_inline, "lower": p_lower}
+                else:
+                    choices = {"higher": p_higher, "inline_or_lower": round(1 - p_higher, 4)}
+                key = max(choices, key=choices.get)
+                primary["lean"] = {"scenario": key, "prob": choices[key],
+                                   "btc_direction": "NEUTRAL" if key == "inline" else
+                                   (event.get("scenarios") or {}).get(key, {}).get("btc_direction")}
+        event["market_odds"] = found
+    return enriched
+
+
+def _carry_market_odds(events: List[Dict[str, Any]], old_events: List[Dict[str, Any]]) -> None:
+    old_by_id = {e.get("event_id"): e.get("market_odds") for e in old_events if e.get("market_odds")}
+    for event in events:
+        if not event.get("market_odds") and old_by_id.get(event.get("event_id")):
+            event["market_odds"] = copy.deepcopy(old_by_id[event["event_id"]])
+            event["market_odds_stale"] = True
+
+
+def market_odds_lines(event: Dict[str, Any]) -> List[str]:
+    """Plain-text summary of prediction-market odds for Telegram."""
+    pct = lambda p: f"{p * 100:.0f}%"
+    lines: List[str] = []
+    for odds in event.get("market_odds") or []:
+        if odds.get("kind") == "outcomes":
+            lines.append(f"{odds.get('question')}: " + " · ".join(
+                f"{o['label']} {pct(o['prob'])}" for o in odds.get("outcomes", [])[:3]))
+        else:
+            parts = " · ".join(f"{t['label']}: {pct(t['prob'])}" for t in odds.get("thresholds", [])[:5])
+            lines.append(f"{odds.get('question')}: {parts}")
+            likely = odds.get("most_likely")
+            if likely:
+                lines.append(f"  Nhiều khả năng nhất: {likely['label']} ({pct(likely['prob'])})")
+            if odds.get("p_above_forecast") is not None:
+                lean = odds.get("lean") or {}
+                text = f"  Cao hơn Forecast: {pct(odds['p_above_forecast'])}"
+                if odds.get("p_inline_forecast") is not None:
+                    text += f" · Đúng Forecast: {pct(odds['p_inline_forecast'])} · Thấp hơn: {pct(odds['p_below_forecast'])}"
+                elif odds.get("p_below_forecast") is not None:
+                    text += f" · Thấp hơn: {pct(odds['p_below_forecast'])} (ước tính nội suy)"
+                if lean.get("btc_direction"):
+                    text += f" → nghiêng BTC {lean['btc_direction']}"
+                lines.append(text)
+    if lines and event.get("market_odds_stale"):
+        lines.append("(số liệu lần cập nhật trước)")
+    return lines
+
+
 _ENRICH_KEYS = ("forecast", "previous", "actual", "unit", "consensus_label", "consensus_extra",
                 "enrichment_provider", "enrichment_source_url", "enrichment_date",
                 "enrichment_event", "enrichment_importance", "surprise", "surprise_direction")
@@ -873,6 +1061,28 @@ class MacroCalendarService:
                 except Exception as exc:
                     errors["Trading Economics"] = f"{type(exc).__name__}: {exc}"
 
+            kalshi_payloads: Dict[str, Any] = {}
+            kalshi_errors: List[str] = []
+            for series in sorted({s for values in KALSHI_SERIES.values() for s in values}):
+                try:
+                    response = self._http_get(
+                        KALSHI_EVENTS_URL,
+                        params={"series_ticker": series, "status": "open", "with_nested_markets": "true", "limit": 6},
+                        timeout=15, headers={"User-Agent": _USER_AGENT},
+                    )
+                    response.raise_for_status()
+                    kalshi_payloads[series] = response.json()
+                except Exception as exc:
+                    kalshi_errors.append(f"{series}: {type(exc).__name__}: {exc}")
+            if kalshi_errors:
+                errors["Kalshi"] = "; ".join(kalshi_errors)[:500]
+                logger.warning("[MacroCalendar] Kalshi odds partial failure: %s", errors["Kalshi"])
+            try:
+                events = enrich_kalshi(events, kalshi_payloads)
+            except Exception as exc:
+                errors["Kalshi"] = f"{type(exc).__name__}: {exc}"
+            _carry_market_odds(events, old_events)
+
             for event in events:
                 scheduled = _parse_iso(event.get("scheduled_at_utc"))
                 if scheduled and self._vn_tz:
@@ -979,6 +1189,9 @@ class MacroCalendarService:
                             f" · Previous <b>{html.escape(str(extra.get('previous') or 'Chưa có'))}</b>\n")
         if event.get("enrichment_provider") and event.get("forecast") not in (None, ""):
             extra_lines += f"<i>Consensus: {html.escape(str(event.get('enrichment_provider')))}</i>\n"
+        odds_text = "\n".join(html.escape(line) for line in market_odds_lines(event))
+        if odds_text:
+            extra_lines += f"\n🎲 <b>Thị trường dự đoán (Kalshi)</b>\n{odds_text}\n"
         source_url = _https_url(event.get("source_url"))
         source_line = f'<a href="{html.escape(source_url, quote=True)}">{html.escape(str(event.get("source") or "Nguồn chính thức"))}</a>' if source_url else html.escape(str(event.get("source") or "Nguồn chính thức"))
         return (
