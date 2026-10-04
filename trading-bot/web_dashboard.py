@@ -333,12 +333,28 @@ def require_auth(f):
     return decorated
 
 
+# Inline SVG favicon (data URI): no extra route, works before login.
+FAVICON_TAG = (
+    '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
+    "%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E"
+    "%3Cline x1='16' y1='18' x2='16' y2='50' stroke='%23f85149' stroke-width='3'/%3E"
+    "%3Crect x='11' y='26' width='10' height='16' rx='2' fill='%23f85149'/%3E"
+    "%3Cline x1='32' y1='12' x2='32' y2='46' stroke='%233fb950' stroke-width='3'/%3E"
+    "%3Crect x='27' y='18' width='10' height='20' rx='2' fill='%233fb950'/%3E"
+    "%3Cline x1='48' y1='6' x2='48' y2='40' stroke='%233fb950' stroke-width='3'/%3E"
+    "%3Crect x='43' y='10' width='10' height='22' rx='2' fill='%233fb950'/%3E"
+    "%3Cpath d='M8 56 L28 46 L38 50 L58 34' fill='none' stroke='%23f0b90b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E"
+    '%3C/svg%3E">'
+)
+
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Trading Bot — Login</title>
+  """ + FAVICON_TAG + """
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -686,6 +702,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trading Bot Dashboard</title>
+""" + FAVICON_TAG + """
 <style>
 /* ── Base ── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
