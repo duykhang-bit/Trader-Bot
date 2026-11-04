@@ -28,9 +28,11 @@ PERSISTENCE_VERSION = 1
 PERSISTENCE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "auto_liq_zone_orders.json"
 )
-SOURCE_LABEL = "Binance OI estimate (12h, 5m×144)"
+SOURCE_LABEL = "Binance OI estimate (12h, 5m×144; Coinglass-like ±5%)"
 SOURCE_WARNING = "Vùng ước tính, không phải dữ liệu thanh lý thật của Coinglass."
 WINDOW_LABEL = "12h"
+DISPLAY_RANGE_PCT = 5.0
+LIQUIDITY_THRESHOLD = 0.36
 CLIENT_ID_PREFIX = "alqz_"
 VALID_INTERVALS = {300, 900, 3600}
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
@@ -156,6 +158,13 @@ class AutoLiqZoneOrderService:
                 "source": SOURCE_LABEL,
                 "warning": SOURCE_WARNING,
                 "window": WINDOW_LABEL,
+                "range_pct": max(0.5, float(getattr(
+                    self.config, "AUTO_LIQ_ZONE_DISPLAY_RANGE_PCT", DISPLAY_RANGE_PCT
+                ))),
+                "liquidity_threshold": min(1.0, max(0.0, float(getattr(
+                    self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
+                )))),
+                "selection": "highest_above_for_short_lowest_below_for_long",
                 "items": [_public_item(item) for item in self._items.values()],
                 "errors": list(self._snapshot_errors),
             }
@@ -564,20 +573,38 @@ class AutoLiqZoneOrderService:
         if not math.isfinite(mark) or mark <= 0:
             raise ValueError(f"invalid mark price for {symbol}")
         zones = calc_liq_zones_from_oi(symbol, period="5m", lookback=144)
+        # Coinglass mobile heatmaps auto-frame roughly ±5% around mark. Within
+        # that visible band, SHORT uses the highest/farthest upper bucket and
+        # LONG uses the lowest/farthest lower bucket. This deliberately selects
+        # by price edge, not by the largest estimated USD amount.
+        range_pct = max(0.5, float(getattr(
+            self.config, "AUTO_LIQ_ZONE_DISPLAY_RANGE_PCT", DISPLAY_RANGE_PCT
+        ))) / 100.0
         above = [(float(price), float(usd)) for price, usd in zones.items()
-                 if float(price) > mark]
+                 if mark < float(price) <= mark * (1.0 + range_pct)]
         below = [(float(price), float(usd)) for price, usd in zones.items()
-                 if 0 < float(price) < mark]
-        strongest_above = max(above, key=lambda value: value[1]) if above else None
-        strongest_below = max(below, key=lambda value: value[1]) if below else None
-        target_zone = strongest_below if item["side"] == "LONG" else strongest_above
+                 if mark * (1.0 - range_pct) <= float(price) < mark]
+        threshold = min(1.0, max(0.0, float(getattr(
+            self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
+        ))))
+        # Like Coinglass' 0.36 slider: normalize each side independently so a
+        # dominant lower wall cannot erase every visible upper candidate.
+        if above:
+            above_cutoff = max(usd for _, usd in above) * threshold
+            above = [zone for zone in above if zone[1] >= above_cutoff]
+        if below:
+            below_cutoff = max(usd for _, usd in below) * threshold
+            below = [zone for zone in below if zone[1] >= below_cutoff]
+        highest_above = max(above, key=lambda value: value[0]) if above else None
+        lowest_below = min(below, key=lambda value: value[0]) if below else None
+        target_zone = lowest_below if item["side"] == "LONG" else highest_above
         now = self._now()
 
         no_target = target_zone is None
         with self._lock:
             item["mark"] = mark
-            item["strongest_above"] = self._zone_view(strongest_above, mark)
-            item["strongest_below"] = self._zone_view(strongest_below, mark)
+            item["strongest_above"] = self._zone_view(highest_above, mark)
+            item["strongest_below"] = self._zone_view(lowest_below, mark)
             item["last_updated"] = now
             item["next_update"] = now + item["refresh_interval"]
             if no_target:
@@ -905,6 +932,17 @@ class AutoLiqZoneOrderService:
                 order["client_order_id"] = _client_id(state)
             if state.get("status"):
                 order["status"] = str(state["status"]).upper()
+            exchange_price = _float(state.get("price"))
+            if exchange_price > 0 and exchange_price != _float(order.get("price")):
+                # User/Binance may amend an owned LIMIT. Re-plan protection from
+                # the authoritative price before a later fill can be protected.
+                order["price"] = exchange_price
+                if not order.get("protection_started"):
+                    item["sl"] = None
+                    item["tp"] = None
+            exchange_qty = _float(state.get("origQty"))
+            if exchange_qty > 0:
+                order["qty"] = exchange_qty
             order["executed_qty"] = max(
                 _float(order.get("executed_qty")), _float(state.get("executedQty"))
             )

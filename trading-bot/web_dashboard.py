@@ -1286,11 +1286,11 @@ function renderAutoLiqZone(data) {
         const next = item.enabled && item.next_update ? Math.max(0, Math.ceil(item.next_update - Date.now()/1000)) : 0;
         const orderText = order.order_id || order.client_order_id
             ? `Order ${_macroEsc(order.order_id || order.client_order_id)} @ ${_alqFmtPrice(order.price)} · ${_macroEsc(order.status || '')}` : 'Chưa có order';
-        const zone = (z, side) => `<div class="alq-zone ${side}"><span>${side==='above'?'🔴 Vùng trên':'🟢 Vùng dưới'}</span><b>${z ? _alqFmtPrice(z.price) : '—'}</b><span>${z ? _alqFmtUsd(z.usd) + ' · cách ' + Number(z.distance).toFixed(2) + '%' : 'Chưa có data'}</span></div>`;
+        const zone = (z, side) => `<div class="alq-zone ${side}"><span>${side==='above'?'🔴 Cao nhất phía trên':'🟢 Thấp nhất phía dưới'}</span><b>${z ? _alqFmtPrice(z.price) : '—'}</b><span>${z ? _alqFmtUsd(z.usd) + ' · cách ' + Number(z.distance).toFixed(2) + '%' : 'Chưa có data'}</span></div>`;
         return `<div class="alq-card ${cls}">
           <div class="alq-head"><span class="alq-title">${_macroEsc(item.symbol)}</span><span class="alq-side ${item.side==='LONG'?'long':'short'}">${_macroEsc(item.side)}</span></div>
           <div class="alq-zones">${zone(a,'above')}${zone(b,'below')}</div>
-          <div class="alq-target">Target ${item.side==='LONG'?'vùng dưới':'vùng trên'}: <b>${_alqFmtPrice(item.target_price)}</b> · ${_alqFmtUsd(item.target_usd)}</div>
+          <div class="alq-target">Target ${item.side==='LONG'?'giá thấp nhất phía dưới':'giá cao nhất phía trên'} (±${Number(_autoLiqZoneData.range_pct || 5).toFixed(1)}%): <b>${_alqFmtPrice(item.target_price)}</b> · ${_alqFmtUsd(item.target_usd)}</div>
           <div class="alq-status">${_macroEsc(_alqStatus(item.status))} · ${orderText}${next ? ` · cập nhật sau ${Math.ceil(next/60)}p` : ''}${item.error ? '<br>⚠ ' + _macroEsc(item.error) : ''}</div>
           <div class="alq-actions">
             <select onchange="updateAutoLiqZone('${_macroEsc(item.id)}',this.value,null)" ${order.protection_started?'disabled':''}><option value="LONG" ${item.side==='LONG'?'selected':''}>LONG</option><option value="SHORT" ${item.side==='SHORT'?'selected':''}>SHORT</option></select>
@@ -2140,8 +2140,8 @@ function renderDashboard(d) {
 
     // Auto Liquidity Zone Orders — only user-selected symbols.
     html += `<div class="section" id="auto-liq-zone-section">
-        <h2>💧 Auto Liquidity Zone Orders <span style="font-size:10px;color:#6e7681;font-weight:400">12h · Binance OI estimate</span></h2>
-        <div style="font-size:10px;color:#d29922;margin-bottom:8px">⚠ Vùng ước tính, không phải dữ liệu thanh lý thật của Coinglass. Khi vùng đổi, bot chỉ thay đúng order có mã alqz_ do tính năng này tạo.</div>
+        <h2>💧 Auto Liquidity Zone Orders <span style="font-size:10px;color:#6e7681;font-weight:400">12h · Binance OI · biên ±5% · threshold 0.36</span></h2>
+        <div style="font-size:10px;color:#d29922;margin-bottom:8px">⚠ Ước tính gần cách Coinglass hiển thị: lọc vạch yếu bằng ngưỡng 0.36; SHORT lấy giá cao nhất phía trên, LONG lấy giá thấp nhất phía dưới trong biên ±5%. Không phải dữ liệu thật của Coinglass.</div>
         <div class="control-row">
           <input id="alq-symbol" placeholder="BTC hoặc BTCUSDT" style="width:145px" onkeydown="if(event.key==='Enter')addAutoLiqZone()">
           <select id="alq-side"><option value="LONG">🟢 LONG · vùng dưới</option><option value="SHORT">🔴 SHORT · vùng trên</option></select>
