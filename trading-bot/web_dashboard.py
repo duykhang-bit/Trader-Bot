@@ -861,6 +861,37 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .macro-source { color:#58a6ff; text-decoration:none; }
 .macro-source:hover { text-decoration:underline; }
 .macro-more { width:100%; margin-top:8px; padding:5px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#8b949e; cursor:pointer; font-family:inherit; font-size:10px; }
+.macro-up { color:#3fb950; font-weight:800; }
+.macro-down { color:#f85149; font-weight:800; }
+.macro-flat { color:#8b949e; font-weight:700; }
+.macro-mixed { color:#d29922; font-weight:700; }
+.macro-event.lean-up { border-left-color:#3fb950; }
+.macro-event.lean-down { border-left-color:#f85149; }
+.macro-event.lean-flat { border-left-color:#8b949e; }
+.macro-event.lean-balanced { border-left-color:#d29922; }
+.macro-bias { margin-top:8px; background:#161b22; border:1px solid #21262d; border-radius:7px; padding:8px 9px; }
+.macro-bias-head { display:flex; justify-content:space-between; align-items:center; gap:8px; color:#c9d1d9; font-size:10.5px; font-weight:700; flex-wrap:wrap; }
+.macro-lean { padding:2px 9px; border-radius:10px; font-size:10px; font-weight:800; white-space:nowrap; }
+.macro-lean.up { color:#3fb950; background:rgba(63,185,80,.16); }
+.macro-lean.down { color:#f85149; background:rgba(248,81,73,.16); }
+.macro-lean.flat { color:#c9d1d9; background:rgba(139,148,158,.18); }
+.macro-lean.balanced { color:#d29922; background:rgba(210,153,34,.16); }
+.macro-lean.none { color:#6e7681; background:#21262d; }
+.macro-bar { display:flex; height:10px; border-radius:5px; overflow:hidden; margin:7px 0 4px; background:#21262d; }
+.macro-bar .dn { background:#f85149; }
+.macro-bar .fl { background:#6e7681; }
+.macro-bar .upb { background:#3fb950; }
+.macro-bar-legend { display:flex; justify-content:space-between; font-size:10px; gap:6px; }
+.macro-rule { margin-top:7px; font-size:10px; color:#8b949e; }
+.macro-next { margin-bottom:10px; padding:9px 11px; border-radius:8px; background:#0d1117; border:1px solid #30363d; border-left:4px solid #6e7681; font-size:11px; color:#c9d1d9; }
+.macro-next.lean-up { border-left-color:#3fb950; background:rgba(63,185,80,.06); }
+.macro-next.lean-down { border-left-color:#f85149; background:rgba(248,81,73,.06); }
+.macro-next.lean-balanced { border-left-color:#d29922; }
+details.macro-details { margin-top:6px; }
+details.macro-details summary { cursor:pointer; color:#58a6ff; font-size:10px; list-style:none; }
+details.macro-details summary::-webkit-details-marker { display:none; }
+details.macro-details summary::before { content:'▸ '; }
+details.macro-details[open] summary::before { content:'▾ '; }
 .rss-news-head { display:flex;align-items:center;gap:8px;margin:4px 0 10px;color:#8b949e;font-size:11px;font-weight:700; }
 @media (max-width:768px) { .macro-cal-grid{grid-template-columns:1fr}.macro-cal{padding:9px}.macro-event{padding:9px} }
 /* Tin tức thị trường */
@@ -1986,7 +2017,7 @@ function renderDashboard(d) {
             </button>
           </div>
           <div id="macro-calendar-filters" class="news-filters"></div>
-          <div class="macro-meta" style="margin:-3px 0 9px">Nguồn lịch chính thức:
+          <div class="macro-meta" style="margin:-3px 0 9px">&#x23F0; Telegram nhắc trước <b>1 giờ</b> (tin HIGH) kèm dự đoán BTC tăng/giảm · Nguồn lịch chính thức:
             <a class="macro-source" href="https://www.bls.gov/schedule/news_release/bls.ics" target="_blank" rel="noopener noreferrer">BLS</a> ·
             <a class="macro-source" href="https://www.bea.gov/news/schedule" target="_blank" rel="noopener noreferrer">BEA</a> ·
             <a class="macro-source" href="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" target="_blank" rel="noopener noreferrer">Federal Reserve</a> ·
@@ -3001,7 +3032,7 @@ function _macroCountdown(value) {
 function _macroValue(event, key) {
     const value = event[key];
     if (value === null || value === undefined || value === '')
-        return key === 'forecast' ? 'Chưa có consensus' : 'Chưa có';
+        return 'Chưa có';
     const text = String(value), unit = String(event.unit || '');
     return unit && text.trim().endsWith(unit) ? text : text + unit;
 }
@@ -3085,6 +3116,8 @@ function renderMacroCalendar() {
         const age = _macroCalendarData.age_seconds;
         const ageLabel = age === null || age === undefined ? 'chưa có cache' : `cache ${_newsAgo(Math.floor(Date.now()/1000)-age)} trước`;
         const flags = [];
+        const oddsAt = _macroDate(_macroCalendarData.odds_refreshed_at);
+        if (oddsAt) flags.push(`tỷ lệ cược ${_newsAgo(Math.floor(oddsAt.getTime()/1000))} trước`);
         if (_macroCalendarData.refreshing) flags.push('đang cập nhật nền');
         if (_macroCalendarData.stale) flags.push('⚠ dữ liệu cũ');
         const errors = Object.keys(_macroCalendarData.source_errors || {}).length;
@@ -3097,8 +3130,71 @@ function renderMacroCalendar() {
             `<button class="macro-more" onclick="toggleMacroCalendarRange()">${_macroCalendarExpanded?'Chỉ xem 14 ngày':'Mở rộng toàn bộ cache'}</button>`;
         return;
     }
+    const pct = p => (Number(p || 0) * 100).toFixed(0) + '%';
+    const LEAN = {
+        UP:{cls:'up', icon:'🟢', text:'NGHIÊNG TĂNG'}, DOWN:{cls:'down', icon:'🔴', text:'NGHIÊNG GIẢM'},
+        FLAT:{cls:'flat', icon:'⚪', text:'TRUNG LẬP'}, BALANCED:{cls:'balanced', icon:'🟡', text:'CÂN BẰNG'}
+    };
+    const leanOf = (up, down, flat) => flat > Math.max(up, down) ? 'FLAT'
+        : (Math.abs(up - down) < 0.05 ? 'BALANCED' : (up > down ? 'UP' : 'DOWN'));
+    const reactWord = d => d === 'BULLISH' ? '<span class="macro-up">BTC tăng</span>'
+        : (d === 'BEARISH' ? '<span class="macro-down">BTC giảm</span>' : '<span class="macro-mixed">chưa rõ</span>');
+    const ruleHtml = event => {
+        if (event.category === 'FOMC_RATE')
+            return 'Fed tăng lãi suất → <span class="macro-down">BTC giảm</span> · Fed hạ → <span class="macro-up">BTC tăng</span>';
+        const s = event.scenarios || {};
+        return `Ra cao hơn dự báo → ${reactWord((s.higher||{}).btc_direction)} · thấp hơn → ${reactWord((s.lower||{}).btc_direction)}`;
+    };
+    const splitHtml = b => {
+        const w = p => Math.max(0, Math.round(Number(p || 0) * 100));
+        return `<div class="macro-bar"><div class="dn" style="width:${w(b.down)}%"></div><div class="fl" style="width:${w(b.flat)}%"></div><div class="upb" style="width:${w(b.up)}%"></div></div>
+          <div class="macro-bar-legend"><span class="macro-down">🔴 Giảm ${pct(b.down)}</span><span class="macro-flat">⚪ Ngang ${pct(b.flat)}</span><span class="macro-up">🟢 Tăng ${pct(b.up)}</span></div>`;
+    };
+    const biasHtml = bias => {
+        if (!bias) return '';
+        if (!bias.available)
+            return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Dự đoán BTC khi ra tin</span><span class="macro-lean none">—</span></div><div class="macro-meta" style="margin-top:4px">${_macroEsc(bias.reason || 'Chưa có dữ liệu')}</div></div>`;
+        const l = LEAN[bias.lean] || LEAN.BALANCED;
+        const basis = bias.basis === 'forecast'
+            ? `Kalshi: ra cao hơn ${_macroEsc(bias.reference)} ${pct(bias.p_higher)}${bias.p_inline ? ' · đúng ' + pct(bias.p_inline) : ''} · thấp hơn ${pct(bias.p_lower)}${bias.approx ? ' (ước tính)' : ''}`
+            : (bias.basis === 'outcomes' ? 'Kalshi: ' + (bias.outcomes || []).filter(o => o.prob >= 0.01).slice(0, 3).map(o =>
+                _macroEsc(String(o.label).replace('Fed maintains rate','Fed giữ nguyên').replace('Hike','Fed tăng').replace('Cut','Fed hạ')) + ' ' + pct(o.prob)).join(' · ') : '');
+        return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Dự đoán BTC khi ra tin</span><span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span></div>
+          ${splitHtml(bias)}<div class="macro-meta" style="margin-top:4px">${basis}${bias.stale ? ' · tỷ lệ từ lần cập nhật trước' : ''}</div></div>`;
+    };
+
+    // Banner: next release time, impact-weighted lean across its indicators.
+    const nextEvents = all.filter(e => e.status !== 'released' && e.category !== 'FED_PRESS_CONFERENCE')
+        .sort((a,b) => (_macroDate(a.scheduled_at_utc)?.getTime() || 0) - (_macroDate(b.scheduled_at_utc)?.getTime() || 0));
+    let bannerHtml = '';
+    const nextHigh = nextEvents.find(e => e.impact === 'HIGH') || nextEvents[0];
+    if (nextHigh) {
+        const when = nextHigh.scheduled_at_utc;
+        const group = nextEvents.filter(e => e.scheduled_at_utc === when);
+        let tw = 0, up = 0, down = 0, flat = 0;
+        group.forEach(e => {
+            const b = e.btc_bias;
+            if (!b || !b.available) return;
+            const wgt = e.impact === 'HIGH' ? 2 : 1;
+            tw += wgt; up += wgt * b.up; down += wgt * b.down; flat += wgt * b.flat;
+        });
+        const names = group.map(e => _macroEsc(e.short_title || e.title)).join(' + ');
+        let right = '<span class="macro-lean none">Chưa có tỷ lệ</span>';
+        let cls = 'none', bar = '';
+        if (tw > 0) {
+            const agg = {up: up/tw, down: down/tw, flat: flat/tw};
+            const l = LEAN[leanOf(agg.up, agg.down, agg.flat)];
+            cls = l.cls;
+            right = `<span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span>`;
+            bar = splitHtml(agg);
+        }
+        bannerHtml = `<div class="macro-next lean-${cls}"><div class="macro-bias-head"><span>⏭ Tin kế tiếp: <b>${names}</b> · ${_macroEsc(_macroVnTime(when))} · <span data-macro-time="${_macroEsc(when)}">${_macroEsc(_macroCountdown(when))}</span></span>${right}</div>${bar}</div>`;
+    }
+
     const cards = rows.map(event => {
         const high = event.impact === 'HIGH';
+        const bias = event.btc_bias;
+        const leanCls = bias && bias.available ? 'lean-' + (LEAN[bias.lean] || LEAN.BALANCED).cls : '';
         const tentative = event.status === 'tentative' || event.timing_confirmed === false;
         const sourceUrl = _macroHttps(event.source_url);
         const source = sourceUrl
@@ -3107,62 +3203,42 @@ function renderMacroCalendar() {
         const scenarios = event.scenarios || {};
         const scenarioHtml = ['higher','lower'].map(key => {
             const scenario = scenarios[key] || {};
-            const direction = _macroDirection(scenario.btc_direction);
-            return `<div class="macro-scenario"><b>${_macroEsc(scenario.label || (key==='higher'?'Actual > Forecast':'Actual < Forecast'))}</b> → BTC <span class="${direction.cls}">${direction.icon} ${direction.text}</span><br>${_macroEsc(scenario.rationale || '')}</div>`;
+            const label = key === 'higher' ? 'Ra cao hơn dự báo' : 'Ra thấp hơn dự báo';
+            return `<div class="macro-scenario"><b>${label}</b> → ${reactWord(scenario.btc_direction)}<br>${_macroEsc(scenario.rationale || '')}</div>`;
         }).join('');
         const scheduleLabel = event.schedule_method === 'derived' ? 'giờ suy ra từ chính sách công bố' :
             (event.schedule_method === 'recurring' ? 'lịch định kỳ' : 'lịch chính thức');
-        const surprise = event.surprise_direction ? ` · Surprise: ${_macroEsc(event.surprise_direction)}` : '';
         const extras = (event.consensus_extra || []).map(x =>
-            `<div>${_macroEsc(x.label || '')}: Forecast <b>${_macroEsc(x.forecast || 'Chưa có')}</b> · Previous <b>${_macroEsc(x.previous || 'Chưa có')}</b></div>`).join('');
-        const pct = p => (Number(p) * 100).toFixed(0) + '%';
+            `<div>${_macroEsc(x.label || '')}: dự báo <b>${_macroEsc(x.forecast || 'chưa có')}</b> · kỳ trước <b>${_macroEsc(x.previous || 'chưa có')}</b></div>`).join('');
         const oddsHtml = (event.market_odds || []).map(o => {
             const link = _macroHttps(o.url);
             const head = link
                 ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(link)}">${_macroEsc(o.question || 'Kalshi')}</a>`
                 : _macroEsc(o.question || 'Kalshi');
-            let body = '';
-            if (o.kind === 'outcomes') {
-                body = (o.outcomes || []).slice(0, 4).map(x =>
-                    `<div>${_macroEsc(x.label)}: <b>${pct(x.prob)}</b></div>`).join('');
-            } else {
-                body = (o.thresholds || []).slice(0, 6).map(t =>
-                    `<div>${_macroEsc(t.label)}: <b>${pct(t.prob)}</b></div>`).join('');
-                if (o.most_likely) body += `<div>Nhiều khả năng nhất: <b>${_macroEsc(o.most_likely.label)} (${pct(o.most_likely.prob)})</b></div>`;
-                if (o.p_above_forecast !== undefined && o.p_above_forecast !== null) {
-                    let t = `Cao hơn Forecast: <b>${pct(o.p_above_forecast)}</b>`;
-                    if (o.p_inline_forecast !== undefined && o.p_inline_forecast !== null)
-                        t += ` · Đúng: <b>${pct(o.p_inline_forecast)}</b> · Thấp hơn: <b>${pct(o.p_below_forecast)}</b>`;
-                    else if (o.p_below_forecast !== undefined && o.p_below_forecast !== null)
-                        t += ` · Thấp hơn: <b>${pct(o.p_below_forecast)}</b> <span class="macro-meta">(nội suy)</span>`;
-                    if (o.lean && o.lean.btc_direction) {
-                        const d = _macroDirection(o.lean.btc_direction);
-                        t += ` → BTC <span class="${d.cls}">${d.icon} ${d.text}</span>`;
-                    }
-                    body += `<div>${t}</div>`;
-                }
-            }
-            return `<div class="macro-scenario"><b>🎲 Thị trường dự đoán</b> · ${head}${body}</div>`;
-        }).join('') + ((event.market_odds || []).length && event.market_odds_stale ? '<div class="macro-meta">Tỷ lệ từ lần cập nhật trước</div>' : '');
+            const body = o.kind === 'outcomes'
+                ? (o.outcomes || []).slice(0, 4).map(x => `${_macroEsc(x.label)} <b>${pct(x.prob)}</b>`).join(' · ')
+                : (o.thresholds || []).slice(0, 6).map(t => `${_macroEsc(t.label)} <b>${pct(t.prob)}</b>`).join(' · ');
+            return `<div>🎲 ${head}: ${body}</div>`;
+        }).join('');
         const consUrl = _macroHttps(event.enrichment_source_url);
         const consProvider = event.enrichment_provider
             ? (consUrl ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(consUrl)}">${_macroEsc(event.enrichment_provider)}</a>` : _macroEsc(event.enrichment_provider))
             : '';
-        const consensusHtml = (extras || consProvider)
-            ? `<div class="macro-meta">${event.consensus_label ? '<div>Forecast/Previous = ' + _macroEsc(event.consensus_label) + '</div>' : ''}${extras}${consProvider ? '<div>Consensus: ' + consProvider + '</div>' : ''}</div>`
-            : '';
-        return `<article class="macro-event ${high?'high':''} ${event.status==='released'?'released':''}">
-          <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
-          <div class="macro-meta">${_macroEsc(event.subtitle || '')}<br><b>${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span><br>
-          ${_macroEsc(event.status || 'upcoming')}${tentative?' · ⚠ thời gian tentative':''} · ${_macroEsc(scheduleLabel)}${surprise}<br>Nguồn: ${source}</div>
-          <div class="macro-values"><div class="macro-value"><span>Actual</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div><div class="macro-value"><span>Forecast</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Previous</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div></div>
-          ${consensusHtml}
-          ${oddsHtml ? `<div class="macro-scenarios">${oddsHtml}</div>` : ''}
-          <div class="macro-scenarios">${scenarioHtml}</div>
-          <div class="macro-meta">Theo dõi DXY/lợi suất Mỹ. Xu hướng thường gặp, không đảm bảo; không phải lời khuyên tài chính.</div>
+        return `<article class="macro-event ${high?'high':''} ${leanCls} ${event.status==='released'?'released':''}">
+          <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.short_title || event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
+          <div class="macro-meta"><b>🇻🇳 ${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span>${tentative?' · <span class="macro-mixed">⚠ giờ dự kiến</span>':''}${event.status==='released'?' · đã công bố':''}</div>
+          <div class="macro-values"><div class="macro-value"><span>Dự báo</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Kỳ trước</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div><div class="macro-value"><span>Thực tế</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div></div>
+          ${biasHtml(bias)}
+          <div class="macro-rule">${ruleHtml(event)}</div>
+          <details class="macro-details"><summary>Chi tiết</summary>
+            <div class="macro-meta">${_macroEsc(event.title || '')}${event.subtitle ? ' — ' + _macroEsc(event.subtitle) : ''}<br>${_macroEsc(scheduleLabel)} · Nguồn: ${source}${consProvider ? ' · Dự báo: ' + consProvider : ''}</div>
+            ${extras ? `<div class="macro-meta">${extras}</div>` : ''}
+            ${oddsHtml ? `<div class="macro-meta">${oddsHtml}</div>` : ''}
+            <div class="macro-scenarios">${scenarioHtml}</div>
+          </details>
         </article>`;
     }).join('');
-    root.innerHTML = `<div class="macro-cal-grid">${cards}</div><button class="macro-more" onclick="toggleMacroCalendarRange()">${_macroCalendarExpanded?'Chỉ xem 14 ngày':'Mở rộng toàn bộ cache'}</button>`;
+    root.innerHTML = `${bannerHtml}<div class="macro-cal-grid">${cards}</div><div class="macro-meta" style="margin-top:6px">Tỷ lệ = giá cược Kalshi so với dự báo Forex Factory; hướng BTC là phản ứng thường gặp, không chắc chắn.</div><button class="macro-more" onclick="toggleMacroCalendarRange()">${_macroCalendarExpanded?'Chỉ xem 14 ngày':'Mở rộng toàn bộ cache'}</button>`;
     _updateMacroCountdowns();
 }
 

@@ -169,7 +169,7 @@ def scenarios_for(category: str, title: str = "") -> Dict[str, Dict[str, str]]:
         }
     if inverse_jobs:
         return {
-            "higher": {"label": "Actual > Forecast", "btc_direction": "MIXED",
+            "higher": {"label": "Actual > Forecast", "btc_direction": "BULLISH",
                        "rationale": "Thị trường lao động yếu hơn có thể tạo kỳ vọng dovish và hỗ trợ BTC ban đầu, nhưng rủi ro suy thoái có thể đảo chiều phản ứng.", "watch": watch},
             "lower": {"label": "Actual < Forecast", "btc_direction": "BEARISH",
                       "rationale": "Lao động khỏe hơn thường củng cố kỳ vọng hawkish, có thể đẩy lợi suất/DXY lên và gây áp lực BTC.", "watch": watch},
@@ -178,7 +178,7 @@ def scenarios_for(category: str, title: str = "") -> Dict[str, Dict[str, str]]:
         return {
             "higher": {"label": "Actual > Forecast", "btc_direction": "BEARISH",
                        "rationale": "Tăng trưởng/lao động mạnh hơn consensus thường nâng kỳ vọng hawkish và lợi suất; BTC có thể giảm ban đầu.", "watch": watch},
-            "lower": {"label": "Actual < Forecast", "btc_direction": "MIXED",
+            "lower": {"label": "Actual < Forecast", "btc_direction": "BULLISH",
                       "rationale": "Dữ liệu yếu hơn có thể hỗ trợ kỳ vọng dovish và BTC ban đầu, nhưng rủi ro suy thoái khiến phản ứng có thể trái chiều.", "watch": watch},
         }
     return {
@@ -722,6 +722,7 @@ def enrich_kalshi(events: List[Dict[str, Any]], payloads: Dict[str, Any]) -> Lis
                     found.append(summary)
         if not found:
             continue
+        event.pop("market_odds_stale", None)
         primary = found[0]
         forecast = _number(event.get("forecast"))
         # Forecast-relative odds only for strict "Above X" ladders in the same
@@ -800,6 +801,146 @@ def market_odds_lines(event: Dict[str, Any]) -> List[str]:
     return lines
 
 
+SHORT_TITLES: Dict[str, str] = {
+    "CPI": "CPI (lạm phát)", "CORE_CPI": "Core CPI", "PPI": "PPI (giá sản xuất)",
+    "PCE": "PCE", "CORE_PCE": "Core PCE", "NFP": "NFP (việc làm)",
+    "UNEMPLOYMENT": "Tỷ lệ thất nghiệp", "JOBLESS_CLAIMS": "Đơn trợ cấp thất nghiệp",
+    "GDP": "GDP", "RETAIL_SALES": "Doanh số bán lẻ", "JOLTS": "JOLTS (việc làm trống)",
+    "ISM_MANUFACTURING": "ISM sản xuất", "ISM_SERVICES": "ISM dịch vụ",
+    "FOMC_RATE": "Fed quyết định lãi suất", "FED_PRESS_CONFERENCE": "Họp báo Fed",
+}
+
+# |P(up) - P(down)| below this is reported as "balanced", not a lean.
+_BIAS_DEADBAND = 0.05
+
+
+def _btc_reaction(event: Dict[str, Any], key: str) -> Optional[str]:
+    """UP/DOWN typical initial BTC reaction when the print lands on ``key`` side."""
+    direction = (((event.get("scenarios") or {}).get(key) or {}).get("btc_direction") or "").upper()
+    return {"BULLISH": "UP", "BEARISH": "DOWN"}.get(direction)
+
+
+def _ladder_split(thresholds: List[Dict[str, Any]], strict: bool,
+                  ref: float) -> Optional[Tuple[float, float, float, bool]]:
+    """Split a Kalshi threshold ladder around ``ref``.
+
+    Returns ``(p_higher, p_inline, p_lower, approximate)``. An "inline" bucket
+    exists only for 0.1-step percentage ladders (CPI, unemployment...), where
+    the official print is rounded to the same grid as the strikes.
+    """
+    points = sorted((float(t["strike"]), float(t["prob"])) for t in thresholds
+                    if t.get("strike") is not None and t.get("prob") is not None)
+    if len(points) < 2:
+        return None
+    strikes = [s for s, _ in points]
+    step = min(b - a for a, b in zip(strikes, strikes[1:]))
+    exact = next((i for i, (s, _) in enumerate(points) if abs(s - ref) < 1e-9), None)
+    if exact is not None and strict:
+        p_hi = points[exact][1]
+        if exact > 0 and step <= 0.1001:
+            p_lo = max(0.0, 1.0 - points[exact - 1][1])
+            p_in = max(0.0, 1.0 - p_hi - p_lo)
+            return p_hi, p_in, p_lo, False
+        if exact > 0 or step > 0.1001:
+            return p_hi, 0.0, max(0.0, 1.0 - p_hi), False
+    if ref <= strikes[0]:
+        p_hi, approx = points[0][1], True
+    elif ref >= strikes[-1]:
+        p_hi, approx = points[-1][1], True
+    else:
+        lo = max(i for i, s in enumerate(strikes) if s <= ref)
+        (s0, p0), (s1, p1) = points[lo], points[lo + 1]
+        p_hi = p0 + (p1 - p0) * (ref - s0) / (s1 - s0)
+        approx = abs(s0 - ref) > 1e-9
+    return p_hi, 0.0, max(0.0, 1.0 - p_hi), approx
+
+
+def _lean(up: float, down: float, flat: float) -> str:
+    if flat > max(up, down):
+        return "FLAT"
+    if abs(up - down) < _BIAS_DEADBAND:
+        return "BALANCED"
+    return "UP" if up > down else "DOWN"
+
+
+def compute_btc_bias(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Probability BTC rises/falls on release: Kalshi odds × typical BTC reaction.
+
+    Data releases compare the Kalshi ladder with the Forex Factory forecast.
+    FOMC maps cut → BTC up, hike → BTC down, hold → flat. The reaction mapping is
+    the usual initial move, never a guarantee.
+    """
+    if event.get("category") == "FED_PRESS_CONFERENCE":
+        return None
+    odds = event.get("market_odds") or []
+    primary = odds[0] if odds else None
+    rule = {"higher": _btc_reaction(event, "higher"), "lower": _btc_reaction(event, "lower")}
+    if not primary:
+        return {"available": False, "reason": "Chưa có tỷ lệ cược Kalshi", "rule": rule}
+    result: Dict[str, Any] = {"available": True, "source": "Kalshi", "rule": rule,
+                              "stale": bool(event.get("market_odds_stale"))}
+    if primary.get("kind") == "outcomes":
+        outcomes = primary.get("outcomes") or []
+        total = sum(float(o.get("prob") or 0) for o in outcomes)
+        if total <= 0:
+            return {"available": False, "reason": "Tỷ lệ cược trống", "rule": rule}
+        up = sum(float(o["prob"]) for o in outcomes if re.search(r"\bcut\b", str(o.get("label")), re.I)) / total
+        down = sum(float(o["prob"]) for o in outcomes if re.search(r"\bhike\b", str(o.get("label")), re.I)) / total
+        flat = max(0.0, 1.0 - up - down)
+        result.update({"basis": "outcomes", "outcomes": outcomes[:4]})
+    else:
+        ref = _number(event.get("forecast"))
+        if ref is None:
+            return {"available": False, "rule": rule,
+                    "reason": "Chờ số dự báo (thường có trong tuần ra tin)"}
+        if not rule["higher"] or not rule["lower"] or rule["higher"] == rule["lower"]:
+            return {"available": False, "reason": "Không có hướng phản ứng rõ", "rule": rule}
+        split = _ladder_split(primary.get("thresholds_all") or [], bool(primary.get("strict")), ref)
+        if not split:
+            return {"available": False, "reason": "Tỷ lệ cược chưa đủ thanh khoản", "rule": rule}
+        p_hi, p_in, p_lo, approx = split
+        up = p_hi if rule["higher"] == "UP" else p_lo
+        down = p_lo if rule["higher"] == "UP" else p_hi
+        flat = p_in
+        result.update({"basis": "forecast", "reference": event.get("forecast"),
+                       "p_higher": round(p_hi, 4), "p_inline": round(p_in, 4),
+                       "p_lower": round(p_lo, 4), "approx": approx})
+    up, down, flat = round(up, 4), round(down, 4), round(flat, 4)
+    result.update({"up": up, "down": down, "flat": flat, "lean": _lean(up, down, flat)})
+    return result
+
+
+def attach_btc_bias(events: List[Dict[str, Any]]) -> None:
+    for event in events:
+        category = str(event.get("category") or "")
+        event["short_title"] = SHORT_TITLES.get(category, event.get("title"))
+        # Re-derive so cached events pick up the current reaction rules.
+        event["scenarios"] = scenarios_for(category, str(event.get("title") or ""))
+        try:
+            event["btc_bias"] = compute_btc_bias(event)
+        except Exception as exc:  # never let one malformed ladder break the refresh
+            logger.warning("[MacroCalendar] BTC bias failed for %s: %s", event.get("category"), exc)
+            event["btc_bias"] = None
+
+
+def group_btc_bias(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Impact-weighted average across indicators released at the same time."""
+    total_w = up = down = flat = 0.0
+    for event in events:
+        bias = event.get("btc_bias") or {}
+        if not bias.get("available"):
+            continue
+        weight = 2.0 if event.get("impact") == "HIGH" else 1.0
+        total_w += weight
+        up += weight * bias["up"]
+        down += weight * bias["down"]
+        flat += weight * bias["flat"]
+    if total_w <= 0:
+        return None
+    up, down, flat = round(up / total_w, 4), round(down / total_w, 4), round(flat / total_w, 4)
+    return {"up": up, "down": down, "flat": flat, "lean": _lean(up, down, flat)}
+
+
 _ENRICH_KEYS = ("forecast", "previous", "actual", "unit", "consensus_label", "consensus_extra",
                 "enrichment_provider", "enrichment_source_url", "enrichment_date",
                 "enrichment_event", "enrichment_importance", "surprise", "surprise_direction")
@@ -827,7 +968,8 @@ class MacroCalendarService:
         self.refresh_seconds = max(60, int(getattr(config, "MACRO_CALENDAR_REFRESH_SECONDS", 21600)))
         self.stale_seconds = max(60, int(getattr(config, "MACRO_CALENDAR_STALE_SECONDS", 43200)))
         self.reminder_enabled = bool(getattr(config, "MACRO_CALENDAR_REMINDER_ENABLED", True))
-        self.reminder_hours = max(0, float(getattr(config, "MACRO_CALENDAR_REMINDER_HOURS", 24)))
+        self.reminder_hours = max(0, float(getattr(config, "MACRO_CALENDAR_REMINDER_HOURS", 1)))
+        self.odds_refresh_seconds = max(300, int(getattr(config, "MACRO_CALENDAR_ODDS_REFRESH_SECONDS", 900)))
         self.reminder_window = max(60, int(getattr(config, "MACRO_CALENDAR_REMINDER_WINDOW_SECONDS", 3600)))
         self.reminder_only_high = bool(getattr(config, "MACRO_CALENDAR_REMINDER_ONLY_HIGH", True))
         configured_cache = str(
@@ -848,6 +990,7 @@ class MacroCalendarService:
         self._refreshing = False
         self._ff_payload: Optional[List[Any]] = None
         self._ff_fetched_mono: Optional[float] = None
+        self._odds_refreshed_mono: Optional[float] = None
         self._data = self._empty_data()
         self._timezone_error: Optional[str] = None
         try:
@@ -974,6 +1117,14 @@ class MacroCalendarService:
                     self.refresh_now()
                 except Exception:
                     logger.exception("[MacroCalendar] Refresh cycle failed")
+            elif (self._odds_refreshed_mono is None
+                  or time.monotonic() - self._odds_refreshed_mono >= self.odds_refresh_seconds):
+                try:
+                    self.refresh_odds()
+                except Exception:
+                    logger.exception("[MacroCalendar] Odds refresh failed")
+                finally:
+                    self._odds_refreshed_mono = time.monotonic()
             self._refresh_event.wait(min(60, max(1, self.refresh_seconds)))
 
     def _run_reminders(self) -> None:
@@ -989,6 +1140,95 @@ class MacroCalendarService:
         response = self._http_get(url, timeout=20, allow_redirects=True, headers={"User-Agent": _USER_AGENT})
         response.raise_for_status()
         return response.text
+
+    def _apply_forexfactory(self, events: List[Dict[str, Any]], errors: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Merge FF forecast/previous. The feed returns HTTP 429 when polled
+        often, so it is fetched at most every 30 min and the payload reused."""
+        ff_payload = self._ff_payload
+        if self._ff_fetched_mono is None or time.monotonic() - self._ff_fetched_mono >= 1800:
+            self._ff_fetched_mono = time.monotonic()
+            try:
+                ff_payload = json.loads(self._get_text(FF_CALENDAR_URL))
+                self._ff_payload = ff_payload
+            except Exception as exc:
+                errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
+                logger.warning("[MacroCalendar] Forex Factory consensus failed: %s", exc)
+        if ff_payload is None:
+            return events
+        try:
+            return enrich_forexfactory(events, ff_payload)
+        except Exception as exc:
+            errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
+            return events
+
+    def _apply_kalshi(self, events: List[Dict[str, Any]], errors: Dict[str, str]) -> List[Dict[str, Any]]:
+        payloads: Dict[str, Any] = {}
+        failures: List[str] = []
+        for series in sorted({s for values in KALSHI_SERIES.values() for s in values}):
+            try:
+                response = self._http_get(
+                    KALSHI_EVENTS_URL,
+                    params={"series_ticker": series, "status": "open", "with_nested_markets": "true", "limit": 6},
+                    timeout=15, headers={"User-Agent": _USER_AGENT},
+                )
+                response.raise_for_status()
+                payloads[series] = response.json()
+            except Exception as exc:
+                failures.append(f"{series}: {type(exc).__name__}: {exc}")
+        if failures:
+            errors["Kalshi"] = "; ".join(failures)[:500]
+            logger.warning("[MacroCalendar] Kalshi odds partial failure: %s", errors["Kalshi"])
+        try:
+            return enrich_kalshi(events, payloads)
+        except Exception as exc:
+            errors["Kalshi"] = f"{type(exc).__name__}: {exc}"
+            return events
+
+    def _stamp_status(self, events: List[Dict[str, Any]], now: datetime) -> None:
+        for event in events:
+            scheduled = _parse_iso(event.get("scheduled_at_utc"))
+            if scheduled and self._vn_tz:
+                event["scheduled_at_vn"] = scheduled.astimezone(self._vn_tz).isoformat()
+            if event.get("actual") is not None:
+                event["status"] = "released"
+            elif scheduled and scheduled <= now:
+                event["status"] = "released"
+            elif not event.get("timing_confirmed", True):
+                event["status"] = "tentative"
+            else:
+                event["status"] = "upcoming"
+
+    def refresh_odds(self) -> None:
+        """Light refresh: re-price Kalshi odds/FF forecasts on cached events.
+
+        Runs on the same worker thread as :meth:`refresh_now`, so the two never
+        overlap; reminders always read odds at most ``odds_refresh_seconds`` old.
+        """
+        with self._lock:
+            if self._refreshing or not self._data.get("events"):
+                return
+            old_events = copy.deepcopy(self._data["events"])
+            self._refreshing = True
+        errors: Dict[str, str] = {}
+        try:
+            events = self._apply_forexfactory(copy.deepcopy(old_events), errors)
+            events = self._apply_kalshi(events, errors)
+            _carry_market_odds(events, old_events)
+            attach_btc_bias(events)
+            self._stamp_status(events, self._now())
+            self._odds_refreshed_mono = time.monotonic()
+            with self._lock:
+                source_errors = dict(self._data.get("source_errors") or {})
+                for name in ("Forex Factory", "Kalshi"):
+                    source_errors.pop(name, None)
+                source_errors.update(errors)
+                self._data["events"] = events
+                self._data["source_errors"] = source_errors
+                self._data["odds_refreshed_at"] = _iso(self._now())
+                self._persist_locked()
+        finally:
+            with self._lock:
+                self._refreshing = False
 
     def refresh_now(self) -> Dict[str, Any]:
         if self._timezone_error:
@@ -1031,22 +1271,7 @@ class MacroCalendarService:
             by_id = {event["event_id"]: event for event in merged if event.get("event_id")}
             events = sorted(by_id.values(), key=lambda event: event.get("scheduled_at_utc", ""))
 
-            # Feed rate-limits aggressively (HTTP 429); fetch at most every 30 min
-            # and reuse the last payload otherwise.
-            ff_payload = self._ff_payload
-            if self._ff_fetched_mono is None or time.monotonic() - self._ff_fetched_mono >= 1800:
-                self._ff_fetched_mono = time.monotonic()
-                try:
-                    ff_payload = json.loads(self._get_text(FF_CALENDAR_URL))
-                    self._ff_payload = ff_payload
-                except Exception as exc:
-                    errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
-                    logger.warning("[MacroCalendar] Forex Factory consensus failed: %s", exc)
-            if ff_payload is not None:
-                try:
-                    events = enrich_forexfactory(events, ff_payload)
-                except Exception as exc:
-                    errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
+            events = self._apply_forexfactory(events, errors)
             _carry_enrichment(events, old_events)
 
             if self.te_key:
@@ -1061,40 +1286,12 @@ class MacroCalendarService:
                 except Exception as exc:
                     errors["Trading Economics"] = f"{type(exc).__name__}: {exc}"
 
-            kalshi_payloads: Dict[str, Any] = {}
-            kalshi_errors: List[str] = []
-            for series in sorted({s for values in KALSHI_SERIES.values() for s in values}):
-                try:
-                    response = self._http_get(
-                        KALSHI_EVENTS_URL,
-                        params={"series_ticker": series, "status": "open", "with_nested_markets": "true", "limit": 6},
-                        timeout=15, headers={"User-Agent": _USER_AGENT},
-                    )
-                    response.raise_for_status()
-                    kalshi_payloads[series] = response.json()
-                except Exception as exc:
-                    kalshi_errors.append(f"{series}: {type(exc).__name__}: {exc}")
-            if kalshi_errors:
-                errors["Kalshi"] = "; ".join(kalshi_errors)[:500]
-                logger.warning("[MacroCalendar] Kalshi odds partial failure: %s", errors["Kalshi"])
-            try:
-                events = enrich_kalshi(events, kalshi_payloads)
-            except Exception as exc:
-                errors["Kalshi"] = f"{type(exc).__name__}: {exc}"
+            events = self._apply_kalshi(events, errors)
             _carry_market_odds(events, old_events)
+            attach_btc_bias(events)
+            self._odds_refreshed_mono = time.monotonic()
 
-            for event in events:
-                scheduled = _parse_iso(event.get("scheduled_at_utc"))
-                if scheduled and self._vn_tz:
-                    event["scheduled_at_vn"] = scheduled.astimezone(self._vn_tz).isoformat()
-                if event.get("actual") is not None:
-                    event["status"] = "released"
-                elif scheduled and scheduled <= now:
-                    event["status"] = "released"
-                elif not event.get("timing_confirmed", True):
-                    event["status"] = "tentative"
-                else:
-                    event["status"] = "upcoming"
+            self._stamp_status(events, now)
 
             any_success = any(successful.values())
             with self._lock:
@@ -1104,7 +1301,7 @@ class MacroCalendarService:
                 current_reminders = copy.deepcopy(self._data.get("reminders", {}))
                 self._data = {
                     "schema_version": SCHEMA_VERSION, "events": events, "reminders": current_reminders,
-                    "fetched_at": _iso(now),
+                    "fetched_at": _iso(now), "odds_refreshed_at": _iso(now),
                     "last_success_at": _iso(now) if any_success else self._data.get("last_success_at"),
                     "source_errors": errors, "refreshing": False,
                     "error": None if any_success else "Không thể cập nhật nguồn; đang giữ dữ liệu tốt gần nhất",
@@ -1115,24 +1312,48 @@ class MacroCalendarService:
                 self._refreshing = False
         return self.snapshot()
 
+    # ── Telegram reminders ─────────────────────────────────────────────
+    def _reminder_groups(self, events: List[Dict[str, Any]]) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Dict[str, Any]]]:
+        """Group indicators released at the same instant into one message."""
+        order = {cat: i for i, cat in enumerate(SHORT_TITLES)}
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        press: Dict[str, Dict[str, Any]] = {}
+        for event in events:
+            when = event.get("scheduled_at_utc")
+            if not _parse_iso(when):
+                continue
+            if event.get("category") == "FED_PRESS_CONFERENCE":
+                press[when] = event
+                continue
+            groups.setdefault(when, []).append(event)
+        for when, group in groups.items():
+            seen: set = set()
+            unique = []
+            for event in group:
+                if event.get("category") in seen:
+                    continue
+                seen.add(event.get("category"))
+                unique.append(event)
+            groups[when] = sorted(unique, key=lambda e: (e.get("impact") != "HIGH",
+                                                         order.get(e.get("category"), 99)))
+        return groups, press
+
     def process_reminders(self) -> int:
         if not self.enabled or not self.reminder_enabled:
             return 0
         now = self._now()
         with self._lock:
             events = copy.deepcopy(self._data.get("events", []))
+        groups, press = self._reminder_groups(events)
         sent_count = 0
-        for event in events:
-            if self.reminder_only_high and event.get("impact") != "HIGH":
+        for when, group in sorted(groups.items()):
+            if self.reminder_only_high and not any(e.get("impact") == "HIGH" for e in group):
                 continue
-            scheduled = _parse_iso(event.get("scheduled_at_utc"))
-            if not scheduled:
-                continue
+            scheduled = _parse_iso(when)
             target = scheduled - timedelta(hours=self.reminder_hours)
-            if not (target <= now < target + timedelta(seconds=self.reminder_window)):
+            if not (target <= now < min(target + timedelta(seconds=self.reminder_window), scheduled)):
                 continue
-            key = f"{event.get('event_id')}|{_iso(scheduled)}|{self.reminder_hours:g}h"
-            should_send = False
+            key = f"group|{_iso(scheduled)}|{self.reminder_hours:g}h"
             with self._lock:
                 record = self._data.setdefault("reminders", {}).get(key, {})
                 status = record.get("status")
@@ -1145,14 +1366,17 @@ class MacroCalendarService:
                 self._data["reminders"][key] = {
                     **record, "status": "claimed", "attempt": attempts + 1,
                     "claimed_at": _iso(now), "scheduled_at_utc": _iso(scheduled),
+                    "categories": [e.get("category") for e in group],
                 }
                 self._persist_locked()  # durable write-ahead claim
-                should_send = True
-            if not should_send:
-                continue
+            press_event = None
+            if any(e.get("category") == "FOMC_RATE" for e in group):
+                press_event = next((p for p_when, p in press.items()
+                                    if 0 <= (_parse_iso(p_when) - scheduled).total_seconds() <= 7200), None)
             message_id = 0
             try:
-                message_id = int(self.notifier.telegram.send(self._reminder_message(event, scheduled, now)) or 0)
+                message_id = int(self.notifier.telegram.send(
+                    self._reminder_message(group, scheduled, now, press_event)) or 0)
             except Exception as exc:
                 logger.warning("[MacroCalendar] Telegram send raised: %s", exc)
             finished = self._now()
@@ -1166,44 +1390,92 @@ class MacroCalendarService:
                 self._persist_locked()
         return sent_count
 
-    def _reminder_message(self, event: Dict[str, Any], scheduled: datetime, now: datetime) -> str:
-        vn = scheduled.astimezone(self._vn_tz) if self._vn_tz else scheduled
-        countdown = max(0, int((scheduled - now).total_seconds()))
-        hours, remainder = divmod(countdown, 3600)
-        minutes = remainder // 60
-        scenarios = event.get("scenarios") or {}
+    def _reminder_message(self, group: List[Dict[str, Any]], scheduled: datetime, now: datetime,
+                          press_event: Optional[Dict[str, Any]] = None) -> str:
+        """Short Telegram message: will BTC rise or fall when this prints?"""
+        esc = html.escape
+        local = scheduled.astimezone(self._vn_tz) if self._vn_tz else scheduled
+        weekday = ("T2", "T3", "T4", "T5", "T6", "T7", "CN")[local.weekday()]
+        minutes = max(1, round((scheduled - now).total_seconds() / 60))
 
-        def value(name: str) -> str:
+        def pct(p: float) -> str:
+            return f"{p * 100:.0f}%"
+
+        def split(bias: Dict[str, Any]) -> str:
+            return (f"🔴 Giảm <b>{pct(bias['down'])}</b> │ 🟢 Tăng <b>{pct(bias['up'])}</b>"
+                    f" │ ⚪ Ngang {pct(bias['flat'])}")
+
+        def value(event: Dict[str, Any], name: str) -> Optional[str]:
             raw = event.get(name)
             if raw is None or raw == "":
-                return "Chưa có consensus" if name == "forecast" else "Chưa có"
-            unit = str(event.get("unit") or "")
-            text = str(raw)
-            return text if unit and text.strip().endswith(unit) else f"{text}{unit}"
+                return None
+            unit, text = str(event.get("unit") or ""), str(raw)
+            return text if not unit or text.strip().endswith(unit) else f"{text}{unit}"
 
-        high = scenarios.get("higher", {})
-        low = scenarios.get("lower", {})
-        extra_lines = ""
-        for extra in event.get("consensus_extra") or []:
-            extra_lines += (f"• {html.escape(str(extra.get('label') or ''))}: Forecast <b>{html.escape(str(extra.get('forecast') or 'Chưa có'))}</b>"
-                            f" · Previous <b>{html.escape(str(extra.get('previous') or 'Chưa có'))}</b>\n")
-        if event.get("enrichment_provider") and event.get("forecast") not in (None, ""):
-            extra_lines += f"<i>Consensus: {html.escape(str(event.get('enrichment_provider')))}</i>\n"
-        odds_text = "\n".join(html.escape(line) for line in market_odds_lines(event))
-        if odds_text:
-            extra_lines += f"\n🎲 <b>Thị trường dự đoán (Kalshi)</b>\n{odds_text}\n"
-        source_url = _https_url(event.get("source_url"))
-        source_line = f'<a href="{html.escape(source_url, quote=True)}">{html.escape(str(event.get("source") or "Nguồn chính thức"))}</a>' if source_url else html.escape(str(event.get("source") or "Nguồn chính thức"))
-        return (
-            "📅 <b>NHẮC LỊCH VĨ MÔ — HIGH IMPACT</b>\n"
-            f"<b>{html.escape(str(event.get('title') or 'Sự kiện'))}</b>\n"
-            f"🇻🇳 {vn.strftime('%d/%m/%Y %H:%M')} (còn {hours}h {minutes}p)\n"
-            f"Previous: <b>{html.escape(value('previous'))}</b> · Forecast: <b>{html.escape(value('forecast'))}</b> · Actual: <b>{html.escape(value('actual'))}</b>\n"
-            f"{extra_lines}\n"
-            f"📉 <b>{html.escape(str(high.get('label', 'Cao hơn kỳ vọng')))}</b> → BTC {html.escape(str(high.get('btc_direction', 'MIXED')))}\n"
-            f"{html.escape(str(high.get('rationale', '')))}\n"
-            f"📈 <b>{html.escape(str(low.get('label', 'Thấp hơn kỳ vọng')))}</b> → BTC {html.escape(str(low.get('btc_direction', 'MIXED')))}\n"
-            f"{html.escape(str(low.get('rationale', '')))}\n\n"
-            f"Nguồn: {source_line}\n"
-            "⚠️ Xu hướng thường gặp, không đảm bảo; không phải lời khuyên tài chính. Theo dõi DXY và lợi suất Mỹ."
-        )
+        reaction = {"UP": "🟢 BTC tăng", "DOWN": "🔴 BTC giảm"}
+
+        def rule_line(event: Dict[str, Any]) -> str:
+            if event.get("category") == "FOMC_RATE":
+                return "↳ Fed tăng lãi suất → 🔴 BTC giảm · Fed hạ → 🟢 BTC tăng"
+            hi, lo = _btc_reaction(event, "higher"), _btc_reaction(event, "lower")
+            if not hi or not lo:
+                return "↳ Phản ứng BTC phụ thuộc bối cảnh"
+            return f"↳ Ra cao hơn dự báo → {reaction[hi]} · thấp hơn → {reaction[lo]}"
+
+        overall = group_btc_bias(group)
+        lines = [
+            f"⏰ <b>CÒN {minutes} PHÚT RA TIN VĨ MÔ MỸ</b>",
+            f"🇻🇳 <b>{local.strftime('%H:%M')} · {weekday} {local.strftime('%d/%m/%Y')}</b>",
+            "",
+        ]
+        if overall:
+            icon, label = _LEAN_TEXT[overall["lean"]]
+            lines += [f"{icon} <b>DỰ ĐOÁN BTC: {label}</b>", split(overall)]
+        else:
+            lines.append("🟡 <b>Chưa có tỷ lệ cược</b> — xem quy tắc từng chỉ số bên dưới")
+
+        stale = False
+        for event in group:
+            bias = event.get("btc_bias") or {}
+            icon = _LEAN_TEXT[bias["lean"]][0] if bias.get("available") else "▫️"
+            title = esc(str(event.get("short_title") or SHORT_TITLES.get(event.get("category"), event.get("title") or "")))
+            badge = " · <i>HIGH</i>" if event.get("impact") == "HIGH" else ""
+            lines += ["", f"{icon} <b>{title}</b>{badge}"]
+            if bias.get("basis") == "outcomes":
+                names = []
+                for outcome in bias.get("outcomes") or []:
+                    if float(outcome.get("prob") or 0) < 0.01:
+                        continue
+                    label = (str(outcome.get("label") or "")
+                             .replace("Fed maintains rate", "Fed giữ nguyên")
+                             .replace("Hike", "Fed tăng").replace("Cut", "Fed hạ"))
+                    names.append(f"{esc(label)} {pct(float(outcome['prob']))}")
+                if names:
+                    lines.append("Kalshi: " + " · ".join(names[:3]))
+            else:
+                forecast, previous = value(event, "forecast"), value(event, "previous")
+                if forecast or previous:
+                    lines.append(f"Dự báo <b>{esc(forecast or 'chưa có')}</b> · Kỳ trước {esc(previous or 'chưa có')}")
+            if bias.get("available"):
+                lines.append(split(bias))
+                stale = stale or bool(bias.get("stale"))
+            elif bias.get("reason"):
+                lines.append(f"<i>{esc(str(bias['reason']))}</i>")
+            lines.append(rule_line(event))
+        if press_event:
+            press_at = _parse_iso(press_event.get("scheduled_at_utc"))
+            if press_at:
+                press_local = press_at.astimezone(self._vn_tz) if self._vn_tz else press_at
+                lines += ["", f"🎙 Họp báo Fed lúc <b>{press_local.strftime('%H:%M')}</b> — biến động có thể tiếp diễn"]
+        lines += ["", "<i>Tỷ lệ = giá cược Kalshi so với dự báo Forex Factory"
+                  + (" (lần cập nhật trước)" if stale else "")
+                  + ". Hướng BTC là phản ứng thường gặp, không chắc chắn.</i>"]
+        return "\n".join(lines)
+
+
+_LEAN_TEXT: Dict[str, Tuple[str, str]] = {
+    "UP": ("🟢", "NGHIÊNG TĂNG"),
+    "DOWN": ("🔴", "NGHIÊNG GIẢM"),
+    "FLAT": ("⚪", "TRUNG LẬP — dễ ra đúng kỳ vọng"),
+    "BALANCED": ("🟡", "CÂN BẰNG — chưa rõ hướng"),
+}
