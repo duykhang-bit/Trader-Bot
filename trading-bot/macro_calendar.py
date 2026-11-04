@@ -37,6 +37,8 @@ TE_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20st
 # Free, keyless public consensus feed (current week only, no Actual values).
 FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FF_CALENDAR_PAGE = "https://www.forexfactory.com/calendar"
+TV_CALENDAR_URL = "https://economic-calendar.tradingview.com/events"
+TV_CALENDAR_PAGE = "https://www.tradingview.com/economic-calendar/"
 
 _MONTHS = {
     name: number for number, name in enumerate(
@@ -519,6 +521,10 @@ def enrich_trading_economics(events: List[Dict[str, Any]], payload: Any) -> List
         if not matches:
             continue
         row = min(matches, key=lambda pair: pair[1])[0]
+        # Once a TradingView Actual is attached, freeze its existing consensus
+        # and derived result. Never mix that Actual with a later TE forecast.
+        if event.get("actual_provider") == "TradingView Economic Calendar":
+            continue
         for key, te_key in (("actual", "Actual"), ("forecast", "Forecast"), ("previous", "Previous")):
             value = row.get(te_key)
             event[key] = None if value in (None, "") else value
@@ -957,6 +963,108 @@ def group_btc_bias(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return {"up": up, "down": down, "flat": flat, "lean": _lean(up, down, flat)}
 
 
+def enrich_tradingview_actuals(events: List[Dict[str, Any]], payload: Any) -> List[Dict[str, Any]]:
+    """Merge released Actual values from TradingView's public calendar JSON."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("result"), list):
+        raise MacroCalendarError("TradingView calendar response is invalid")
+    aliases = {
+        "CPI": (r"^Inflation Rate MoM$",),
+        "CORE_CPI": (r"^Core Inflation Rate MoM$",),
+        "PPI": (r"^(Producer Price Inflation|PPI) MoM$",),
+        "PCE": (r"^PCE Price Index MoM$",),
+        "CORE_PCE": (r"^Core PCE Price Index MoM$",),
+        "NFP": (r"^Non[ -]?Farm Payrolls$",),
+        "UNEMPLOYMENT": (r"^Unemployment Rate$",),
+        "JOLTS": (r"^JOLTS Job Openings$",),
+        "GDP": (r"^GDP Growth Rate QoQ(?: Adv| Prel| Final)?$",),
+        "RETAIL_SALES": (r"^Retail Sales MoM$",),
+        "JOBLESS_CLAIMS": (r"^Initial Jobless Claims$",),
+        "ISM_MANUFACTURING": (r"^ISM Manufacturing PMI$",),
+        "ISM_SERVICES": (r"^ISM Services PMI$",),
+        "FOMC_RATE": (r"^(Fed Interest Rate Decision|Federal Funds Rate)$",),
+    }
+    rows: List[Tuple[Dict[str, Any], datetime, str]] = []
+    for row in payload["result"]:
+        if not isinstance(row, dict) or row.get("country") not in (None, "US"):
+            continue
+        when = _parse_iso(row.get("date"))
+        title = str(row.get("title") or "").strip()
+        if when and title:
+            rows.append((row, when, title))
+
+    def display_value(category: str, raw: Any, unit: Any, raw_native: Any = None) -> Any:
+        if raw in (None, ""):
+            return None
+        value = _number(raw)
+        if value is None:
+            return raw
+        text = f"{value:g}"
+        if category in {"NFP", "JOBLESS_CLAIMS", "JOLTS"}:
+            native = _number(raw_native)
+            if native is not None:
+                return f"{native / 1_000:g}K"
+            # TradingView displays JOLTS in millions but NFP/claims in thousands.
+            return f"{value * 1_000:g}K" if category == "JOLTS" else f"{text}K"
+        if str(unit or "").strip() == "%":
+            return f"{text}%"
+        return value
+
+    enriched = copy.deepcopy(events)
+    for event in enriched:
+        patterns = aliases.get(str(event.get("category") or ""), ())
+        scheduled = _parse_iso(event.get("scheduled_at_utc"))
+        if not patterns or not scheduled:
+            continue
+        matches = [(row, abs((when - scheduled).total_seconds())) for row, when, title in rows
+                   if any(re.fullmatch(pattern, title, re.I) for pattern in patterns)
+                   and abs((when - scheduled).total_seconds()) <= 3 * 3600]
+        if not matches:
+            continue
+        row = min(matches, key=lambda pair: pair[1])[0]
+        if row.get("actual") in (None, ""):
+            continue
+        category = str(event.get("category") or "")
+        unit = row.get("unit")
+        event["actual"] = display_value(
+            category, row.get("actual"), unit, row.get("actualRaw")
+        )
+        # Keep Forex Factory consensus/attribution intact. TradingView's own
+        # comparison values are stored separately for the post-release result.
+        event["actual_forecast"] = display_value(
+            category, row.get("forecast"), unit, row.get("forecastRaw")
+        )
+        event["actual_previous"] = display_value(
+            category, row.get("previous"), unit, row.get("previousRaw")
+        )
+        event["actual_provider"] = "TradingView Economic Calendar"
+        event["actual_source_url"] = TV_CALENDAR_PAGE
+        event["actual_updated_at"] = row.get("date")
+        event["actual_period"] = row.get("period")
+        comparison_forecast = event.get("forecast") or event.get("actual_forecast")
+        surprise, direction = _surprise(category, event.get("actual"), comparison_forecast)
+        event["surprise"], event["surprise_direction"] = surprise, direction
+        event["status"] = "released"
+    return enriched
+
+
+def _carry_actuals(events: List[Dict[str, Any]], old_events: List[Dict[str, Any]]) -> None:
+    """Keep TradingView Actuals across official schedule rebuilds."""
+    keys = ("actual", "actual_forecast", "actual_previous", "actual_provider",
+            "actual_source_url", "actual_updated_at",
+            "actual_period", "surprise", "surprise_direction")
+    old_by_id = {event.get("event_id"): event for event in old_events
+                 if event.get("actual_provider") == "TradingView Economic Calendar"
+                 and event.get("actual") not in (None, "")}
+    for event in events:
+        old = old_by_id.get(event.get("event_id"))
+        if not old:
+            continue
+        for key in keys:
+            if key in old:
+                event[key] = copy.deepcopy(old[key])
+        event["status"] = "released"
+
+
 _ENRICH_KEYS = ("forecast", "previous", "actual", "unit", "consensus_label", "consensus_extra",
                 "enrichment_provider", "enrichment_source_url", "enrichment_date",
                 "enrichment_event", "enrichment_importance", "surprise", "surprise_direction")
@@ -986,6 +1094,7 @@ class MacroCalendarService:
         self.reminder_enabled = bool(getattr(config, "MACRO_CALENDAR_REMINDER_ENABLED", True))
         self.reminder_hours = max(0, float(getattr(config, "MACRO_CALENDAR_REMINDER_HOURS", 1)))
         self.odds_refresh_seconds = max(300, int(getattr(config, "MACRO_CALENDAR_ODDS_REFRESH_SECONDS", 900)))
+        self.actual_refresh_seconds = max(60, int(getattr(config, "MACRO_CALENDAR_ACTUAL_REFRESH_SECONDS", 60)))
         self.reminder_window = max(60, int(getattr(config, "MACRO_CALENDAR_REMINDER_WINDOW_SECONDS", 3600)))
         self.reminder_only_high = bool(getattr(config, "MACRO_CALENDAR_REMINDER_ONLY_HIGH", True))
         configured_cache = str(
@@ -1002,11 +1111,13 @@ class MacroCalendarService:
         self._refresh_event = threading.Event()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._actual_thread: Optional[threading.Thread] = None
         self._reminder_thread: Optional[threading.Thread] = None
         self._refreshing = False
         self._ff_payload: Optional[List[Any]] = None
         self._ff_fetched_mono: Optional[float] = None
         self._odds_refreshed_mono: Optional[float] = None
+        self._actual_refreshed_mono: Optional[float] = None
         self._data = self._empty_data()
         self._timezone_error: Optional[str] = None
         try:
@@ -1100,6 +1211,11 @@ class MacroCalendarService:
                 self._refresh_event.set()
                 self._thread = threading.Thread(target=self._run, name="macro-calendar-refresh", daemon=True)
                 self._thread.start()
+            if self._actual_thread is None or not self._actual_thread.is_alive():
+                self._actual_thread = threading.Thread(
+                    target=self._run_actuals, name="macro-calendar-actuals", daemon=True
+                )
+                self._actual_thread.start()
             if self._reminder_thread is None or not self._reminder_thread.is_alive():
                 self._reminder_thread = threading.Thread(
                     target=self._run_reminders, name="macro-calendar-reminders", daemon=True
@@ -1110,7 +1226,7 @@ class MacroCalendarService:
     def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()
         self._refresh_event.set()
-        for thread in (self._thread, self._reminder_thread):
+        for thread in (self._thread, self._actual_thread, self._reminder_thread):
             if thread and thread is not threading.current_thread():
                 thread.join(timeout=timeout)
 
@@ -1127,21 +1243,34 @@ class MacroCalendarService:
             with self._lock:
                 last = _parse_iso(self._data.get("fetched_at"))
             due = not last or (now - last).total_seconds() >= self.refresh_seconds
-            if due or self._refresh_event.is_set():
+            did_full_refresh = due or self._refresh_event.is_set()
+            if did_full_refresh:
                 self._refresh_event.clear()
                 try:
                     self.refresh_now()
                 except Exception:
                     logger.exception("[MacroCalendar] Refresh cycle failed")
-            elif (self._odds_refreshed_mono is None
-                  or time.monotonic() - self._odds_refreshed_mono >= self.odds_refresh_seconds):
-                try:
-                    self.refresh_odds()
-                except Exception:
-                    logger.exception("[MacroCalendar] Odds refresh failed")
-                finally:
-                    self._odds_refreshed_mono = time.monotonic()
+            else:
+                if (self._odds_refreshed_mono is None
+                        or time.monotonic() - self._odds_refreshed_mono >= self.odds_refresh_seconds):
+                    try:
+                        self.refresh_odds()
+                    except Exception:
+                        logger.exception("[MacroCalendar] Odds refresh failed")
+                    finally:
+                        self._odds_refreshed_mono = time.monotonic()
             self._refresh_event.wait(min(60, max(1, self.refresh_seconds)))
+
+    def _run_actuals(self) -> None:
+        """Poll Actual on an independent thread so slow Kalshi calls cannot delay it."""
+        while not self._stop_event.is_set():
+            try:
+                now = self._now()
+                if self._needs_actual_refresh(now):
+                    self.refresh_actuals()
+            except Exception:
+                logger.exception("[MacroCalendar] Actual refresh failed")
+            self._stop_event.wait(self.actual_refresh_seconds)
 
     def _run_reminders(self) -> None:
         """Poll independently so slow provider refreshes never delay reminders."""
@@ -1176,6 +1305,78 @@ class MacroCalendarService:
         except Exception as exc:
             errors["Forex Factory"] = f"{type(exc).__name__}: {exc}"
             return events
+
+    def _apply_tradingview(self, events: List[Dict[str, Any]], errors: Dict[str, str]) -> List[Dict[str, Any]]:
+        now = self._now()
+        try:
+            response = self._http_get(
+                TV_CALENDAR_URL,
+                params={
+                    "from": (now.date() - timedelta(days=2)).isoformat(),
+                    "to": (now.date() + timedelta(days=7)).isoformat(),
+                    "countries": "US",
+                },
+                timeout=20,
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Origin": "https://www.tradingview.com",
+                    "Referer": TV_CALENDAR_PAGE,
+                },
+            )
+            response.raise_for_status()
+            return enrich_tradingview_actuals(events, response.json())
+        except Exception as exc:
+            errors["TradingView Actual"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("[MacroCalendar] TradingView actual refresh failed: %s", exc)
+            return events
+
+    def _needs_actual_refresh(self, now: datetime) -> bool:
+        with self._lock:
+            events = copy.deepcopy(self._data.get("events", []))
+        for event in events:
+            if event.get("category") == "FED_PRESS_CONFERENCE" or event.get("actual") not in (None, ""):
+                continue
+            scheduled = _parse_iso(event.get("scheduled_at_utc"))
+            if scheduled and -timedelta(hours=24) <= scheduled - now <= timedelta(hours=2):
+                return True
+        return False
+
+    def refresh_actuals(self) -> None:
+        """Fetch Actual independently and merge by event ID into the newest cache."""
+        with self._lock:
+            source_events = copy.deepcopy(self._data.get("events", []))
+        if not source_events:
+            return
+        errors: Dict[str, str] = {}
+        enriched = self._apply_tradingview(source_events, errors)
+        actual_keys = (
+            "actual", "actual_forecast", "actual_previous", "actual_provider",
+            "actual_source_url", "actual_updated_at", "actual_period",
+            "surprise", "surprise_direction", "status",
+        )
+        updates = {
+            event.get("event_id"): event for event in enriched
+            if event.get("event_id") and event.get("actual_provider") == "TradingView Economic Calendar"
+            and event.get("actual") not in (None, "")
+        }
+        now = self._now()
+        with self._lock:
+            for current in self._data.get("events", []):
+                update = updates.get(current.get("event_id"))
+                if not update:
+                    continue
+                for key in actual_keys:
+                    if key in update:
+                        current[key] = copy.deepcopy(update[key])
+            attach_btc_bias(self._data.get("events", []))
+            self._stamp_status(self._data.get("events", []), now)
+            source_errors = dict(self._data.get("source_errors") or {})
+            source_errors.pop("TradingView Actual", None)
+            source_errors.update(errors)
+            self._data["source_errors"] = source_errors
+            self._data["actual_refreshed_at"] = _iso(now)
+            self._persist_locked()
+        self._actual_refreshed_mono = time.monotonic()
 
     def _apply_kalshi(self, events: List[Dict[str, Any]], errors: Dict[str, str]) -> List[Dict[str, Any]]:
         payloads: Dict[str, Any] = {}
@@ -1234,6 +1435,9 @@ class MacroCalendarService:
             self._stamp_status(events, self._now())
             self._odds_refreshed_mono = time.monotonic()
             with self._lock:
+                # An independent Actual request may have completed while FF/Kalshi
+                # were in flight; merge it into this writer's snapshot.
+                _carry_actuals(events, self._data.get("events", []))
                 source_errors = dict(self._data.get("source_errors") or {})
                 for name in ("Forex Factory", "Kalshi"):
                     source_errors.pop(name, None)
@@ -1289,6 +1493,7 @@ class MacroCalendarService:
 
             events = self._apply_forexfactory(events, errors)
             _carry_enrichment(events, old_events)
+            _carry_actuals(events, old_events)
 
             if self.te_key:
                 try:
@@ -1311,6 +1516,9 @@ class MacroCalendarService:
 
             any_success = any(successful.values())
             with self._lock:
+                # Preserve a TradingView Actual that arrived while official,
+                # TE, or Kalshi network calls were still running.
+                _carry_actuals(events, self._data.get("events", []))
                 # A reminder may have been claimed/sent while network adapters
                 # were running; merge the current ledger rather than the stale
                 # refresh-start copy.
@@ -1318,6 +1526,7 @@ class MacroCalendarService:
                 self._data = {
                     "schema_version": SCHEMA_VERSION, "events": events, "reminders": current_reminders,
                     "fetched_at": _iso(now), "odds_refreshed_at": _iso(now),
+                    "actual_refreshed_at": self._data.get("actual_refreshed_at"),
                     "last_success_at": _iso(now) if any_success else self._data.get("last_success_at"),
                     "source_errors": errors, "refreshing": False,
                     "error": None if any_success else "Không thể cập nhật nguồn; đang giữ dữ liệu tốt gần nhất",

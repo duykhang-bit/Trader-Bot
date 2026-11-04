@@ -843,6 +843,11 @@ input:focus, select:focus { outline: none; border-color: #58a6ff; }
 .macro-event { background:#0d1117; border:1px solid #21262d; border-left:3px solid #d29922; border-radius:8px; padding:10px; min-width:0; }
 .macro-event.high { border-left-color:#f85149; box-shadow:inset 0 0 0 1px rgba(248,81,73,.12); }
 .macro-event.released { opacity:.82; border-left-color:#6e7681; }
+.macro-event.just-released { opacity:1; border-left-color:#58a6ff; box-shadow:inset 0 0 0 1px rgba(88,166,255,.2); }
+.macro-result { margin-top:8px; padding:8px 9px; border-radius:7px; background:rgba(88,166,255,.08); border:1px solid rgba(88,166,255,.25); font-size:10px; color:#c9d1d9; }
+.macro-result.up { border-color:rgba(63,185,80,.4); background:rgba(63,185,80,.08); }
+.macro-result.down { border-color:rgba(248,81,73,.4); background:rgba(248,81,73,.08); }
+.macro-result.waiting { border-color:rgba(210,153,34,.4); background:rgba(210,153,34,.07); color:#d29922; }
 .macro-event-top { display:flex; gap:7px; align-items:flex-start; }
 .macro-event-title { color:#e6edf3; font-size:12px; font-weight:700; line-height:1.35; flex:1; }
 .macro-badge { display:inline-block; padding:2px 6px; border-radius:4px; font-size:9px; font-weight:800; letter-spacing:.4px; }
@@ -2126,7 +2131,7 @@ function renderDashboard(d) {
             </button>
           </div>
           <div id="macro-calendar-filters" class="news-filters"></div>
-          <div class="macro-meta" style="margin:-3px 0 9px">&#x23F0; Telegram nhắc trước <b>1 giờ</b> (tin HIGH) kèm dự đoán BTC tăng/giảm · Nguồn lịch chính thức:
+          <div class="macro-meta" style="margin:-3px 0 9px">&#x23F0; Telegram nhắc trước <b>1 giờ</b> (tin HIGH) · Tỷ lệ dự đoán là giá cược sống, tự đổi mỗi 15 phút · Actual kiểm tra mỗi phút quanh giờ ra tin · Nguồn lịch chính thức:
             <a class="macro-source" href="https://www.bls.gov/schedule/news_release/bls.ics" target="_blank" rel="noopener noreferrer">BLS</a> ·
             <a class="macro-source" href="https://www.bea.gov/news/schedule" target="_blank" rel="noopener noreferrer">BEA</a> ·
             <a class="macro-source" href="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" target="_blank" rel="noopener noreferrer">Federal Reserve</a> ·
@@ -3217,24 +3222,41 @@ function renderMacroCalendar() {
     const all = Array.isArray(_macroCalendarData.events) ? _macroCalendarData.events : [];
     const now = Date.now();
     const horizon = 14 * 86400000;
-    const upcoming = all.filter(e => e.status !== 'released');
-    const released = all.filter(e => e.status === 'released');
+    const recentWindow = 24 * 3600000;
+    const isRecentReleased = event => {
+        if (event.status !== 'released') return false;
+        const scheduled = _macroDate(event.scheduled_at_utc);
+        if (!scheduled) return false;
+        const age = now - scheduled.getTime();
+        return age >= 0 && age < recentWindow;
+    };
+    // A release stays in the main list for 24h, then moves to the archive tab.
+    const upcoming = all.filter(e => e.status !== 'released' || isRecentReleased(e));
+    const released = all.filter(e => e.status === 'released' && !isRecentReleased(e));
     const counts = {upcoming:upcoming.length, released:released.length, high:all.filter(e => e.impact === 'HIGH').length};
     const filters = document.getElementById('macro-calendar-filters');
     if (filters) filters.innerHTML = [
-        ['upcoming','Sắp tới',counts.upcoming], ['released','Đã công bố',counts.released], ['high','🔴 High',counts.high]
+        ['upcoming','Sắp tới / mới ra',counts.upcoming], ['released','Đã công bố >24h',counts.released], ['high','🔴 High',counts.high]
     ].map(([key,label,count]) => `<div class="news-chip ${key==='high'?'impact-chip':''} ${_macroCalendarFilter===key?'active':''}" onclick="setMacroCalendarFilter('${key}')">${label} <span style="opacity:.6">${count}</span></div>`).join('');
 
     let rows = all.filter(event => {
-        if (_macroCalendarFilter === 'released' && event.status !== 'released') return false;
-        if (_macroCalendarFilter === 'upcoming' && event.status === 'released') return false;
+        const recent = isRecentReleased(event);
+        if (_macroCalendarFilter === 'released' && (event.status !== 'released' || recent)) return false;
+        if (_macroCalendarFilter === 'upcoming' && event.status === 'released' && !recent) return false;
         if (_macroCalendarFilter === 'high' && event.impact !== 'HIGH') return false;
+        if (recent) return true;
         if (_macroCalendarExpanded) return true;
         const scheduled = _macroDate(event.scheduled_at_utc);
         if (!scheduled) return false;
         const delta = scheduled.getTime() - now;
         return event.status === 'released' ? delta >= -horizon : delta <= horizon && delta >= -3600000;
-    }).sort((a,b) => (_macroDate(a.scheduled_at_utc)?.getTime() || 0) - (_macroDate(b.scheduled_at_utc)?.getTime() || 0));
+    }).sort((a,b) => {
+        const ar = isRecentReleased(a), br = isRecentReleased(b);
+        const at = _macroDate(a.scheduled_at_utc)?.getTime() || 0;
+        const bt = _macroDate(b.scheduled_at_utc)?.getTime() || 0;
+        if (ar !== br) return ar ? -1 : 1;
+        return ar ? bt - at : at - bt;
+    });
 
     const status = document.getElementById('macro-calendar-updated');
     if (status) {
@@ -3243,6 +3265,8 @@ function renderMacroCalendar() {
         const flags = [];
         const oddsAt = _macroDate(_macroCalendarData.odds_refreshed_at);
         if (oddsAt) flags.push(`tỷ lệ cược ${_newsAgo(Math.floor(oddsAt.getTime()/1000))} trước`);
+        const actualAt = _macroDate(_macroCalendarData.actual_refreshed_at);
+        if (actualAt) flags.push(`Actual kiểm tra ${_newsAgo(Math.floor(actualAt.getTime()/1000))} trước`);
         if (_macroCalendarData.refreshing) flags.push('đang cập nhật nền');
         if (_macroCalendarData.stale) flags.push('⚠ dữ liệu cũ');
         const errors = Object.keys(_macroCalendarData.source_errors || {}).length;
@@ -3288,54 +3312,107 @@ function renderMacroCalendar() {
     };
     const biasHtml = (event, bias) => {
         const title = _macroEsc(event.short_title || event.title || 'chỉ số');
+        const heading = event.status === 'released' ? `Dự đoán trước tin — ${title}` : `Tác động riêng — ${title}`;
         if (!bias) return '';
         if (!bias.available)
-            return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Tác động riêng — ${title}</span><span class="macro-lean none">—</span></div><div class="macro-meta" style="margin-top:4px">${_macroEsc(bias.reason || 'Chưa có dữ liệu')}</div></div>`;
+            return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 ${heading}</span><span class="macro-lean none">—</span></div><div class="macro-meta" style="margin-top:4px">${_macroEsc(bias.reason || 'Chưa có dữ liệu')}</div></div>`;
         const l = LEAN[bias.lean] || LEAN.BALANCED;
         const basis = bias.basis === 'forecast'
             ? `Kalshi: ra cao hơn ${_macroEsc(bias.reference)} ${pct(bias.p_higher)}${bias.p_inline ? ' · đúng ' + pct(bias.p_inline) : ''} · thấp hơn ${pct(bias.p_lower)}${bias.approx ? ' (ước tính)' : ''}`
             : (bias.basis === 'outcomes' ? 'Kalshi: ' + (bias.outcomes || []).filter(o => o.prob >= 0.01).slice(0, 3).map(o =>
                 _macroEsc(String(o.label).replace('Fed maintains rate','Fed giữ nguyên').replace('Hike','Fed tăng').replace('Cut','Fed hạ')) + ' ' + pct(o.prob)).join(' · ') : '');
-        return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Tác động riêng — ${title}</span><span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span></div>
+        return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 ${heading}</span><span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span></div>
           ${splitHtml(bias)}<div class="macro-meta" style="margin-top:4px">${basis}${bias.stale ? ' · tỷ lệ từ lần cập nhật trước' : ''}</div></div>`;
     };
 
-    // Banner: next release time, impact-weighted lean across its indicators.
+    const actualDirection = event => {
+        if (event.actual === null || event.actual === undefined || event.actual === '') return null;
+        const direction = String(event.surprise_direction || '').toUpperCase();
+        return direction === 'BULLISH' ? 'UP' : (direction === 'BEARISH' ? 'DOWN' : (direction === 'INLINE' ? 'FLAT' : null));
+    };
+    const actualResultHtml = event => {
+        if (event.status !== 'released') return '';
+        const direction = actualDirection(event);
+        if (!direction)
+            return `<div class="macro-result waiting">⏳ <b>Đang chờ kết quả Actual</b> · tự kiểm tra TradingView mỗi phút</div>`;
+        const l = LEAN[direction];
+        return `<div class="macro-result ${l.cls}"><b>${l.icon} KẾT QUẢ: ${l.text}</b><br>Actual <b>${_macroEsc(_macroValue(event,'actual'))}</b> so với Forecast <b>${_macroEsc(_macroValue(event,'forecast') !== 'Chưa có' ? _macroValue(event,'forecast') : (event.actual_forecast || 'Chưa có'))}</b></div>`;
+    };
+
+    // For 24h after release, the newest result replaces the upcoming banner.
+    const recentEvents = all.filter(e => isRecentReleased(e) && e.category !== 'FED_PRESS_CONFERENCE')
+        .sort((a,b) => (_macroDate(b.scheduled_at_utc)?.getTime() || 0) - (_macroDate(a.scheduled_at_utc)?.getTime() || 0));
     const nextEvents = all.filter(e => e.status !== 'released' && e.category !== 'FED_PRESS_CONFERENCE')
         .sort((a,b) => (_macroDate(a.scheduled_at_utc)?.getTime() || 0) - (_macroDate(b.scheduled_at_utc)?.getTime() || 0));
     let bannerHtml = '';
-    const nextHigh = nextEvents.find(e => e.impact === 'HIGH') || nextEvents[0];
-    if (nextHigh) {
-        const when = nextHigh.scheduled_at_utc;
-        const group = nextEvents.filter(e => e.scheduled_at_utc === when);
-        let tw = 0, up = 0, down = 0, flat = 0;
-        group.forEach(e => {
-            const b = e.btc_bias;
-            if (!b || !b.available) return;
-            const wgt = e.impact === 'HIGH' ? 2 : 1;
-            tw += wgt; up += wgt * b.up; down += wgt * b.down; flat += wgt * b.flat;
-        });
+    const showActiveBanner = _macroCalendarFilter !== 'released';
+    const recentHigh = showActiveBanner ? recentEvents[0] : null;
+    const nextHigh = showActiveBanner ? (nextEvents.find(e => e.impact === 'HIGH') || nextEvents[0]) : null;
+    const anchor = recentHigh || nextHigh;
+    if (anchor) {
+        const showingResult = Boolean(recentHigh);
+        const when = anchor.scheduled_at_utc;
+        const sourceRows = showingResult ? recentEvents : nextEvents;
+        const group = sourceRows.filter(e => e.scheduled_at_utc === when);
         const names = group.map(e => _macroEsc(e.short_title || e.title)).join(' + ');
-        let right = '<span class="macro-lean none">Chưa có tỷ lệ</span>';
-        let cls = 'none', bar = '';
-        if (tw > 0) {
-            const agg = {up: up/tw, down: down/tw, flat: flat/tw};
-            const l = LEAN[leanOf(agg.up, agg.down, agg.flat)];
-            cls = l.cls;
-            right = `<span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span>`;
-            bar = splitHtml(agg);
+        if (showingResult) {
+            let upWeight = 0, downWeight = 0, flatWeight = 0, known = 0;
+            const resultRows = group.map(event => {
+                const direction = actualDirection(event);
+                const title = _macroEsc(event.short_title || event.title);
+                if (!direction) return `<div>⏳ ${title}: đang chờ Actual</div>`;
+                const weight = event.impact === 'HIGH' ? 2 : 1;
+                if (direction === 'UP') upWeight += weight;
+                else if (direction === 'DOWN') downWeight += weight;
+                else flatWeight += weight;
+                known += 1;
+                const l = LEAN[direction];
+                const comparisonForecast = _macroValue(event,'forecast') !== 'Chưa có' ? _macroValue(event,'forecast') : event.actual_forecast || 'Chưa có';
+                return `<div>${l.icon} ${title}: Actual <b>${_macroEsc(_macroValue(event,'actual'))}</b> / Forecast ${_macroEsc(comparisonForecast)} → <b>${l.text}</b></div>`;
+            }).join('');
+            let resultKey = null;
+            if (known) {
+                if (flatWeight > Math.max(upWeight, downWeight)) resultKey = 'FLAT';
+                else if (upWeight === downWeight) resultKey = 'BALANCED';
+                else resultKey = upWeight > downWeight ? 'UP' : 'DOWN';
+            }
+            const resultBadge = resultKey
+                ? `<span class="macro-lean ${LEAN[resultKey].cls}">${LEAN[resultKey].icon} ${LEAN[resultKey].text}</span>`
+                : '<span class="macro-lean balanced">⏳ ĐANG CHỜ ACTUAL</span>';
+            bannerHtml = `<div class="macro-next lean-${resultKey ? LEAN[resultKey].cls : 'balanced'}">
+              <div class="macro-bias-head"><span>📣 <b>KẾT QUẢ VỪA CÔNG BỐ: ${names}</b> · ${_macroEsc(_macroVnTime(when))}</span>${resultBadge}</div>
+              <div class="macro-result ${resultKey ? LEAN[resultKey].cls : 'waiting'}" style="margin-top:7px">${resultRows}</div>
+              <div class="macro-meta" style="margin-top:5px">Tin này được giữ trên đầu 24 giờ, sau đó tự chuyển sang “Đã công bố &gt;24h”.</div></div>`;
+        } else {
+            let tw = 0, up = 0, down = 0, flat = 0;
+            group.forEach(event => {
+                const bias = event.btc_bias;
+                if (!bias || !bias.available) return;
+                const weight = event.impact === 'HIGH' ? 2 : 1;
+                tw += weight; up += weight * bias.up; down += weight * bias.down; flat += weight * bias.flat;
+            });
+            let right = '<span class="macro-lean none">Chưa có tỷ lệ</span>';
+            let cls = 'none', bar = '';
+            if (tw > 0) {
+                const aggregate = {up:up/tw, down:down/tw, flat:flat/tw};
+                const lean = LEAN[leanOf(aggregate.up, aggregate.down, aggregate.flat)];
+                cls = lean.cls;
+                right = `<span class="macro-lean ${lean.cls}">${lean.icon} ${lean.text}</span>`;
+                bar = splitHtml(aggregate);
+            }
+            const scope = group.length > 1 ? `DỰ ĐOÁN TỔNG HỢP ${group.length} CHỈ SỐ` : 'DỰ ĐOÁN BTC CHO CHỈ SỐ NÀY';
+            const explanation = group.length > 1
+                ? `<div class="macro-meta" style="margin-top:5px">${scope} = trung bình theo mức impact. Mỗi thẻ bên dưới là tác động riêng nên phần trăm có thể khác.</div>` : '';
+            bannerHtml = `<div class="macro-next lean-${cls}">
+              <div class="macro-bias-head"><span>⏭ Tin kế tiếp: <b>${names}</b> · ${_macroEsc(_macroVnTime(when))} · <span data-macro-time="${_macroEsc(when)}">${_macroEsc(_macroCountdown(when))}</span></span></div>
+              <div class="macro-bias-head" style="margin-top:7px"><span>🎯 ${scope}</span>${right}</div>${bar}${explanation}</div>`;
         }
-        const scope = group.length > 1 ? `DỰ ĐOÁN TỔNG HỢP ${group.length} CHỈ SỐ` : 'DỰ ĐOÁN BTC CHO CHỈ SỐ NÀY';
-        const explanation = group.length > 1
-            ? `<div class="macro-meta" style="margin-top:5px">${scope} = trung bình theo mức impact. Mỗi thẻ bên dưới là tác động riêng nên phần trăm có thể khác.</div>` : '';
-        bannerHtml = `<div class="macro-next lean-${cls}">
-          <div class="macro-bias-head"><span>⏭ Tin kế tiếp: <b>${names}</b> · ${_macroEsc(_macroVnTime(when))} · <span data-macro-time="${_macroEsc(when)}">${_macroEsc(_macroCountdown(when))}</span></span></div>
-          <div class="macro-bias-head" style="margin-top:7px"><span>🎯 ${scope}</span>${right}</div>${bar}${explanation}</div>`;
     }
 
     const cards = rows.map(event => {
         const high = event.impact === 'HIGH';
         const bias = event.btc_bias;
+        const recentRelease = isRecentReleased(event);
         const leanCls = bias && bias.available ? 'lean-' + (LEAN[bias.lean] || LEAN.BALANCED).cls : '';
         const tentative = event.status === 'tentative' || event.timing_confirmed === false;
         const sourceUrl = _macroHttps(event.source_url);
@@ -3366,14 +3443,17 @@ function renderMacroCalendar() {
         const consProvider = event.enrichment_provider
             ? (consUrl ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(consUrl)}">${_macroEsc(event.enrichment_provider)}</a>` : _macroEsc(event.enrichment_provider))
             : '';
-        return `<article class="macro-event ${high?'high':''} ${leanCls} ${event.status==='released'?'released':''}">
+        const actualUrl = _macroHttps(event.actual_source_url);
+        const actualSource = actualUrl ? `<a class="macro-source" target="_blank" rel="noopener noreferrer" href="${_macroEsc(actualUrl)}">TradingView</a>` : '';
+        return `<article class="macro-event ${high?'high':''} ${leanCls} ${recentRelease?'just-released':(event.status==='released'?'released':'')}">
           <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.short_title || event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
-          <div class="macro-meta"><b>🇻🇳 ${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span>${tentative?' · <span class="macro-mixed">⚠ giờ dự kiến</span>':''}${event.status==='released'?' · đã công bố':''}</div>
+          <div class="macro-meta"><b>🇻🇳 ${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span>${tentative?' · <span class="macro-mixed">⚠ giờ dự kiến</span>':''}${recentRelease?' · <span class="macro-source">📣 vừa công bố · giữ trên đầu 24h</span>':(event.status==='released'?' · đã lưu trữ':'')}</div>
           <div class="macro-values"><div class="macro-value"><span>Dự báo</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Kỳ trước</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div><div class="macro-value"><span>Thực tế</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div></div>
+          ${actualResultHtml(event)}
           ${biasHtml(event, bias)}
           <div class="macro-rule">${ruleHtml(event)}</div>
           <details class="macro-details"><summary>Chi tiết</summary>
-            <div class="macro-meta">${_macroEsc(event.title || '')}${event.subtitle ? ' — ' + _macroEsc(event.subtitle) : ''}<br>${_macroEsc(scheduleLabel)} · Nguồn: ${source}${consProvider ? ' · Dự báo: ' + consProvider : ''}</div>
+            <div class="macro-meta">${_macroEsc(event.title || '')}${event.subtitle ? ' — ' + _macroEsc(event.subtitle) : ''}<br>${_macroEsc(scheduleLabel)} · Nguồn lịch: ${source}${consProvider ? ' · Dự báo: ' + consProvider : ''}${actualSource ? ' · Actual: ' + actualSource : ''}</div>
             ${extras ? `<div class="macro-meta">${extras}</div>` : ''}
             ${oddsHtml ? `<div class="macro-meta">${oddsHtml}</div>` : ''}
             <div class="macro-scenarios">${scenarioHtml}</div>
