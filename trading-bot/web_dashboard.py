@@ -3257,8 +3257,8 @@ function renderMacroCalendar() {
     }
     const pct = p => (Number(p || 0) * 100).toFixed(0) + '%';
     const LEAN = {
-        UP:{cls:'up', icon:'🟢', text:'NGHIÊNG TĂNG'}, DOWN:{cls:'down', icon:'🔴', text:'NGHIÊNG GIẢM'},
-        FLAT:{cls:'flat', icon:'⚪', text:'TRUNG LẬP'}, BALANCED:{cls:'balanced', icon:'🟡', text:'CÂN BẰNG'}
+        UP:{cls:'up', icon:'🟢', text:'BTC DỰ KIẾN TĂNG'}, DOWN:{cls:'down', icon:'🔴', text:'BTC DỰ KIẾN GIẢM'},
+        FLAT:{cls:'flat', icon:'⚪', text:'BTC DỰ KIẾN ĐI NGANG'}, BALANCED:{cls:'balanced', icon:'🟡', text:'BTC CHƯA RÕ HƯỚNG'}
     };
     const leanOf = (up, down, flat) => flat > Math.max(up, down) ? 'FLAT'
         : (Math.abs(up - down) < 0.05 ? 'BALANCED' : (up > down ? 'UP' : 'DOWN'));
@@ -3270,21 +3270,33 @@ function renderMacroCalendar() {
         const s = event.scenarios || {};
         return `Ra cao hơn dự báo → ${reactWord((s.higher||{}).btc_direction)} · thấp hơn → ${reactWord((s.lower||{}).btc_direction)}`;
     };
-    const splitHtml = b => {
-        const w = p => Math.max(0, Math.round(Number(p || 0) * 100));
-        return `<div class="macro-bar"><div class="dn" style="width:${w(b.down)}%"></div><div class="fl" style="width:${w(b.flat)}%"></div><div class="upb" style="width:${w(b.up)}%"></div></div>
-          <div class="macro-bar-legend"><span class="macro-down">🔴 Giảm ${pct(b.down)}</span><span class="macro-flat">⚪ Ngang ${pct(b.flat)}</span><span class="macro-up">🟢 Tăng ${pct(b.up)}</span></div>`;
+    const pctParts = b => {
+        const keys = ['down','flat','up'];
+        const vals = keys.map(k => Math.max(0, Number(b[k] || 0)));
+        const total = vals.reduce((a,v) => a+v, 0);
+        if (!total) return {down:0,flat:0,up:0};
+        const raw = vals.map(v => v / total * 100);
+        const out = raw.map(Math.floor);
+        let left = 100 - out.reduce((a,v) => a+v, 0);
+        [...keys.keys()].sort((a,b) => (raw[b]-out[b])-(raw[a]-out[a])).slice(0,left).forEach(i => out[i]++);
+        return Object.fromEntries(keys.map((k,i) => [k,out[i]]));
     };
-    const biasHtml = bias => {
+    const splitHtml = b => {
+        const p = pctParts(b);
+        return `<div class="macro-bar"><div class="dn" style="width:${p.down}%"></div><div class="fl" style="width:${p.flat}%"></div><div class="upb" style="width:${p.up}%"></div></div>
+          <div class="macro-bar-legend"><span class="macro-down">🔴 BTC giảm ${p.down}%</span><span class="macro-flat">⚪ Đi ngang ${p.flat}%</span><span class="macro-up">🟢 BTC tăng ${p.up}%</span></div>`;
+    };
+    const biasHtml = (event, bias) => {
+        const title = _macroEsc(event.short_title || event.title || 'chỉ số');
         if (!bias) return '';
         if (!bias.available)
-            return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Dự đoán BTC khi ra tin</span><span class="macro-lean none">—</span></div><div class="macro-meta" style="margin-top:4px">${_macroEsc(bias.reason || 'Chưa có dữ liệu')}</div></div>`;
+            return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Tác động riêng — ${title}</span><span class="macro-lean none">—</span></div><div class="macro-meta" style="margin-top:4px">${_macroEsc(bias.reason || 'Chưa có dữ liệu')}</div></div>`;
         const l = LEAN[bias.lean] || LEAN.BALANCED;
         const basis = bias.basis === 'forecast'
             ? `Kalshi: ra cao hơn ${_macroEsc(bias.reference)} ${pct(bias.p_higher)}${bias.p_inline ? ' · đúng ' + pct(bias.p_inline) : ''} · thấp hơn ${pct(bias.p_lower)}${bias.approx ? ' (ước tính)' : ''}`
             : (bias.basis === 'outcomes' ? 'Kalshi: ' + (bias.outcomes || []).filter(o => o.prob >= 0.01).slice(0, 3).map(o =>
                 _macroEsc(String(o.label).replace('Fed maintains rate','Fed giữ nguyên').replace('Hike','Fed tăng').replace('Cut','Fed hạ')) + ' ' + pct(o.prob)).join(' · ') : '');
-        return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Dự đoán BTC khi ra tin</span><span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span></div>
+        return `<div class="macro-bias"><div class="macro-bias-head"><span>🎯 Tác động riêng — ${title}</span><span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span></div>
           ${splitHtml(bias)}<div class="macro-meta" style="margin-top:4px">${basis}${bias.stale ? ' · tỷ lệ từ lần cập nhật trước' : ''}</div></div>`;
     };
 
@@ -3313,7 +3325,12 @@ function renderMacroCalendar() {
             right = `<span class="macro-lean ${l.cls}">${l.icon} ${l.text}</span>`;
             bar = splitHtml(agg);
         }
-        bannerHtml = `<div class="macro-next lean-${cls}"><div class="macro-bias-head"><span>⏭ Tin kế tiếp: <b>${names}</b> · ${_macroEsc(_macroVnTime(when))} · <span data-macro-time="${_macroEsc(when)}">${_macroEsc(_macroCountdown(when))}</span></span>${right}</div>${bar}</div>`;
+        const scope = group.length > 1 ? `DỰ ĐOÁN TỔNG HỢP ${group.length} CHỈ SỐ` : 'DỰ ĐOÁN BTC CHO CHỈ SỐ NÀY';
+        const explanation = group.length > 1
+            ? `<div class="macro-meta" style="margin-top:5px">${scope} = trung bình theo mức impact. Mỗi thẻ bên dưới là tác động riêng nên phần trăm có thể khác.</div>` : '';
+        bannerHtml = `<div class="macro-next lean-${cls}">
+          <div class="macro-bias-head"><span>⏭ Tin kế tiếp: <b>${names}</b> · ${_macroEsc(_macroVnTime(when))} · <span data-macro-time="${_macroEsc(when)}">${_macroEsc(_macroCountdown(when))}</span></span></div>
+          <div class="macro-bias-head" style="margin-top:7px"><span>🎯 ${scope}</span>${right}</div>${bar}${explanation}</div>`;
     }
 
     const cards = rows.map(event => {
@@ -3353,7 +3370,7 @@ function renderMacroCalendar() {
           <div class="macro-event-top"><div class="macro-event-title">${_macroEsc(event.short_title || event.title || 'Sự kiện')}</div><span class="macro-badge ${high?'high':'medium'}">${_macroEsc(event.impact || 'MEDIUM')}</span></div>
           <div class="macro-meta"><b>🇻🇳 ${_macroEsc(_macroVnTime(event.scheduled_at_utc))}</b> · <span data-macro-time="${_macroEsc(event.scheduled_at_utc || '')}">${_macroEsc(_macroCountdown(event.scheduled_at_utc))}</span>${tentative?' · <span class="macro-mixed">⚠ giờ dự kiến</span>':''}${event.status==='released'?' · đã công bố':''}</div>
           <div class="macro-values"><div class="macro-value"><span>Dự báo</span><b>${_macroEsc(_macroValue(event,'forecast'))}</b></div><div class="macro-value"><span>Kỳ trước</span><b>${_macroEsc(_macroValue(event,'previous'))}</b></div><div class="macro-value"><span>Thực tế</span><b>${_macroEsc(_macroValue(event,'actual'))}</b></div></div>
-          ${biasHtml(bias)}
+          ${biasHtml(event, bias)}
           <div class="macro-rule">${ruleHtml(event)}</div>
           <details class="macro-details"><summary>Chi tiết</summary>
             <div class="macro-meta">${_macroEsc(event.title || '')}${event.subtitle ? ' — ' + _macroEsc(event.subtitle) : ''}<br>${_macroEsc(scheduleLabel)} · Nguồn: ${source}${consProvider ? ' · Dự báo: ' + consProvider : ''}</div>

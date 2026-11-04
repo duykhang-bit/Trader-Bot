@@ -923,6 +923,22 @@ def attach_btc_bias(events: List[Dict[str, Any]]) -> None:
             event["btc_bias"] = None
 
 
+def display_percentages(bias: Dict[str, Any]) -> Dict[str, int]:
+    """Round DOWN/FLAT/UP with largest remainders so display totals exactly 100."""
+    keys = ("down", "flat", "up")
+    values = [max(0.0, float(bias.get(key, 0) or 0)) for key in keys]
+    total = sum(values)
+    if total <= 0:
+        return {key: 0 for key in keys}
+    raw = [value / total * 100.0 for value in values]
+    rounded = [int(value) for value in raw]
+    remaining = 100 - sum(rounded)
+    order = sorted(range(len(keys)), key=lambda index: raw[index] - rounded[index], reverse=True)
+    for index in order[:remaining]:
+        rounded[index] += 1
+    return dict(zip(keys, rounded))
+
+
 def group_btc_bias(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Impact-weighted average across indicators released at the same time."""
     total_w = up = down = flat = 0.0
@@ -1402,8 +1418,9 @@ class MacroCalendarService:
             return f"{p * 100:.0f}%"
 
         def split(bias: Dict[str, Any]) -> str:
-            return (f"🔴 Giảm <b>{pct(bias['down'])}</b> │ 🟢 Tăng <b>{pct(bias['up'])}</b>"
-                    f" │ ⚪ Ngang {pct(bias['flat'])}")
+            shown = display_percentages(bias)
+            return (f"🔴 BTC giảm <b>{shown['down']}%</b> │ 🟢 BTC tăng <b>{shown['up']}%</b>"
+                    f" │ ⚪ Đi ngang {shown['flat']}%")
 
         def value(event: Dict[str, Any], name: str) -> Optional[str]:
             raw = event.get(name)
@@ -1430,7 +1447,8 @@ class MacroCalendarService:
         ]
         if overall:
             icon, label = _LEAN_TEXT[overall["lean"]]
-            lines += [f"{icon} <b>DỰ ĐOÁN BTC: {label}</b>", split(overall)]
+            scope = f"TỔNG HỢP {len(group)} CHỈ SỐ" if len(group) > 1 else "CHỈ SỐ NÀY"
+            lines += [f"{icon} <b>{scope}: {label}</b>", split(overall)]
         else:
             lines.append("🟡 <b>Chưa có tỷ lệ cược</b> — xem quy tắc từng chỉ số bên dưới")
 
@@ -1440,7 +1458,7 @@ class MacroCalendarService:
             icon = _LEAN_TEXT[bias["lean"]][0] if bias.get("available") else "▫️"
             title = esc(str(event.get("short_title") or SHORT_TITLES.get(event.get("category"), event.get("title") or "")))
             badge = " · <i>HIGH</i>" if event.get("impact") == "HIGH" else ""
-            lines += ["", f"{icon} <b>{title}</b>{badge}"]
+            lines += ["", f"{icon} <b>TÁC ĐỘNG RIÊNG — {title}</b>{badge}"]
             if bias.get("basis") == "outcomes":
                 names = []
                 for outcome in bias.get("outcomes") or []:
@@ -1474,8 +1492,8 @@ class MacroCalendarService:
 
 
 _LEAN_TEXT: Dict[str, Tuple[str, str]] = {
-    "UP": ("🟢", "NGHIÊNG TĂNG"),
-    "DOWN": ("🔴", "NGHIÊNG GIẢM"),
-    "FLAT": ("⚪", "TRUNG LẬP — dễ ra đúng kỳ vọng"),
-    "BALANCED": ("🟡", "CÂN BẰNG — chưa rõ hướng"),
+    "UP": ("🟢", "BTC DỰ KIẾN TĂNG"),
+    "DOWN": ("🔴", "BTC DỰ KIẾN GIẢM"),
+    "FLAT": ("⚪", "BTC DỰ KIẾN ĐI NGANG"),
+    "BALANCED": ("🟡", "BTC CHƯA RÕ HƯỚNG"),
 }
