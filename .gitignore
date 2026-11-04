@@ -20,3 +20,4 @@ logs/
 .DS_Store
 Thumbs.db
 trading-bot/.bot.lock
+auto_liq_zone_orders.json

@@ -421,8 +421,19 @@ def _place_entry_order_safely(exchange, symbol: str, side: str, quantity: float,
 
 PUMP_LIMIT_CLIENT_PREFIX = "pump_retest_"
 PUMP_MARKET_CLIENT_PREFIX = "pump_market_"
+AUTO_LIQ_ZONE_CLIENT_PREFIX = "alqz_"
 _PUMP_ACTIVE_STATUSES = {"NEW", "PARTIALLY_FILLED", "FILLED"}
 _PUMP_TERMINAL_STATUSES = {"CANCELED", "EXPIRED", "REJECTED"}
+
+
+def _is_auto_liq_zone_order(order: dict) -> bool:
+    """Whether an entry belongs to the isolated auto-liquidity service."""
+    client_id = str(
+        order.get("clientOrderId")
+        or order.get("origClientOrderId")
+        or ""
+    )
+    return client_id.startswith(AUTO_LIQ_ZONE_CLIENT_PREFIX)
 
 
 def _pump_client_order_id(prepared, order_type: str) -> str:
@@ -5909,6 +5920,7 @@ def limit_order_monitor(exchange, notifier):
                         "qty": float(o.get("origQty", 0)),
                         "price": float(o.get("price", 0) or o.get("stopPrice", 0)),
                         "order_id": str(o.get("orderId", "")),
+                        "client_order_id": str(o.get("clientOrderId") or o.get("origClientOrderId") or ""),
                     } for o in all_orders]
                     with lock:
                         state["pending_orders_cache"] = pending_cache
@@ -7230,6 +7242,9 @@ def orphan_order_cleanup(exchange, notifier):
                     all_orders = exchange._get("/fapi/v1/openOrders", signed=True)
                     for o in all_orders:
                         sym = o.get("symbol", "")
+                        # Auto-liquidity entries own their refresh/cancel lifecycle.
+                        if _is_auto_liq_zone_order(o):
+                            continue
                         if _is_protected_pending_symbol(sym):
                             continue
                         if not (
@@ -7373,6 +7388,10 @@ def pending_order_reviewer(exchange, notifier):
                 side = order.get("side", "")
                 order_price = float(order.get("price", 0))
 
+                # This feature reprices/cancels only its own deterministic IDs.
+                if _is_auto_liq_zone_order(order):
+                    continue
+
                 # Skip coin không bị auto cancel
                 if _is_protected_pending_symbol(sym):
                     continue
@@ -7489,6 +7508,47 @@ if __name__ == "__main__":
         state["_macro_calendar"] = macro_calendar
     macro_calendar.start()  # idempotent; never duplicated by _restart_fn
     atexit.register(macro_calendar.stop)
+
+    # User-selected auto liquidity-zone entries. The service monitors its own
+    # exact client IDs even while PAUSED, but calculates/places only when RUNNING.
+    from auto_liq_zone_orders import AutoLiqZoneOrderService
+
+    def _auto_liq_recovery(symbol, source="AutoLiqZone"):
+        return _recover_unprotected_position(
+            exchange, notifier, symbol, source
+        )
+
+    def _auto_liq_trade(event):
+        from trade_history import save_history
+        event_id = str(event.get("event_id") or "")
+        with lock:
+            already_saved = any(
+                row.get("auto_liq_event_id") == event_id
+                for row in state.get("trade_log", [])
+            )
+            if not already_saved:
+                state["trade_log"].append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": event["symbol"], "side": event["side"],
+                    "entry": event.get("entry_price", 0), "sl": event.get("sl", 0),
+                    "tp": event.get("tp", 0), "qty": event.get("quantity", 0),
+                    "status": "OPEN", "note": "auto_liq_zone_12h",
+                    "auto_liq_event_id": event_id,
+                })
+            snapshot = list(state["trade_log"])
+        if not save_history(snapshot):
+            raise RuntimeError("Auto Liq trade history was not persisted")
+
+    auto_liq_service = AutoLiqZoneOrderService(
+        config, exchange, notifier,
+        entry_placer=_place_entry_order_safely,
+        recovery_callback=_auto_liq_recovery,
+        is_trading_enabled=lambda: bool(state.get("running")) and not bool(state.get("paused")),
+        trade_callback=_auto_liq_trade,
+    )
+    state["_auto_liq_service"] = auto_liq_service
+    auto_liq_service.start()
+    atexit.register(auto_liq_service.stop)
 
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after

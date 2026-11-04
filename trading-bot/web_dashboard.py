@@ -894,7 +894,26 @@ details.macro-details summary::before { content:'▸ '; }
 details.macro-details[open] summary::before { content:'▾ '; }
 .rss-news-head { display:flex;align-items:center;gap:8px;margin:4px 0 10px;color:#8b949e;font-size:11px;font-weight:700; }
 @media (max-width:768px) { .macro-cal-grid{grid-template-columns:1fr}.macro-cal{padding:9px}.macro-event{padding:9px} }
-/* Tin tức thị trường */
+.alq-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:8px; }
+.alq-card { background:#0d1117; border:1px solid #30363d; border-left:3px solid #58a6ff; border-radius:8px; padding:9px; }
+.alq-card.off { opacity:.68; border-left-color:#6e7681; }
+.alq-card.error { border-left-color:#f85149; }
+.alq-card.pending { border-left-color:#d29922; }
+.alq-card.protected { border-left-color:#3fb950; }
+.alq-head { display:flex;align-items:center;gap:6px;margin-bottom:6px; }
+.alq-title { flex:1;color:#e6edf3;font-size:12px;font-weight:800; }
+.alq-side { padding:2px 7px;border-radius:10px;font-size:9px;font-weight:800; }
+.alq-side.long { color:#3fb950;background:rgba(63,185,80,.15); }
+.alq-side.short { color:#f85149;background:rgba(248,81,73,.15); }
+.alq-zones { display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:6px 0; }
+.alq-zone { background:#161b22;border-radius:5px;padding:6px;font-size:9px;color:#8b949e; }
+.alq-zone b { display:block;color:#c9d1d9;font-size:11px;margin:2px 0; }
+.alq-zone.above b { color:#f85149; }.alq-zone.below b { color:#3fb950; }
+.alq-target { font-size:10px;color:#c9d1d9;padding:6px;background:rgba(88,166,255,.06);border-radius:5px; }
+.alq-actions { display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;align-items:center; }
+.alq-actions select { padding:3px 5px;font-size:10px; }
+.alq-status { color:#8b949e;font-size:9px;margin-top:5px;overflow-wrap:anywhere; }
+
 .news-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
 .news-chip { padding:3px 11px; border-radius:20px; font-size:11px; font-weight:600; cursor:pointer;
              border:1px solid #30363d; background:#0d1117; color:#8b949e; transition:all .2s;
@@ -1219,9 +1238,99 @@ async function setMaxLoss() {
     refresh();
 }
 async function cancelAllPending() {
-    if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (trừ coin được bảo vệ)?')) return;
+    if (!confirm('Huỷ TẤT CẢ lệnh entry đang chờ (trừ coin được bảo vệ và Auto Liq)?')) return;
     await apiPost('/api/cancel_all_pending');
     refresh();
+}
+
+let _autoLiqZoneData = null;
+
+function _alqFmtPrice(value) {
+    const n = Number(value || 0);
+    if (!n) return '—';
+    if (n >= 1000) return '$' + n.toLocaleString('en-US', {maximumFractionDigits:2});
+    if (n >= 1) return '$' + n.toFixed(4);
+    return '$' + n.toPrecision(6);
+}
+function _alqFmtUsd(value) {
+    const n = Number(value || 0);
+    if (!n) return '—';
+    return n >= 1e6 ? '$' + (n/1e6).toFixed(1) + 'M' : '$' + (n/1e3).toFixed(0) + 'K';
+}
+function _alqStatus(status) {
+    const labels = {
+        DUE:'Chờ tính vùng', CALCULATING:'Đang tính vùng', SUBMITTING:'Đang đặt lệnh',
+        PENDING:'Lệnh đang chờ khớp', BLOCKED:'Bị chặn bởi position/pending/capacity',
+        PROTECTING:'Đã khớp · đang đặt SL/TP', PROTECTED:'Đã khớp · có SL/TP',
+        RECOVERED_FLAT:'SL lỗi · đã đóng khẩn cấp an toàn',
+        DISABLED:'Đã tắt', DISABLING:'Đang tắt', DELETING:'Đang xóa',
+        ERROR:'Lỗi', UNKNOWN:'Chưa xác định kết quả order', ADOPTED:'Đã khôi phục order sau restart'
+    };
+    return labels[status] || status || '—';
+}
+function renderAutoLiqZone(data) {
+    _autoLiqZoneData = data || {items:[]};
+    const root = document.getElementById('alq-list');
+    const summary = document.getElementById('alq-summary');
+    if (!root) return;
+    const items = Array.isArray(_autoLiqZoneData.items) ? _autoLiqZoneData.items : [];
+    if (summary) summary.textContent = `${_autoLiqZoneData.enabled ? 'Bot RUNNING' : 'Bot PAUSED — chỉ giám sát order đã đặt'} · ${_autoLiqZoneData.source || 'Binance OI'} · ${items.length} coin`;
+    if (!items.length) {
+        root.innerHTML = '<div style="font-size:11px;color:#6e7681">Chưa thêm coin.</div>';
+        return;
+    }
+    root.innerHTML = '<div class="alq-grid">' + items.map(item => {
+        const a = item.strongest_above, b = item.strongest_below, order = item.order || {};
+        const cls = !item.enabled ? 'off' : (item.status === 'PROTECTED' ? 'protected' : (item.status === 'PENDING' ? 'pending' : (item.error ? 'error' : '')));
+        const interval = Number(item.refresh_interval || 900);
+        const next = item.enabled && item.next_update ? Math.max(0, Math.ceil(item.next_update - Date.now()/1000)) : 0;
+        const orderText = order.order_id || order.client_order_id
+            ? `Order ${_macroEsc(order.order_id || order.client_order_id)} @ ${_alqFmtPrice(order.price)} · ${_macroEsc(order.status || '')}` : 'Chưa có order';
+        const zone = (z, side) => `<div class="alq-zone ${side}"><span>${side==='above'?'🔴 Vùng trên':'🟢 Vùng dưới'}</span><b>${z ? _alqFmtPrice(z.price) : '—'}</b><span>${z ? _alqFmtUsd(z.usd) + ' · cách ' + Number(z.distance).toFixed(2) + '%' : 'Chưa có data'}</span></div>`;
+        return `<div class="alq-card ${cls}">
+          <div class="alq-head"><span class="alq-title">${_macroEsc(item.symbol)}</span><span class="alq-side ${item.side==='LONG'?'long':'short'}">${_macroEsc(item.side)}</span></div>
+          <div class="alq-zones">${zone(a,'above')}${zone(b,'below')}</div>
+          <div class="alq-target">Target ${item.side==='LONG'?'vùng dưới':'vùng trên'}: <b>${_alqFmtPrice(item.target_price)}</b> · ${_alqFmtUsd(item.target_usd)}</div>
+          <div class="alq-status">${_macroEsc(_alqStatus(item.status))} · ${orderText}${next ? ` · cập nhật sau ${Math.ceil(next/60)}p` : ''}${item.error ? '<br>⚠ ' + _macroEsc(item.error) : ''}</div>
+          <div class="alq-actions">
+            <select onchange="updateAutoLiqZone('${_macroEsc(item.id)}',this.value,null)" ${order.protection_started?'disabled':''}><option value="LONG" ${item.side==='LONG'?'selected':''}>LONG</option><option value="SHORT" ${item.side==='SHORT'?'selected':''}>SHORT</option></select>
+            <select onchange="updateAutoLiqZone('${_macroEsc(item.id)}',null,this.value)"><option value="300" ${interval===300?'selected':''}>5 phút</option><option value="900" ${interval===900?'selected':''}>15 phút</option><option value="3600" ${interval===3600?'selected':''}>1 giờ</option></select>
+            <button class="btn ${item.enabled?'btn-gray':'btn-green'} btn-sm" onclick="toggleAutoLiqZone('${_macroEsc(item.id)}',${!item.enabled})">${item.enabled?'Tắt':'Bật'}</button>
+            <button class="btn btn-blue btn-sm" onclick="refreshAutoLiqZone('${_macroEsc(item.id)}')">↻</button>
+            <button class="btn btn-red btn-sm" onclick="deleteAutoLiqZone('${_macroEsc(item.id)}','${_macroEsc(item.symbol)}')">Xóa</button>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+}
+async function _alqPost(url, body) {
+    const r = await apiPost(url, body);
+    if (!r.ok && r.error) toast(r.error, false);
+    await refresh();
+    return r;
+}
+async function addAutoLiqZone() {
+    const symbol = document.getElementById('alq-symbol')?.value.trim().toUpperCase();
+    if (!symbol) { toast('Nhập coin', false); return; }
+    const side = document.getElementById('alq-side')?.value || 'LONG';
+    const refresh_interval = Number(document.getElementById('alq-interval')?.value || 900);
+    const r = await _alqPost('/api/auto-liq-zone/add', {symbol, side, refresh_interval});
+    if (r.ok) document.getElementById('alq-symbol').value = '';
+}
+async function updateAutoLiqZone(id, side, refreshInterval) {
+    const body = {id};
+    if (side) body.side = side;
+    if (refreshInterval) body.refresh_interval = Number(refreshInterval);
+    await _alqPost('/api/auto-liq-zone/update', body);
+}
+async function toggleAutoLiqZone(id, enabled) {
+    await _alqPost('/api/auto-liq-zone/toggle', {id, enabled});
+}
+async function deleteAutoLiqZone(id, symbol) {
+    if (!confirm(`Xóa ${symbol}? Lệnh pending do tính năng này tạo sẽ bị hủy; vị thế đã khớp và SL/TP được giữ nguyên.`)) return;
+    await _alqPost('/api/auto-liq-zone/delete', {id});
+}
+async function refreshAutoLiqZone(id=null) {
+    await _alqPost('/api/auto-liq-zone/refresh', id ? {id} : {});
 }
 
 let _protectedPendingCoins = [];
@@ -2029,6 +2138,21 @@ function renderDashboard(d) {
         </div>
     </div>`;
 
+    // Auto Liquidity Zone Orders — only user-selected symbols.
+    html += `<div class="section" id="auto-liq-zone-section">
+        <h2>💧 Auto Liquidity Zone Orders <span style="font-size:10px;color:#6e7681;font-weight:400">12h · Binance OI estimate</span></h2>
+        <div style="font-size:10px;color:#d29922;margin-bottom:8px">⚠ Vùng ước tính, không phải dữ liệu thanh lý thật của Coinglass. Khi vùng đổi, bot chỉ thay đúng order có mã alqz_ do tính năng này tạo.</div>
+        <div class="control-row">
+          <input id="alq-symbol" placeholder="BTC hoặc BTCUSDT" style="width:145px" onkeydown="if(event.key==='Enter')addAutoLiqZone()">
+          <select id="alq-side"><option value="LONG">🟢 LONG · vùng dưới</option><option value="SHORT">🔴 SHORT · vùng trên</option></select>
+          <select id="alq-interval"><option value="300">Cập nhật 5 phút</option><option value="900" selected>Cập nhật 15 phút</option><option value="3600">Cập nhật 1 giờ</option></select>
+          <button class="btn btn-blue btn-sm" onclick="addAutoLiqZone()">+ Thêm coin</button>
+          <button class="btn btn-gray btn-sm" onclick="refreshAutoLiqZone()">↻ Cập nhật ngay</button>
+        </div>
+        <div id="alq-summary" style="font-size:10px;color:#8b949e;margin:7px 0"></div>
+        <div id="alq-list"><div style="font-size:11px;color:#6e7681">Chưa thêm coin.</div></div>
+    </div>`;
+
     // Open Positions
     html += `<div class="section"><h2>&#x1F4CC; Open Positions</h2>
         <button class="btn btn-green btn-sm" onclick="autoSetSlTpAll()" style="margin-bottom:8px">&#x1F6E1; Auto Set SL/TP ALL</button>
@@ -2058,13 +2182,14 @@ function renderDashboard(d) {
             const name = o.symbol.replace('USDT','');
             const pStr = o.price >= 1000 ? fmtUsd(o.price) : '$'+fmt(o.price, o.price>=1?3:5);
             const sideClass = o.side === 'BUY' ? 'green' : 'red';
+            const isAutoLiq = String(o.client_order_id || '').startsWith('alqz_');
             html += `<tr>
-                <td><b>${name}</b></td>
+                <td><b>${name}</b>${isAutoLiq?' <span style="color:#58a6ff;font-size:9px">AUTO LIQ</span>':''}</td>
                 <td class="${sideClass}">${o.side}</td>
                 <td>${o.type}</td>
                 <td>${pStr}</td>
                 <td>${o.qty}</td>
-                <td><button class="btn btn-red btn-sm" onclick="cancelOrder('${o.symbol}','${o.order_id}')">Cancel</button></td>
+                <td>${isAutoLiq?'<span style="color:#6e7681;font-size:9px">quản lý ở Auto Liq</span>':`<button class="btn btn-red btn-sm" onclick="cancelOrder('${o.symbol}','${o.order_id}')">Cancel</button>`}</td>
             </tr>`;
         });
         html += `</table></div>`;
@@ -4264,6 +4389,7 @@ async function refresh(){
             // Các section render riêng vừa bị dựng lại rỗng → vẽ lại từ data đã có,
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_macroCalendarData) renderMacroCalendar();
+            renderAutoLiqZone(d.auto_liq_zone);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
@@ -4305,6 +4431,9 @@ function _patchDashboard(d) {
         _lastP0Load = now;
         loadP0Settings();  // Tự động load P0 settings khi panel mở (10s/lần)
     }
+
+    // Auto liquidity-zone cards (data is local service snapshot, no network call).
+    renderAutoLiqZone(d.auto_liq_zone);
 
     // Bot status dot
     const running = d.running;
@@ -5097,9 +5226,76 @@ def api_state():
             "filled1": sp.filled1, "filled2": sp.filled2,
         } for sym, sp in splits.items()],
         "entry_targets": entry_targets,
+        "auto_liq_zone": _get_auto_liq_zone_safe(),
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
+
+
+@app.route("/api/auto-liq-zone", methods=["GET"])
+@require_auth
+def api_auto_liq_zone():
+    return jsonify(_get_auto_liq_zone_safe())
+
+
+def _auto_liq_service_or_error():
+    with _lock:
+        service = _state.get("_auto_liq_service") if _state else None
+    return service
+
+
+@app.route("/api/auto-liq-zone/add", methods=["POST"])
+@require_auth
+def api_auto_liq_zone_add():
+    service = _auto_liq_service_or_error()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.add(data.get("symbol"), data.get("side"), data.get("refresh_interval"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/auto-liq-zone/update", methods=["POST"])
+@require_auth
+def api_auto_liq_zone_update():
+    service = _auto_liq_service_or_error()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.update(data.get("id"), side=data.get("side"),
+                            refresh_interval=data.get("refresh_interval"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/auto-liq-zone/toggle", methods=["POST"])
+@require_auth
+def api_auto_liq_zone_toggle():
+    service = _auto_liq_service_or_error()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.toggle(data.get("id"), bool(data.get("enabled")))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/auto-liq-zone/delete", methods=["POST"])
+@require_auth
+def api_auto_liq_zone_delete():
+    service = _auto_liq_service_or_error()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.delete((request.get_json() or {}).get("id"))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/auto-liq-zone/refresh", methods=["POST"])
+@require_auth
+def api_auto_liq_zone_refresh():
+    service = _auto_liq_service_or_error()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.force_refresh((request.get_json() or {}).get("id"))
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 @app.route("/api/protected-pending-coins", methods=["GET"])
@@ -5200,6 +5396,12 @@ def api_cancel_all_pending():
             otype    = o.get("type", "")
             reduce   = o.get("reduceOnly", False)
             order_id = o.get("orderId")
+            client_id = str(o.get("clientOrderId") or o.get("origClientOrderId") or "")
+
+            # Auto-liquidity entries are managed by their own toggle/delete API.
+            if client_id.startswith("alqz_"):
+                kept.append(f"{sym} {otype} (auto-liq)")
+                continue
 
             # Bulk cleanup never overrides the protected list. Exact row-level
             # cancel remains the explicit manual override.
@@ -5230,6 +5432,18 @@ def api_cancel_all_pending():
     except Exception as e:
         logger.error(f"cancel_all_pending error: {e}")
         return jsonify({"ok": False, "msg": str(e)})
+
+
+def _get_auto_liq_zone_safe():
+    try:
+        with _lock:
+            service = _state.get("_auto_liq_service") if _state else None
+        return service.snapshot() if service else {
+            "enabled": False, "source": "Binance OI estimate (12h, 5m×144)",
+            "warning": "Dịch vụ chưa khởi động.", "window": "12h", "items": [], "errors": [],
+        }
+    except Exception as exc:
+        return {"enabled": False, "items": [], "errors": [str(exc)]}
 
 
 def _get_ai_bias_safe():
@@ -5547,6 +5761,17 @@ def api_cancel_order():
     if _exchange is None:
         return jsonify({"ok": False, "msg": "Exchange not initialized"})
     try:
+        current = _exchange._get(
+            "/fapi/v1/order",
+            {"symbol": symbol, "orderId": int(order_id)},
+            signed=True,
+        )
+        client_id = str(current.get("clientOrderId") or current.get("origClientOrderId") or "")
+        if client_id.startswith("alqz_"):
+            return jsonify({
+                "ok": False,
+                "msg": "Order Auto Liq: hãy dùng nút Tắt hoặc Xóa trong mục Auto Liquidity Zone",
+            }), 409
         _exchange._delete("/fapi/v1/order", {"symbol": symbol, "orderId": int(order_id)})
         return jsonify({"ok": True, "msg": f"Cancelled order {symbol}"})
     except Exception as e:

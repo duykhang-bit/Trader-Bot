@@ -42,24 +42,26 @@ def load_history() -> list:
         return []
 
 
-def save_history(trade_log: list):
+def save_history(trade_log: list) -> bool:
     """
     Lưu lịch sử vào file — atomic write để tránh corrupt khi crash.
-    Dùng _history_lock để tránh concurrent write.
+    Dùng _history_lock để tránh concurrent write. Trả True chỉ sau khi file
+    đã fsync + replace thành công; callers cũ có thể tiếp tục bỏ qua return.
     """
     try:
         os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-        # Snapshot list trước để tránh mutation trong khi serialize
         snapshot = list(trade_log)
         tmp_file = HISTORY_FILE + ".tmp"
         with _history_lock:
-            # Ghi vào file .tmp trước
             with open(tmp_file, "w") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
-            # Rename atomic — nếu crash giữa chừng, file gốc vẫn còn
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_file, HISTORY_FILE)
+        return True
     except Exception as e:
         logger.error(f"[History] save_history lỗi: {e}")
+        return False
 
 
 def get_stats(trade_log: list) -> dict:
