@@ -1308,5 +1308,14 @@ class AutoLiqZoneOrderService:
 
     @staticmethod
     def _is_missing_order(exc: Exception) -> bool:
+        # requests.HTTPError text is only "400 Client Error"; Binance puts the
+        # real code (-2013 query / -2011 cancel) in the response body.
         text = str(exc).lower()
-        return "-2013" in text or "does not exist" in text or "unknown order" in text
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                text += " " + str(response.text or "").lower()
+            except Exception:
+                pass
+        return ("-2013" in text or "-2011" in text
+                or "does not exist" in text or "unknown order" in text)
