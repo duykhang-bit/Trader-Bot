@@ -584,17 +584,28 @@ class AutoLiqZoneOrderService:
         # upper bucket and LONG the lowest/farthest lower bucket, selected by
         # price edge, not by the largest estimated USD amount.
         frame_low, frame_high = self._chart_frame(symbol, mark)
+        threshold = min(1.0, max(0.0, float(getattr(
+            self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
+        ))))
+        above_threshold = threshold
+        if item["side"] == "SHORT":
+            # SHORT-only reach: extend the upper frame and accept thinner
+            # far zones. LONG cards keep the shared frame and threshold.
+            frame_high = self._chart_frame(symbol, mark, pad_pct=getattr(
+                self.config, "AUTO_LIQ_ZONE_SHORT_FRAME_PAD_PCT",
+                getattr(self.config, "AUTO_LIQ_ZONE_FRAME_PAD_PCT", FRAME_PAD_PCT),
+            ))[1]
+            above_threshold = min(1.0, max(0.0, float(getattr(
+                self.config, "AUTO_LIQ_ZONE_SHORT_THRESHOLD", threshold
+            ))))
         above = [(float(price), float(usd)) for price, usd in zones.items()
                  if mark < float(price) <= frame_high]
         below = [(float(price), float(usd)) for price, usd in zones.items()
                  if frame_low <= float(price) < mark]
-        threshold = min(1.0, max(0.0, float(getattr(
-            self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
-        ))))
         # Like Coinglass' 0.36 slider: normalize each side independently so a
         # dominant lower wall cannot erase every visible upper candidate.
         if above:
-            above_cutoff = max(usd for _, usd in above) * threshold
+            above_cutoff = max(usd for _, usd in above) * above_threshold
             above = [zone for zone in above if zone[1] >= above_cutoff]
         if below:
             below_cutoff = max(usd for _, usd in below) * threshold
@@ -654,16 +665,17 @@ class AutoLiqZoneOrderService:
                 return
         self._place_entry(item, rounded_target)
 
-    def _chart_frame(self, symbol: str, mark: float) -> tuple[float, float]:
+    def _chart_frame(self, symbol: str, mark: float,
+                     pad_pct=None) -> tuple[float, float]:
         """Return the 12h (5m×144) candle low/high, padded like the chart edge."""
         frame = _klines_to_df(self.exchange.get_klines(symbol, "5m", limit=144))
         high = float(frame["high"].max())
         low = float(frame["low"].min())
         if not (math.isfinite(high) and math.isfinite(low)) or low <= 0 or high < low:
             raise ValueError(f"invalid 12h price frame for {symbol}")
-        pad = max(0.0, float(getattr(
-            self.config, "AUTO_LIQ_ZONE_FRAME_PAD_PCT", FRAME_PAD_PCT
-        ))) / 100.0
+        if pad_pct is None:
+            pad_pct = getattr(self.config, "AUTO_LIQ_ZONE_FRAME_PAD_PCT", FRAME_PAD_PCT)
+        pad = max(0.0, float(pad_pct)) / 100.0
         # Mark can sit outside the closed-candle range on a fresh breakout.
         return min(low, mark) * (1.0 - pad), max(high, mark) * (1.0 + pad)
 
