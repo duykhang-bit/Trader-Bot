@@ -161,12 +161,10 @@ class PumpEntryCoordinator:
     def __init__(self, *, reservation_ttl_sec: float = 20.0,
                  watch_ttl_sec: float = 180.0,
                  new_high_epsilon_pct: float = 0.0,
-                 peak_match_tolerance_pct: float = 0.1,
                  clock=time.monotonic):
         self._reservation_ttl = max(0.1, float(reservation_ttl_sec))
         self._watch_ttl = max(self._reservation_ttl, float(watch_ttl_sec))
         self._new_high_epsilon_pct = max(0.0, float(new_high_epsilon_pct))
-        self._peak_match_tolerance_pct = max(0.0, float(peak_match_tolerance_pct))
         self._clock = clock
         self._lock = threading.RLock()
         self._symbols: dict[str, _SymbolState] = {}
@@ -224,8 +222,7 @@ class PumpEntryCoordinator:
                 return False
             # Allow tiny exchange rounding differences between a detector peak
             # and the raw closed-kline high, while still rejecting a new high.
-            tolerance = self._peak_match_tolerance_pct / 100.0
-            if item.peak_price > 0 and result.peak_price < item.peak_price * (1.0 - tolerance):
+            if item.peak_price > 0 and result.peak_price < item.peak_price * 0.999:
                 item.state = PumpEntryState.WATCHING_TOP
                 item.updated_at = now
                 return False
