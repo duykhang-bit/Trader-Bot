@@ -2291,7 +2291,7 @@ function renderDashboard(d) {
         const offsetPct = ((d.entry_offset_pct || 0.003) * 100).toFixed(1);
         html += `<div class="section">`;
         html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới vùng liquidity (MARKET khi chạm + xác nhận lại trend):</b>`
-              + `<span style="font-size:11px;color:#3fb950;margin-left:8px">✓ Entry dùng đúng vùng liquidity, không cộng Offset</span>`;
+              + (offsetOn ? `<span style="font-size:11px;color:#d29922;margin-left:8px">⚡ Entry Offset ${offsetPct}% bật — áp dụng sau vùng liquidity</span>` : '');
         html += `<table style="margin-top:6px"><tr><th>Coin</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>TTL</th></tr>`;
         armedKeys.forEach(sym => {
             const a = armed[sym];
