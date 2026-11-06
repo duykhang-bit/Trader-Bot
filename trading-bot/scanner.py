@@ -1198,11 +1198,42 @@ def scan_market(exchange, config, min_score: float = 40.0, notifier=None) -> Opt
                 klines_1h  = exchange.get_klines(p_sym, "1h",  limit=100)
                 klines_4h  = exchange.get_klines(p_sym, "4h",  limit=100)
                 klines_15m = exchange.get_klines(p_sym, "15m", limit=100)
-                df_1h  = _klines_to_df(klines_1h)
-                df_4h  = _klines_to_df(klines_4h)
+                df_1h  = _klines_to_df_closed(klines_1h)
+                df_4h  = _klines_to_df_closed(klines_4h)
                 df_15m = _klines_to_df(klines_15m)
 
                 bias = p_info["signal"]
+                # Pending signals are delayed decisions: revalidate their closed
+                # 4h/1h direction and regime instead of preserving stale bias.
+                def _pending_trend(frame):
+                    close = frame["close"]
+                    ema9 = calculate_ema(close, 9).iloc[-1]
+                    ema21 = calculate_ema(close, 21).iloc[-1]
+                    ema50 = calculate_ema(close, 50).iloc[-1]
+                    price = close.iloc[-1]
+                    if ema9 > ema21 and price > ema50:
+                        return "LONG"
+                    if ema9 < ema21 and price < ema50:
+                        return "SHORT"
+                    return "NEUTRAL"
+
+                trend_4h = _pending_trend(df_4h)
+                trend_1h = _pending_trend(df_1h)
+                opposite = "SHORT" if bias == "LONG" else "LONG"
+                if trend_4h == opposite or trend_1h == opposite or bias not in {trend_4h, trend_1h}:
+                    _pending_watch.pop(p_sym, None)
+                    logger.info(
+                        f"  🗑 PENDING invalidated {p_sym}: wanted={bias} "
+                        f"4h={trend_4h} 1h={trend_1h}"
+                    )
+                    continue
+                if getattr(config, "REGIME_FILTER_ENABLED", True):
+                    regime = detect_regime(df_4h, config)
+                    if (regime.get("regime") in {"RANGE", "CHAOS"}
+                            or regime.get("bias", "NEUTRAL") not in {"NEUTRAL", bias}):
+                        _pending_watch.pop(p_sym, None)
+                        logger.info(f"  🗑 PENDING invalidated {p_sym}: regime={regime}")
+                        continue
                 try:
                     css = compute_signal_score(df_15m, df_1h, df_4h)
                 except Exception:

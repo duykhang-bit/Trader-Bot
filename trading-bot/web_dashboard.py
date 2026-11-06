@@ -2290,12 +2290,14 @@ function renderDashboard(d) {
         const offsetOn  = d.entry_offset_enabled === true;
         const offsetPct = ((d.entry_offset_pct || 0.003) * 100).toFixed(1);
         html += `<div class="section">`;
-        html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới zone (MARKET ngay khi chạm):</b>`
-              + (offsetOn ? `<span style="font-size:11px;color:#d29922;margin-left:8px">⚡ Entry Offset ${offsetPct}% bật</span>` : '');
+        html += `<b style="font-size:12px;color:#58a6ff">🎯 ARMED — Chờ giá tới vùng liquidity (MARKET khi chạm + xác nhận lại trend):</b>`
+              + `<span style="font-size:11px;color:#3fb950;margin-left:8px">✓ Entry dùng đúng vùng liquidity, không cộng Offset</span>`;
         html += `<table style="margin-top:6px"><tr><th>Coin</th><th>Signal</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>TTL</th></tr>`;
         armedKeys.forEach(sym => {
             const a = armed[sym];
-            const ttl = Math.max(0, 900 - Math.round(Date.now()/1000 - a.ts));
+            const ttlMax = Number(d.armed_entry_ttl_secs || 3600);
+            const serverNow = Number(d.server_ts || Date.now()/1000);
+            const ttl = Math.max(0, Math.round(ttlMax - (serverNow - Number(a.ts || 0))));
             const ttlStr = ttl > 60 ? Math.floor(ttl/60)+'m' : ttl+'s';
             const ep  = a.entry_price >= 1 ? '$'+a.entry_price.toFixed(4) : '$'+a.entry_price.toFixed(6);
             const slp = a.sl >= 1 ? '$'+a.sl.toFixed(4) : '$'+a.sl.toFixed(6);
@@ -5591,11 +5593,15 @@ def api_toggle():
                 _state["paused"]  = False
             return jsonify({"ok": True, "msg": "Bot resumed", "running": True})
     else:
-        # Đang chạy → PAUSE: tắt HẾT thread (trade + protect + telegram)
-        with _lock:
-            _state["running"] = False
-            _state["paused"]  = True
-        logger.info("Bot paused via web (running=False → all threads stop)")
+        # Serialize Pause against the same boundary used by every automated
+        # order. When this response returns, no in-flight gate can submit later.
+        from contextlib import nullcontext
+        submit_lock = _state.get("_entry_submit_lock")
+        with (submit_lock if submit_lock is not None else nullcontext()):
+            with _lock:
+                _state["running"] = False
+                _state["paused"]  = True
+        logger.info("Bot paused via web (submit gate drained; running=False)")
         return jsonify({"ok": True, "msg": "Bot paused ⏸ (tắt hết)", "running": False})
 
 

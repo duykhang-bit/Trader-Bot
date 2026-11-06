@@ -447,15 +447,24 @@ class PumpDetector:
 
     # ── Phát hiện đợt pump ───────────────────────────────────
     def _detect_pump_move(self, df: pd.DataFrame) -> Tuple[float, float, float]:
-        """Tìm đỉnh/đáy trong PUMP_LOOKBACK_CANDLES nến gần nhất."""
-        lb  = self.cfg["PUMP_LOOKBACK_CANDLES"]
+        """Largest chronological draw-up: the low must occur before the high."""
+        lb = self.cfg["PUMP_LOOKBACK_CANDLES"]
         win = df.tail(lb)
-        low  = win["low"].min()
-        high = win["high"].max()
-        if low <= 0:
-            return 0.0, low, high
-        pct = (high - low) / low * 100
-        return round(pct, 2), low, high
+        if win.empty:
+            return 0.0, 0.0, 0.0
+        running_low = float("inf")
+        best_low = best_high = best_pct = 0.0
+        for _, row in win.iterrows():
+            low = float(row["low"])
+            high = float(row["high"])
+            if low > 0 and low < running_low:
+                running_low = low
+            if running_low <= 0 or running_low == float("inf"):
+                continue
+            pct = (high - running_low) / running_low * 100.0
+            if pct > best_pct:
+                best_pct, best_low, best_high = pct, running_low, high
+        return round(best_pct, 2), best_low, best_high
 
     # ── Chấm điểm tổng ───────────────────────────────────────
     def _score_pump_top(self,

@@ -180,12 +180,26 @@ lock = threading.RLock()  # RLock: cho phép cùng thread acquire lại (tránh 
 _pump_entry_coordinator = PumpEntryCoordinator(
     reservation_ttl_sec=getattr(config, "PUMP_ENTRY_RESERVATION_TTL_SEC", 20),
     watch_ttl_sec=getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180),
+    new_high_epsilon_pct=getattr(config, "PUMP_WS_REARM_NEW_HIGH_PCT", 0.0),
+    peak_match_tolerance_pct=getattr(config, "PUMP_BOS_PEAK_TOLERANCE_PCT", 1.0),
 )
+
+
+def _pump_runtime_enabled() -> bool:
+    """Honor runtime pause/disable in production; allow isolated unit helpers."""
+    if state.get("_exchange") is None:
+        return True
+    return (bool(state.get("running", False))
+            and not bool(state.get("paused", False))
+            and bool(getattr(config, "PUMP_DETECTOR_ENABLED", True)))
 
 
 def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
                         current_price: float, planned_entry: float):
     """Revalidate closed-1m bearish BOS and reserve this symbol for entry."""
+    if not _pump_runtime_enabled():
+        logger.info(f"[PumpCoord] {source} {symbol}: blocked at reservation (paused/disabled)")
+        return None
     if _pump_entry_coordinator.snapshot(symbol).value == "IN_TRADE":
         try:
             if _get_live_position_amt(exchange, symbol) != 0:
@@ -364,13 +378,22 @@ def _place_entry_order_safely(exchange, symbol: str, side: str, quantity: float,
                               order_type: str = "MARKET",
                               price: float = 0.0, *,
                               client_order_id: str = "",
-                              post_only: bool = False) -> dict | None:
+                              post_only: bool = False,
+                              submit_guard=None) -> dict | None:
     """Atomically enforce live/pending capacity before any automated entry.
 
     All realtime pump, CTD, and armed producers use this gate, so a pending
     LIMIT counts as an occupied slot and same-symbol orders cannot stack.
     """
     with _entry_capacity_lock:
+        # Every caller is an automated producer. Recheck the live pause flag at
+        # the serialized submit boundary so an in-flight scan cannot trade
+        # after the user presses Pause. Isolated tests have no runtime exchange.
+        if state.get("_exchange") is not None and (
+            not state.get("running", False) or state.get("paused", False)
+        ):
+            logger.info(f"[EntryGate] Skip {symbol}: bot paused at submit boundary")
+            return False
         live_positions = _get_live_open_positions(exchange)
         live_symbols = {p.get("symbol") for p in live_positions}
         pending_orders = exchange._get("/fapi/v1/openOrders", signed=True)
@@ -399,6 +422,17 @@ def _place_entry_order_safely(exchange, symbol: str, side: str, quantity: float,
             )
             if any(not o.get("reduceOnly", False) for o in symbol_orders):
                 logger.info(f"[EntryGate] Skip {symbol}: pending entry appeared")
+                return False
+
+            # Final caller/runtime guard after every network preflight and
+            # immediately before the exchange submission.
+            if state.get("_exchange") is not None and (
+                not state.get("running", False) or state.get("paused", False)
+            ):
+                logger.info(f"[EntryGate] Skip {symbol}: paused at final submit")
+                return False
+            if submit_guard is not None and not bool(submit_guard()):
+                logger.info(f"[EntryGate] Skip {symbol}: caller guard expired at final submit")
                 return False
 
             if order_type == "LIMIT":
@@ -485,6 +519,10 @@ def _place_reserved_pump_order(exchange, prepared, symbol: str, quantity: float,
     """
     if not prepared:
         return False
+    if not _pump_runtime_enabled():
+        logger.info(f"[PumpOrder] {symbol} blocked at submit boundary (paused/disabled)")
+        _finish_pump_reservation(prepared, placed=False)
+        return False
     client_order_id = _pump_client_order_id(prepared, order_type)
     result = None
     accepted = False
@@ -494,6 +532,7 @@ def _place_reserved_pump_order(exchange, prepared, symbol: str, quantity: float,
             order_type=order_type, price=price,
             client_order_id=client_order_id,
             post_only=(order_type == "LIMIT"),
+            submit_guard=_pump_runtime_enabled,
         )
         accepted = _order_was_accepted(result)
     except Exception as placement_exc:
@@ -1156,10 +1195,15 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         "PUMP_WS_STRONG_MAX_ENTRY_DROP_PCT" if is_strong else "PUMP_WS_LIGHT_MAX_ENTRY_DROP_PCT",
         6.0 if is_strong else 3.0,
     )
-    max_peak_age = getattr(
+    # Fresh-pullback timers (8/12s) must not kill a setup before a closed-1m
+    # BOS can exist. Keep the observation alive up to the coordinator watch TTL.
+    fresh_peak_age = getattr(
         config,
         "PUMP_WS_STRONG_PEAK_MAX_AGE_SEC" if is_strong else "PUMP_WS_LIGHT_PEAK_MAX_AGE_SEC",
         12.0 if is_strong else 8.0,
+    )
+    max_peak_age = max(
+        float(fresh_peak_age), float(getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180))
     )
     peak_age = now - float(tracker.get("ws_high_ts", 0.0))
 
@@ -1186,9 +1230,11 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         or drawdown_pct < pullback_pct
         or tracker.get("below_peak_ticks", 0) < confirm_ticks
         or price > previous_price
+        or now - float(tracker.get("bos_retry_ts", 0.0)) < getattr(config, "PUMP_BOS_RETRY_SECONDS", 5)
     ):
         return
 
+    tracker["bos_retry_ts"] = now
     with lock:
         open_syms = {
             p.get("symbol") for p in state.get("open_positions", [])
@@ -1284,7 +1330,38 @@ def _ws_realtime_pump_short(sym: str, entry_price: float, ws_high: float,
             exchange_ref, sym, f"ws_{tier}", ws_high,
             revalidated_price, entry_price,
         )
-        if not prepared or prepared[1].action != "MARKET":
+        if not prepared:
+            return
+        decision = prepared[1]
+        if decision.action == "LIMIT":
+            placed_order = _place_reserved_pump_order(
+                exchange_ref, prepared, sym, qty,
+                order_type="LIMIT", price=decision.price,
+                limit_metadata={
+                    "cycle_peak": ws_high,
+                    "sl_price": sl_price,
+                    "tp1_price": tp_price,
+                    "pump_pct": pump_pct,
+                    "tier": tier,
+                },
+            )
+            if not placed_order:
+                return
+            tracker.update({
+                "active": False, "entry_pending": False,
+                "rearm_high": ws_high, "below_peak_ticks": 0,
+            })
+            notifier_ref.telegram.send(
+                f"⏳ <b>REALTIME PUMP RETEST LIMIT</b>\n"
+                f"🪙 {sym} · {tier.upper()} +{pump_pct:.1f}%\n"
+                f"SELL LIMIT: <b>${decision.price:.6g}</b>\n"
+                f"SL: ${sl_price:.6g} · TP: ${tp_price:.6g}"
+            )
+            logger.info(
+                f"[WS-Pump] Retest LIMIT placed {sym} tier={tier} @ {decision.price:.6g}"
+            )
+            return
+        if decision.action != "MARKET":
             _finish_pump_reservation(prepared, placed=False)
             return
         placed_order = _place_reserved_pump_order(
@@ -1686,6 +1763,72 @@ def _fetch_actual_pnl(exchange_ref, symbol: str, side: str,
         return round(qty * (entry - cur_price), 4)
 
 
+def _armed_is_expired(info: dict) -> bool:
+    ttl = max(1, int(getattr(config, "ARMED_ENTRY_TTL_SECS", 3600)))
+    return time.time() >= float(info.get("ts", 0) or 0) + ttl
+
+
+def _trend_from_closed(frame) -> str:
+    from indicators import calculate_ema
+    close = frame["close"]
+    fast = calculate_ema(close, 9).iloc[-1]
+    slow = calculate_ema(close, 21).iloc[-1]
+    trend = calculate_ema(close, 50).iloc[-1]
+    price = close.iloc[-1]
+    if fast > slow and price > trend:
+        return "LONG"
+    if fast < slow and price < trend:
+        return "SHORT"
+    return "NEUTRAL"
+
+
+def _revalidate_armed_setup(exchange, symbol: str, expected: str):
+    """Recheck closed HTF trend and regime immediately before delayed entry."""
+    try:
+        from scanner import _klines_to_df_closed, detect_regime
+        df_4h = _klines_to_df_closed(exchange.get_klines(symbol, "4h", limit=100))
+        df_1h = _klines_to_df_closed(exchange.get_klines(symbol, "1h", limit=100))
+        trend_4h = _trend_from_closed(df_4h)
+        trend_1h = _trend_from_closed(df_1h)
+        opposite = "SHORT" if expected == "LONG" else "LONG"
+        if trend_4h == opposite or trend_1h == opposite:
+            return False, f"trend changed: 4h={trend_4h} 1h={trend_1h}"
+        if expected not in {trend_4h, trend_1h}:
+            return False, f"trend no longer confirms {expected}: 4h={trend_4h} 1h={trend_1h}"
+        if getattr(config, "REGIME_FILTER_ENABLED", True):
+            regime = detect_regime(df_4h, config)
+            if regime.get("regime") in {"RANGE", "CHAOS"}:
+                return False, f"regime={regime.get('regime')}"
+            bias = regime.get("bias", "NEUTRAL")
+            if bias not in {"NEUTRAL", expected}:
+                return False, f"regime bias changed to {bias}"
+        return True, f"4h={trend_4h} 1h={trend_1h}"
+    except Exception as exc:
+        # Fail closed: a delayed entry must not trade on unverifiable stale data.
+        return False, f"revalidation failed: {exc}"
+
+
+def _recalculate_armed_risk(exchange, symbol: str, signal: str, entry: float):
+    """Re-anchor both SL and TP to executable price; return None if RR invalid."""
+    try:
+        from indicators import calculate_atr
+        from scanner import _klines_to_df
+        frame = _klines_to_df(exchange.get_klines(symbol, "15m", limit=50))
+        atr = float(calculate_atr(frame["high"], frame["low"], frame["close"]).iloc[-1])
+        distance = max(atr * 2.0, entry * 0.02)
+        if signal == "LONG":
+            sl, tp = entry - distance, entry + atr * 8.0
+        else:
+            sl, tp = entry + distance, entry - atr * 8.0
+        risk, reward = abs(entry - sl), abs(tp - entry)
+        rr = reward / risk if risk > 0 else 0.0
+        if sl <= 0 or tp <= 0 or rr < getattr(config, "MIN_RR", 1.5):
+            return None
+        return round(sl, 8), round(tp, 8), rr
+    except Exception:
+        return None
+
+
 def _armed_execute(sym, info, trigger_price):
     """Thực thi armed entry — chạy trong thread riêng, không block WS."""
     try:
@@ -1693,12 +1836,18 @@ def _armed_execute(sym, info, trigger_price):
         noti = _ws_notifier_ref[0]
         if not exc or not noti:
             return
+        if not state.get("running", False) or state.get("paused", False):
+            return
 
         # Remove khỏi armed ngay để không trigger lại
         with lock:
             armed = state.get("armed_entries", {})
             if sym not in armed:
                 return  # Đã bị remove bởi thread khác
+            if _armed_is_expired(armed[sym]):
+                armed.pop(sym, None)
+                logger.info(f"[Armed] ⏰ EXPIRED {sym} before WS execution")
+                return
             armed.pop(sym, None)
 
             # Check max positions
@@ -1710,40 +1859,34 @@ def _armed_execute(sym, info, trigger_price):
             if sym in open_syms:
                 return
 
+        valid, reason = _revalidate_armed_setup(exc, sym, info["signal"])
+        if not valid:
+            logger.info(f"[Armed] ❌ {sym} canceled before WS entry: {reason}")
+            return
+
         try:
             exc.set_leverage(sym, config.LEVERAGE)
         except Exception:
             pass
 
         bal = exc.get_total_equity()
+        risk_plan = _recalculate_armed_risk(exc, sym, info["signal"], trigger_price)
+        if not risk_plan:
+            logger.info(f"[Armed] ❌ {sym}: executable-price RR/SL/TP invalid")
+            return
+        actual_sl, actual_tp, actual_rr = risk_plan
 
-        # Tính actual_sl trước để calc_qty dùng đúng SL distance
-        actual_sl = info["sl"]
-        try:
-            from indicators import calculate_atr
-            from scanner import _klines_to_df
-            klines_15m = exc.get_klines(sym, "15m", limit=50)
-            df_15m = _klines_to_df(klines_15m)
-            atr_val = float(calculate_atr(df_15m["high"], df_15m["low"], df_15m["close"]).iloc[-1])
-            sl_dist = max(atr_val * 2.0, trigger_price * 0.02)
-            if info["signal"] == "LONG":
-                actual_sl = round(trigger_price - sl_dist, 8)
-                if actual_sl >= trigger_price:
-                    actual_sl = round(trigger_price * 0.98, 8)
-            else:
-                actual_sl = round(trigger_price + sl_dist, 8)
-                if actual_sl <= trigger_price:
-                    actual_sl = round(trigger_price * 1.02, 8)
-        except Exception:
-            pass
-
-        # Dùng actual_sl để tính qty đúng risk 1%
+        # Dùng executable SL để tính qty đúng risk.
         qty = calc_qty(bal, trigger_price, actual_sl, symbol=sym, exchange=exc)
         if qty * trigger_price < 5.0:
             qty = round(5.0 / trigger_price + 0.001, 3)
 
+        if _armed_is_expired(info):
+            logger.info(f"[Armed] ⏰ EXPIRED {sym} at WS submit boundary")
+            return
         if not _place_entry_order_safely(
-            exc, sym, info["side"], qty, order_type="MARKET"
+            exc, sym, info["side"], qty, order_type="MARKET",
+            submit_guard=lambda: not _armed_is_expired(info),
         ):
             return
         _cache_entry(sym, info["signal"], trigger_price, qty)
@@ -1770,7 +1913,7 @@ def _armed_execute(sym, info, trigger_price):
 
         # TP
         try:
-            exc.place_take_profit_order(sym, info["close_side"], qty, info["tp"])
+            exc.place_take_profit_order(sym, info["close_side"], qty, actual_tp)
         except Exception:
             pass
 
@@ -1778,16 +1921,16 @@ def _armed_execute(sym, info, trigger_price):
             _append_trade({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "symbol": sym, "side": info["signal"],
-                "entry": trigger_price, "sl": actual_sl, "tp": info["tp"],
+                "entry": trigger_price, "sl": actual_sl, "tp": actual_tp,
                 "qty": qty, "status": "OPEN", "note": "armed_ws_trigger"
             })
 
         icon = "🟢" if info["signal"] == "LONG" else "🔴"
-        rr = abs(info["tp"] - trigger_price) / abs(trigger_price - info["sl"]) if abs(trigger_price - info["sl"]) > 0 else 0
+        rr = actual_rr
         noti.telegram.send(
             f"{icon} <b>⚡ ARMED TRIGGERED</b>: {sym} {info['signal']}\n"
             f"💰 Entry: {trigger_price:.6f}\n"
-            f"🛑 SL: {info['sl']:.6f} | 🎯 TP: {info['tp']:.6f}\n"
+            f"🛑 SL: {actual_sl:.6f} | 🎯 TP: {actual_tp:.6f}\n"
             f"📐 RR: 1:{rr:.1f} | Score: {info['score']}\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
@@ -1931,7 +2074,12 @@ def price_ws_streamer():
                 with lock:
                     armed = state.get("armed_entries", {})
                     armed_info = armed.get(sym)
-                if armed_info:
+                if armed_info and _armed_is_expired(armed_info):
+                    with lock:
+                        state.get("armed_entries", {}).pop(sym, None)
+                    logger.info(f"[Armed] ⏰ EXPIRED {sym} before WS trigger")
+                    armed_info = None
+                if armed_info and not state.get("paused", False):
                     entry_p = armed_info["entry_price"]
                     triggered = False
                     if armed_info["signal"] == "LONG" and mark <= entry_p:
@@ -1956,7 +2104,8 @@ def price_ws_streamer():
                 # Giờ check TẤT CẢ coin trong FIXED_COINS → bắt pump realtime < 1s.
                 exc  = _ws_exchange_ref[0]
                 noti = _ws_notifier_ref[0]
-                if exc and noti:
+                if (exc and noti and not state.get("paused", False)
+                        and getattr(config, "PUMP_DETECTOR_ENABLED", True)):
                     # 1. Spike detector — detect pump đang xảy ra (< 1s)
                     _ws_pump_spike_check(sym, mark, exc, noti)
                     
@@ -4063,10 +4212,19 @@ def scan_engine(exchange, notifier):
                     limit_count = len([o for o in all_orders if not o.get("reduceOnly", False) and o.get("type") == "LIMIT"])
                     if limit_count < 2:
                         # Có slot trống → đẩy armed lên LIMIT
-                        for a_sym, a_info in list(armed.items()):
+                        ranked_armed = sorted(
+                            list(armed.items()),
+                            key=lambda pair: (-float(pair[1].get("score", 0)), -float(pair[1].get("ts", 0))),
+                        )
+                        for a_sym, a_info in ranked_armed:
                             if limit_count >= 2:
                                 break
                             try:
+                                if _armed_is_expired(a_info):
+                                    with lock:
+                                        state.get("armed_entries", {}).pop(a_sym, None)
+                                    logger.info(f"[Armed] ⏰ EXPIRED {a_sym} before promote")
+                                    continue
                                 # ═══ CHECK: coin đã có position chưa? ═══
                                 with lock:
                                     open_syms = {p["symbol"] for p in state.get("open_positions", [])
@@ -4101,6 +4259,14 @@ def scan_engine(exchange, notifier):
                                             state.get("armed_entries", {}).pop(a_sym, None)
                                         logger.info(f"[Armed] ❌ Remove {a_sym}: entry {entry_p:.6f} xa mark {cur_mark:.6f} ({ratio*100:.0f}%)")
                                         continue
+                                valid, reason = _revalidate_armed_setup(
+                                    exchange, a_sym, a_info["signal"]
+                                )
+                                if not valid:
+                                    with lock:
+                                        state.get("armed_entries", {}).pop(a_sym, None)
+                                    logger.info(f"[Promote] ❌ Remove {a_sym}: {reason}")
+                                    continue
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                                 bal = exchange.get_total_equity()
                                 final_entry = a_info["entry_price"]
@@ -4109,9 +4275,15 @@ def scan_engine(exchange, notifier):
                                 qty = calc_qty(bal, final_entry, final_sl, symbol=a_sym, exchange=exchange)
                                 if qty * final_entry < 5.0:
                                     qty = round(5.0 / final_entry + 0.001, 3)
+                                if _armed_is_expired(a_info):
+                                    with lock:
+                                        state.get("armed_entries", {}).pop(a_sym, None)
+                                    logger.info(f"[Armed] ⏰ EXPIRED {a_sym} at promote submit boundary")
+                                    continue
                                 placed_order = _place_entry_order_safely(
                                     exchange, a_sym, a_info["side"], qty,
                                     order_type="LIMIT", price=final_entry,
+                                    submit_guard=lambda info=a_info: not _armed_is_expired(info),
                                 )
                                 if not placed_order:
                                     continue
@@ -4153,7 +4325,10 @@ def scan_engine(exchange, notifier):
                         if time.time() - a_info["ts"] > armed_ttl:
                             with lock:
                                 state.get("armed_entries", {}).pop(a_sym, None)
-                            logger.info(f"[Armed] ⏰ EXPIRED {a_sym} (>1h)")
+                            logger.info(
+                                f"[Armed] ⏰ EXPIRED {a_sym} "
+                                f"(>{armed_ttl/60:.0f}m)"
+                            )
                             continue
 
                         # Skip nếu đã có position
@@ -4179,19 +4354,42 @@ def scan_engine(exchange, notifier):
                             hit = True
 
                         if hit:
+                            valid, reason = _revalidate_armed_setup(
+                                exchange, a_sym, a_info["signal"]
+                            )
+                            if not valid:
+                                with lock:
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                logger.info(f"[Armed] ❌ Remove {a_sym} before REST entry: {reason}")
+                                continue
+                            risk_plan = _recalculate_armed_risk(
+                                exchange, a_sym, a_info["signal"], cur_p
+                            )
+                            if not risk_plan:
+                                with lock:
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                logger.info(f"[Armed] ❌ Remove {a_sym}: executable-price RR/SL/TP invalid")
+                                continue
+                            actual_sl, actual_tp, actual_rr = risk_plan
                             # MARKET ORDER ngay
                             try:
                                 exchange.set_leverage(a_sym, config.LEVERAGE)
                             except Exception:
                                 pass
                             bal = exchange.get_total_equity()
-                            qty = calc_qty(bal, cur_p, a_info["sl"], symbol=a_sym, exchange=exchange)
+                            qty = calc_qty(bal, cur_p, actual_sl, symbol=a_sym, exchange=exchange)
                             if qty * cur_p < 5.0:
                                 qty = round(5.0 / cur_p + 0.001, 3)
 
+                            if _armed_is_expired(a_info):
+                                with lock:
+                                    state.get("armed_entries", {}).pop(a_sym, None)
+                                logger.info(f"[Armed] ⏰ EXPIRED {a_sym} at REST submit boundary")
+                                continue
                             if not _place_entry_order_safely(
                                 exchange, a_sym, a_info["side"], qty,
                                 order_type="MARKET",
+                                submit_guard=lambda info=a_info: not _armed_is_expired(info),
                             ):
                                 continue
                             _cache_entry(a_sym, a_info["signal"], cur_p, qty)
@@ -4201,7 +4399,7 @@ def scan_engine(exchange, notifier):
                             sl_ok = False
                             for _try in range(3):
                                 try:
-                                    exchange.place_stop_loss_order(a_sym, a_info["close_side"], qty, a_info["sl"])
+                                    exchange.place_stop_loss_order(a_sym, a_info["close_side"], qty, actual_sl)
                                     sl_ok = True
                                     break
                                 except Exception:
@@ -4216,7 +4414,7 @@ def scan_engine(exchange, notifier):
 
                             # TP
                             try:
-                                exchange.place_take_profit_order(a_sym, a_info["close_side"], qty, a_info["tp"])
+                                exchange.place_take_profit_order(a_sym, a_info["close_side"], qty, actual_tp)
                             except Exception:
                                 pass
 
@@ -4225,14 +4423,14 @@ def scan_engine(exchange, notifier):
                                 _append_trade({
                                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     "symbol": a_sym, "side": a_info["signal"],
-                                    "entry": cur_p, "sl": a_info["sl"], "tp": a_info["tp"],
+                                    "entry": cur_p, "sl": actual_sl, "tp": actual_tp,
                                     "qty": qty, "status": "OPEN", "note": "armed_liq_entry"
                                 })
 
                             notifier.telegram.send(
                                 f"{'🟢' if a_info['signal']=='LONG' else '🔴'} <b>ARMED TRIGGERED</b>: {a_sym} {a_info['signal']}\n"
-                                f"💰 Entry: {cur_p:.6f} | SL: {a_info['sl']:.6f} | TP: {a_info['tp']:.6f}\n"
-                                f"📐 RR: 1:{a_info['rr']:.1f}\n"
+                                f"💰 Entry: {cur_p:.6f} | SL: {actual_sl:.6f} | TP: {actual_tp:.6f}\n"
+                                f"📐 RR: 1:{actual_rr:.1f}\n"
                                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
                             )
                             logger.info(f"[Armed] ✅ TRIGGERED {a_sym} {a_info['signal']} @ {cur_p:.6f}")
@@ -4471,24 +4669,19 @@ def scan_engine(exchange, notifier):
                     liq_entry = get_best_entry(best.symbol, best.signal, cur_price, swing_price)
                     if liq_entry:
                         raw_entry = round(liq_entry["price"], 8)
+                        # The engine already returns the weighted center of the
+                        # selected liquidity cluster. A generic 3.5% offset would
+                        # move the order outside that evidence, so use it exactly.
+                        entry_price = raw_entry
                         logger.info(f"[LiqEngine] {best.symbol} {best.signal}: "
                                     f"entry={raw_entry:.6f} dist={liq_entry['dist_pct']:.1f}% "
                                     f"score={liq_entry['score']:.1f} | {liq_entry['reason']}")
                     else:
-                        raw_entry = cur_price
-                        logger.info(f"[LiqFallback] {best.symbol}: using cur_price={raw_entry:.6f}")
-
-                    # Apply Entry Offset
-                    if getattr(config, "ENTRY_OFFSET_ENABLED", False) and raw_entry > 0:
-                        offset_pct = getattr(config, "ENTRY_OFFSET_PCT", 0.015)
-                        if best.signal == "LONG":
-                            entry_price = round(raw_entry * (1 - offset_pct), 8)
-                        else:
-                            entry_price = round(raw_entry * (1 + offset_pct), 8)
-                        logger.info(f"[EntryOffset] {best.symbol} {best.signal}: "
-                                    f"{raw_entry:.6f} → {entry_price:.6f} ({offset_pct*100:.1f}%)")
-                    else:
-                        entry_price = raw_entry
+                        raw_entry = 0.0
+                        skip_reason = "no_valid_liquidity_cluster"
+                        logger.info(
+                            f"[LiqEngine] {best.symbol} {best.signal}: no valid liquidity cluster → skip"
+                        )
 
                 # ═══ BƯỚC 7: Tính SL / TP + RR ═══
                 if not skip_reason:
@@ -4562,7 +4755,12 @@ def scan_engine(exchange, notifier):
                             qty = calc_qty(bal, entry_price, sl, symbol=best.symbol, exchange=exchange)
                             if qty * entry_price < 5.0:
                                 qty = round(5.0 / entry_price + 0.001, 3)
-                            exchange.place_limit_order(best.symbol, side, qty, entry_price)
+                            placed = _place_entry_order_safely(
+                                exchange, best.symbol, side, qty,
+                                order_type="LIMIT", price=entry_price,
+                            )
+                            if not placed:
+                                raise RuntimeError("central entry gate blocked LIMIT")
 
                             # Lưu pending_smart_orders để monitor đặt SL/TP khi fill
                             try:
@@ -4666,17 +4864,24 @@ def pump_scan_engine(exchange, notifier):
     logger.info("[PumpEngine] Started — watching for pump tops...")
 
     from pump_detector import PumpDetector, _to_df
-    from orderbook_detector import OrderBookTracker
+    from orderbook_detector import get_ob_tracker
 
-    detector   = PumpDetector(config)
-    ob_tracker = OrderBookTracker()  # Real-time order book cho pump coins
-    logger.info("[PumpEngine] OrderBook tracker initialized")
+    detector = PumpDetector(config)
+    nhe_detector = PumpDetector(config)  # persistent cooldown across scan cycles
+    ob_tracker = get_ob_tracker(
+        "wss://fstream.binance.com" if not config.USE_TESTNET
+        else "wss://stream.binancefuture.com"
+    )
+    logger.info("[PumpEngine] Shared live OrderBook tracker ready")
 
     while state["running"]:
         try:
             # ── Check paused: dừng scan pump khi bot pause ──
             if state.get("paused", False):
                 time.sleep(2)
+                continue
+            if not getattr(config, "PUMP_DETECTOR_ENABLED", True):
+                time.sleep(5)
                 continue
             # Lấy danh sách pump coins từ state (web có thể add/remove)
             with lock:
@@ -4925,8 +5130,7 @@ def pump_scan_engine(exchange, notifier):
             _should_scan_fixed = (_scan_tick_now % max(1, slow_interval // interval) == 0)
 
             if nhe_coins and _should_scan_fixed:
-                # Tạo detector riêng với ngưỡng nhẹ hơn — không ảnh hưởng detector cũ
-                nhe_detector = PumpDetector(config)
+                # Persistent detector: keep its per-symbol cooldown across scans.
                 nhe_detector.cfg["PUMP_TOP_MIN_SCORE"] = nhe_score
                 nhe_detector.cfg["PUMP_PRICE_RISE_PCT"] = nhe_rise
                 nhe_detector.cfg["PUMP_ALERT_COOLDOWN_SECS"] = getattr(config, "PUMP_ALERT_COOLDOWN_SECS", 60)
@@ -7494,6 +7698,7 @@ if __name__ == "__main__":
     exchange = BinanceFutures(config.API_KEY, config.API_SECRET, config.USE_TESTNET)
     notifier = Notifier()
 
+    state["_entry_submit_lock"] = _entry_capacity_lock
     # Lưu exchange/notifier vào state để Telegram commands dùng
     state["_exchange"] = exchange
     state["_notifier"] = notifier

@@ -205,27 +205,33 @@ def calc_liquidity_zones(symbol: str, current_price: float) -> Dict[str, List[Di
 
 
 def _cluster_zones(zones: List[Dict], ref_price: float, pct_gap: float = 0.5) -> List[Dict]:
-    """Gom zones gần nhau thành 1 cluster, cộng score."""
+    """Merge nearby zones and use their USD/score-weighted center as entry."""
     if not zones:
         return []
-
-    # Sort by price
-    zones.sort(key=lambda x: x["price"])
-    clustered = []
-    current_cluster = zones[0].copy()
-
-    for z in zones[1:]:
-        gap = abs(z["price"] - current_cluster["price"]) / ref_price * 100
+    ordered = sorted(zones, key=lambda item: item["price"])
+    groups: List[List[Dict]] = [[ordered[0]]]
+    for zone in ordered[1:]:
+        gap = abs(zone["price"] - groups[-1][0]["price"]) / ref_price * 100
         if gap <= pct_gap:
-            # Gom vào cluster hiện tại
-            current_cluster["score"] += z["score"]
-            current_cluster["usd"] = current_cluster.get("usd", 0) + z.get("usd", 0)
-            current_cluster["reason"] += f" + {z['reason']}"
+            groups[-1].append(zone)
         else:
-            clustered.append(current_cluster)
-            current_cluster = z.copy()
+            groups.append([zone])
 
-    clustered.append(current_cluster)
+    clustered: List[Dict] = []
+    for group in groups:
+        weights = [max(float(zone.get("usd", 0) or 0), float(zone.get("score", 0) or 0), 1.0)
+                   for zone in group]
+        weighted_price = sum(float(zone["price"]) * weight for zone, weight in zip(group, weights)) / sum(weights)
+        reasons = list(dict.fromkeys(str(zone.get("reason", "")) for zone in group if zone.get("reason")))
+        clustered.append({
+            "price": weighted_price,
+            "cluster_low": min(float(zone["price"]) for zone in group),
+            "cluster_high": max(float(zone["price"]) for zone in group),
+            "score": sum(float(zone.get("score", 0) or 0) for zone in group),
+            "usd": sum(float(zone.get("usd", 0) or 0) for zone in group),
+            "reason": " + ".join(reasons),
+            "n_zones": len(group),
+        })
     return clustered
 
 
@@ -245,41 +251,31 @@ def get_best_entry(symbol: str, direction: str, current_price: float,
     else:
         candidates = zones["short_zones"]
 
-    if not candidates and not swing_price:
+    if not candidates:
         return None
 
-    # Kết hợp với swing price
-    best = None
+    # Candidates are score-sorted. Choose the strongest one that still leaves
+    # at least 2% room instead of rejecting the symbol because only rank #1 is
+    # already too close to market.
+    best = next((candidate.copy() for candidate in candidates
+                 if abs(current_price - candidate["price"]) / current_price * 100 >= 2.0), None)
+    if best is None:
+        return None
 
-    if candidates:
-        best = candidates[0]  # Score cao nhất
-
-    # Nếu có swing price và nó gần hơn (fill dễ hơn)
+    # Swing is confluence only when it overlaps this liquidity cluster. Never
+    # replace a real liquidity target with an unrelated nearer 15m extreme.
     if swing_price:
-        swing_dist = abs(current_price - swing_price) / current_price * 100
-        if 2.0 <= swing_dist <= 10.0:
-            if direction == "LONG":
-                # LONG: entry = max(liq_zone, swing_low) — cái gần giá hơn
-                if best and swing_price > best["price"]:
-                    best["price"] = swing_price
-                    best["reason"] += " + swing_15m"
-                elif not best:
-                    best = {"price": swing_price, "score": 3.0,
-                            "reason": "swing_15m", "dist_pct": swing_dist}
-            else:
-                # SHORT: entry = min(liq_zone, swing_high) — cái gần giá hơn
-                if best and swing_price < best["price"]:
-                    best["price"] = swing_price
-                    best["reason"] += " + swing_15m"
-                elif not best:
-                    best = {"price": swing_price, "score": 3.0,
-                            "reason": "swing_15m", "dist_pct": swing_dist}
+        tolerance_pct = 0.5
+        cluster_low = float(best.get("cluster_low", best["price"]))
+        cluster_high = float(best.get("cluster_high", best["price"]))
+        tolerance = current_price * tolerance_pct / 100.0
+        if cluster_low - tolerance <= swing_price <= cluster_high + tolerance:
+            best["score"] += 3.0
+            best["reason"] += " + swing_15m_confluence"
 
-    if best:
-        dist = abs(current_price - best["price"]) / current_price * 100
-        best["dist_pct"] = round(dist, 2)
-        # Min 2% distance
-        if dist < 2.0:
-            return None
-
+    dist = abs(current_price - best["price"]) / current_price * 100
+    best["dist_pct"] = round(dist, 2)
+    # Avoid chasing liquidity already too close to current execution price.
+    if dist < 2.0:
+        return None
     return best
