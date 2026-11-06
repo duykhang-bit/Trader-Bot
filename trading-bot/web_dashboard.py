@@ -1295,7 +1295,7 @@ function renderAutoLiqZone(data) {
         return `<div class="alq-card ${cls}">
           <div class="alq-head"><span class="alq-title">${_macroEsc(item.symbol)}</span><span class="alq-side ${item.side==='LONG'?'long':'short'}">${_macroEsc(item.side)}</span></div>
           <div class="alq-zones">${zone(a,'above')}${zone(b,'below')}</div>
-          <div class="alq-target">Target ${item.side==='LONG'?'giá thấp nhất phía dưới':'giá cao nhất phía trên'} (±${Number(_autoLiqZoneData.range_pct || 5).toFixed(1)}%): <b>${_alqFmtPrice(item.target_price)}</b> · ${_alqFmtUsd(item.target_usd)}</div>
+          <div class="alq-target">Target ${item.side==='LONG'?'giá thấp nhất phía dưới':'giá cao nhất phía trên'} (khung 12h${item.frame_low && item.frame_high ? ' ' + _alqFmtPrice(item.frame_low) + '–' + _alqFmtPrice(item.frame_high) : ''}): <b>${_alqFmtPrice(item.target_price)}</b> · ${_alqFmtUsd(item.target_usd)}</div>
           <div class="alq-status">${_macroEsc(_alqStatus(item.status))} · ${orderText}${next ? ` · cập nhật sau ${Math.ceil(next/60)}p` : ''}${item.error ? '<br>⚠ ' + _macroEsc(item.error) : ''}</div>
           <div class="alq-actions">
             <select onchange="updateAutoLiqZone('${_macroEsc(item.id)}',this.value,null)" ${order.protection_started?'disabled':''}><option value="LONG" ${item.side==='LONG'?'selected':''}>LONG</option><option value="SHORT" ${item.side==='SHORT'?'selected':''}>SHORT</option></select>

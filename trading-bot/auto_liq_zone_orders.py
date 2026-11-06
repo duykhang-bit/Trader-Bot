@@ -28,10 +28,11 @@ PERSISTENCE_VERSION = 1
 PERSISTENCE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "auto_liq_zone_orders.json"
 )
-SOURCE_LABEL = "Binance OI estimate (12h, 5m×144; Coinglass-like ±5%)"
+SOURCE_LABEL = "Binance OI estimate (12h, 5m×144; khung giá 12h như Coinglass)"
 SOURCE_WARNING = "Vùng ước tính, không phải dữ liệu thanh lý thật của Coinglass."
 WINDOW_LABEL = "12h"
-DISPLAY_RANGE_PCT = 5.0
+# Padding beyond the 12h candle high/low, like the heatmap's y-axis margin.
+FRAME_PAD_PCT = 1.0
 LIQUIDITY_THRESHOLD = 0.36
 CLIENT_ID_PREFIX = "alqz_"
 VALID_INTERVALS = {300, 900, 3600}
@@ -158,8 +159,8 @@ class AutoLiqZoneOrderService:
                 "source": SOURCE_LABEL,
                 "warning": SOURCE_WARNING,
                 "window": WINDOW_LABEL,
-                "range_pct": max(0.5, float(getattr(
-                    self.config, "AUTO_LIQ_ZONE_DISPLAY_RANGE_PCT", DISPLAY_RANGE_PCT
+                "frame_pad_pct": max(0.0, float(getattr(
+                    self.config, "AUTO_LIQ_ZONE_FRAME_PAD_PCT", FRAME_PAD_PCT
                 ))),
                 "liquidity_threshold": min(1.0, max(0.0, float(getattr(
                     self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
@@ -361,6 +362,8 @@ class AutoLiqZoneOrderService:
             "enabled": True,
             "status": "DUE",
             "mark": None,
+            "frame_low": None,
+            "frame_high": None,
             "strongest_above": None,
             "strongest_below": None,
             "target_price": None,
@@ -472,7 +475,8 @@ class AutoLiqZoneOrderService:
             _float(raw.get("created_at")) or self._now(),
         )
         for key in (
-            "enabled", "status", "mark", "strongest_above", "strongest_below",
+            "enabled", "status", "mark", "frame_low", "frame_high",
+            "strongest_above", "strongest_below",
             "target_price", "target_usd", "last_updated", "next_update", "error",
             "sl", "tp",
         ):
@@ -573,17 +577,17 @@ class AutoLiqZoneOrderService:
         if not math.isfinite(mark) or mark <= 0:
             raise ValueError(f"invalid mark price for {symbol}")
         zones = calc_liq_zones_from_oi(symbol, period="5m", lookback=144)
-        # Coinglass mobile heatmaps auto-frame roughly ±5% around mark. Within
-        # that visible band, SHORT uses the highest/farthest upper bucket and
-        # LONG uses the lowest/farthest lower bucket. This deliberately selects
-        # by price edge, not by the largest estimated USD amount.
-        range_pct = max(0.5, float(getattr(
-            self.config, "AUTO_LIQ_ZONE_DISPLAY_RANGE_PCT", DISPLAY_RANGE_PCT
-        ))) / 100.0
+        # Coinglass' 12h heatmap frames the y-axis on the 12h candle range, not
+        # a fixed ±% around mark. A fixed ±5% clipped real upper walls after a
+        # pullback (SHORT sat below visible liquidity) and let LONG drift past
+        # the 12h low. Within the 12h frame, SHORT uses the highest/farthest
+        # upper bucket and LONG the lowest/farthest lower bucket, selected by
+        # price edge, not by the largest estimated USD amount.
+        frame_low, frame_high = self._chart_frame(symbol, mark)
         above = [(float(price), float(usd)) for price, usd in zones.items()
-                 if mark < float(price) <= mark * (1.0 + range_pct)]
+                 if mark < float(price) <= frame_high]
         below = [(float(price), float(usd)) for price, usd in zones.items()
-                 if mark * (1.0 - range_pct) <= float(price) < mark]
+                 if frame_low <= float(price) < mark]
         threshold = min(1.0, max(0.0, float(getattr(
             self.config, "AUTO_LIQ_ZONE_THRESHOLD", LIQUIDITY_THRESHOLD
         ))))
@@ -603,6 +607,8 @@ class AutoLiqZoneOrderService:
         no_target = target_zone is None
         with self._lock:
             item["mark"] = mark
+            item["frame_low"] = frame_low
+            item["frame_high"] = frame_high
             item["strongest_above"] = self._zone_view(highest_above, mark)
             item["strongest_below"] = self._zone_view(lowest_below, mark)
             item["last_updated"] = now
@@ -647,6 +653,19 @@ class AutoLiqZoneOrderService:
             if not result["ok"] or result.get("exposure"):
                 return
         self._place_entry(item, rounded_target)
+
+    def _chart_frame(self, symbol: str, mark: float) -> tuple[float, float]:
+        """Return the 12h (5m×144) candle low/high, padded like the chart edge."""
+        frame = _klines_to_df(self.exchange.get_klines(symbol, "5m", limit=144))
+        high = float(frame["high"].max())
+        low = float(frame["low"].min())
+        if not (math.isfinite(high) and math.isfinite(low)) or low <= 0 or high < low:
+            raise ValueError(f"invalid 12h price frame for {symbol}")
+        pad = max(0.0, float(getattr(
+            self.config, "AUTO_LIQ_ZONE_FRAME_PAD_PCT", FRAME_PAD_PCT
+        ))) / 100.0
+        # Mark can sit outside the closed-candle range on a fresh breakout.
+        return min(low, mark) * (1.0 - pad), max(high, mark) * (1.0 + pad)
 
     @staticmethod
     def _zone_view(zone, mark):
