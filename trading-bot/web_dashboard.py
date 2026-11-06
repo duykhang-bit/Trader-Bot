@@ -6068,8 +6068,11 @@ def _api_pump_state_inner():
     _now = time.time()
     cache = getattr(_api_pump_state_inner, "_ticker_cache", {})
     cache_ts = getattr(_api_pump_state_inner, "_ticker_ts", 0)
-    if _now - cache_ts > 120 and not getattr(_api_pump_state_inner, "_ticker_fetching", False):
+    try_ts = getattr(_api_pump_state_inner, "_ticker_try_ts", 0)
+    if (_now - cache_ts > 120 and _now - try_ts > 30
+            and not getattr(_api_pump_state_inner, "_ticker_fetching", False)):
         _api_pump_state_inner._ticker_fetching = True
+        _api_pump_state_inner._ticker_try_ts = _now
         def _fetch_ticker():
             try:
                 import requests as _req
@@ -6095,8 +6098,6 @@ def _api_pump_state_inner():
         import threading as _th
         _th.Thread(target=_fetch_ticker, daemon=True).start()
     _api_pump_state_inner._last_watch = watch
-    _api_pump_state_inner._ticker_cache = cache
-    _api_pump_state_inner._ticker_ts    = cache_ts if _now - cache_ts <= 60 else _now
 
     # Build coin rows với pump score nếu có
     rows = []
