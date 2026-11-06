@@ -31,9 +31,10 @@ PERSISTENCE_FILE = os.path.join(
 SOURCE_LABEL = "Binance OI estimate (12h, 5m×144; khung giá 12h như Coinglass)"
 SOURCE_WARNING = "Vùng ước tính, không phải dữ liệu thanh lý thật của Coinglass."
 WINDOW_LABEL = "12h"
-# Strict 12h candle frame; any positive estimated liquidity remains eligible.
-FRAME_PAD_PCT = 0.0
-LIQUIDITY_THRESHOLD = 0.0
+# The 12h chart keeps at least ±4% around mark so nearby liquidation zones
+# remain visible when the 12h candle range is unusually narrow.
+MARK_FRAME_MARGIN_PCT = 4.0
+LIQUIDITY_THRESHOLD = 0.27
 CLIENT_ID_PREFIX = "alqz_"
 VALID_INTERVALS = {300, 900, 3600}
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
@@ -159,9 +160,9 @@ class AutoLiqZoneOrderService:
                 "source": SOURCE_LABEL,
                 "warning": SOURCE_WARNING,
                 "window": WINDOW_LABEL,
-                "frame_pad_pct": FRAME_PAD_PCT,
+                "frame_pad_pct": MARK_FRAME_MARGIN_PCT,
                 "liquidity_threshold": LIQUIDITY_THRESHOLD,
-                "selection": "farthest_nonzero_zone_within_strict_12h_frame",
+                "selection": "farthest_nonzero_zone_within_12h_visible_frame",
                 "items": [_public_item(item) for item in self._items.values()],
                 "errors": list(self._snapshot_errors),
             }
@@ -573,15 +574,22 @@ class AutoLiqZoneOrderService:
         if not math.isfinite(mark) or mark <= 0:
             raise ValueError(f"invalid mark price for {symbol}")
         zones = calc_liq_zones_from_oi(symbol, period="5m", lookback=144)
-        # Strict 12h range. Keep every positive estimated-liquidity bucket:
-        # SHORT takes the last/highest bucket before the 12h high; LONG takes
-        # the last/lowest bucket before the 12h low. No strength cutoff and no
-        # frame/entry percentage is added.
+        # Keep positive estimated-liquidity buckets inside the 12h chart view
+        # (12h high/low with at least ±4% around mark), then apply the same 0.27
+        # visibility threshold shown in Coinglass. SHORT takes the highest
+        # visible bucket; LONG takes the lowest. No entry offset is applied.
         frame_low, frame_high = self._chart_frame(symbol, mark)
         above = [(float(price), float(usd)) for price, usd in zones.items()
                  if mark < float(price) <= frame_high and float(usd) > 0]
         below = [(float(price), float(usd)) for price, usd in zones.items()
                  if frame_low <= float(price) < mark and float(usd) > 0]
+        threshold = LIQUIDITY_THRESHOLD
+        if above:
+            above_cutoff = max(usd for _, usd in above) * threshold
+            above = [zone for zone in above if zone[1] >= above_cutoff]
+        if below:
+            below_cutoff = max(usd for _, usd in below) * threshold
+            below = [zone for zone in below if zone[1] >= below_cutoff]
         highest_above = max(above, key=lambda value: value[0]) if above else None
         lowest_below = min(below, key=lambda value: value[0]) if below else None
         target_zone = lowest_below if item["side"] == "LONG" else highest_above
@@ -638,13 +646,16 @@ class AutoLiqZoneOrderService:
         self._place_entry(item, rounded_target)
 
     def _chart_frame(self, symbol: str, mark: float) -> tuple[float, float]:
-        """Return the exact 12h (5m×144) candle low/high, without padding."""
+        """Return 12h price range with at least ±4% visibility around mark."""
         frame = _klines_to_df(self.exchange.get_klines(symbol, "5m", limit=144))
         high = float(frame["high"].max())
         low = float(frame["low"].min())
         if not (math.isfinite(high) and math.isfinite(low)) or low <= 0 or high < low:
             raise ValueError(f"invalid 12h price frame for {symbol}")
-        return low, high
+        margin = max(0.0, float(getattr(
+            self.config, "AUTO_LIQ_ZONE_MARK_MARGIN_PCT", MARK_FRAME_MARGIN_PCT
+        ))) / 100.0
+        return min(low, mark * (1.0 - margin)), max(high, mark * (1.0 + margin))
 
     @staticmethod
     def _zone_view(zone, mark):
