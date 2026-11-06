@@ -85,8 +85,6 @@ def calc_liq_zones_from_oi(symbol: str,
     ─────────────────────────────────────────────
     Returns: {price_bucket: liq_usd} — data thật, không ước tính volume
     """
-    import math
-
     # Fetch tất cả data cùng lúc
     klines   = _get("/fapi/v1/klines",
                     {"symbol": symbol, "interval": period, "limit": lookback})
@@ -120,14 +118,14 @@ def calc_liq_zones_from_oi(symbol: str,
                 "short": float(item.get("shortAccount", 0.5)),
             }
 
-    # Bucket helper
-    bucket_pct = 0.001  # 0.1%
+    # Use mark-relative 0.05% buckets. The old magnitude-based formula made
+    # low-priced coins very coarse (ONE moved in 0.00001 steps, about 0.6%),
+    # hiding raw zones such as 0.001765 behind 0.00176/0.00177 buckets.
+    bucket_size = mark * 0.0005 if mark > 0 else 0.0
     def price_to_bucket(price: float) -> float:
-        if price <= 0:
+        if price <= 0 or bucket_size <= 0:
             return 0.0
-        magnitude   = 10 ** math.floor(math.log10(price))
-        bucket_size = magnitude * bucket_pct * 10
-        return round(math.floor(price / bucket_size) * bucket_size, 8)
+        return round(round(price / bucket_size) * bucket_size, 12)
 
     # Leverage distribution (theo thống kê Binance)
     leverage_dist = [
