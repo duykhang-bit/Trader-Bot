@@ -81,6 +81,7 @@ MACRO_CALENDAR_CACHE_FILE = "logs/macro_calendar.json"
 TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "")
 
 # --- Pump auto-entry safety (closed 1m BOS required) ---
+PUMP_WS_REQUIRE_BOS = False  # False: realtime WS short on tick pullback within seconds
 PUMP_BOS_LOOKBACK_CANDLES = 30
 PUMP_BOS_WATCH_TTL_SEC = 180
 PUMP_BOS_PEAK_TOLERANCE_PCT = 1.0

@@ -83,6 +83,7 @@ from notifier import Notifier
 from liquidation_tracker import LiquidationTracker
 from liq_strategy import LiqStrategy, SplitPosition
 from pump_entry_coordinator import (
+    BearishBosResult,
     PumpEntryCoordinator,
     decide_short_entry,
     detect_bearish_bos_1m,
@@ -195,8 +196,13 @@ def _pump_runtime_enabled() -> bool:
 
 
 def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
-                        current_price: float, planned_entry: float):
-    """Revalidate closed-1m bearish BOS and reserve this symbol for entry."""
+                        current_price: float, planned_entry: float,
+                        require_bos: bool = True):
+    """Revalidate closed-1m bearish BOS and reserve this symbol for entry.
+
+    ``require_bos=False`` is used only by the realtime WS path: its tick-level
+    pullback confirmation replaces the closed-1m BOS (which needs ~4+ minutes).
+    """
     if not _pump_runtime_enabled():
         logger.info(f"[PumpCoord] {source} {symbol}: blocked at reservation (paused/disabled)")
         return None
@@ -212,19 +218,25 @@ def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
         )
         return None
     _pump_entry_coordinator.observe_pump(symbol, peak_price, source)
-    try:
-        from pump_detector import _to_df
-        klines = exchange.get_klines(
-            symbol, "1m", limit=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30)
+    if not require_bos:
+        bos = BearishBosResult(
+            True, "ws_realtime_pullback", peak_price=peak_price,
+            bos_close=planned_entry,
         )
-        bos = detect_bearish_bos_1m(
-            _to_df(klines),
-            now_ms=int(time.time() * 1000),
-            lookback=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30),
-        )
-    except Exception as exc:
-        logger.warning(f"[PumpCoord] {source} {symbol}: BOS revalidation failed: {exc}")
-        return None
+    else:
+        try:
+            from pump_detector import _to_df
+            klines = exchange.get_klines(
+                symbol, "1m", limit=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30)
+            )
+            bos = detect_bearish_bos_1m(
+                _to_df(klines),
+                now_ms=int(time.time() * 1000),
+                lookback=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30),
+            )
+        except Exception as exc:
+            logger.warning(f"[PumpCoord] {source} {symbol}: BOS revalidation failed: {exc}")
+            return None
     if not _pump_entry_coordinator.confirm_bos(symbol, bos):
         logger.info(f"[PumpCoord] {source} {symbol}: WATCHING_TOP ({bos.reason})")
         return None
@@ -1195,15 +1207,21 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         "PUMP_WS_STRONG_MAX_ENTRY_DROP_PCT" if is_strong else "PUMP_WS_LIGHT_MAX_ENTRY_DROP_PCT",
         6.0 if is_strong else 3.0,
     )
-    # Fresh-pullback timers (8/12s) must not kill a setup before a closed-1m
-    # BOS can exist. Keep the observation alive up to the coordinator watch TTL.
+    # Realtime path enters on tick pullback within seconds (8/12s). Only when
+    # PUMP_WS_REQUIRE_BOS is on must the setup live long enough for a 1m BOS.
+    ws_require_bos = bool(getattr(config, "PUMP_WS_REQUIRE_BOS", False))
     fresh_peak_age = getattr(
         config,
         "PUMP_WS_STRONG_PEAK_MAX_AGE_SEC" if is_strong else "PUMP_WS_LIGHT_PEAK_MAX_AGE_SEC",
         12.0 if is_strong else 8.0,
     )
-    max_peak_age = max(
-        float(fresh_peak_age), float(getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180))
+    max_peak_age = float(fresh_peak_age)
+    if ws_require_bos:
+        max_peak_age = max(
+            max_peak_age, float(getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180))
+        )
+    retry_secs = (
+        getattr(config, "PUMP_BOS_RETRY_SECONDS", 5) if ws_require_bos else 1.0
     )
     peak_age = now - float(tracker.get("ws_high_ts", 0.0))
 
@@ -1230,7 +1248,7 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         or drawdown_pct < pullback_pct
         or tracker.get("below_peak_ticks", 0) < confirm_ticks
         or price > previous_price
-        or now - float(tracker.get("bos_retry_ts", 0.0)) < getattr(config, "PUMP_BOS_RETRY_SECONDS", 5)
+        or now - float(tracker.get("bos_retry_ts", 0.0)) < retry_secs
     ):
         return
 
@@ -1329,6 +1347,7 @@ def _ws_realtime_pump_short(sym: str, entry_price: float, ws_high: float,
         prepared = _prepare_pump_short(
             exchange_ref, sym, f"ws_{tier}", ws_high,
             revalidated_price, entry_price,
+            require_bos=bool(getattr(config, "PUMP_WS_REQUIRE_BOS", False)),
         )
         if not prepared:
             return
