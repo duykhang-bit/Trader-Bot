@@ -83,7 +83,6 @@ from notifier import Notifier
 from liquidation_tracker import LiquidationTracker
 from liq_strategy import LiqStrategy, SplitPosition
 from pump_entry_coordinator import (
-    BearishBosResult,
     PumpEntryCoordinator,
     decide_short_entry,
     detect_bearish_bos_1m,
@@ -181,31 +180,12 @@ lock = threading.RLock()  # RLock: cho phép cùng thread acquire lại (tránh 
 _pump_entry_coordinator = PumpEntryCoordinator(
     reservation_ttl_sec=getattr(config, "PUMP_ENTRY_RESERVATION_TTL_SEC", 20),
     watch_ttl_sec=getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180),
-    new_high_epsilon_pct=getattr(config, "PUMP_WS_REARM_NEW_HIGH_PCT", 0.0),
-    peak_match_tolerance_pct=getattr(config, "PUMP_BOS_PEAK_TOLERANCE_PCT", 1.0),
 )
 
 
-def _pump_runtime_enabled() -> bool:
-    """Honor runtime pause/disable in production; allow isolated unit helpers."""
-    if state.get("_exchange") is None:
-        return True
-    return (bool(state.get("running", False))
-            and not bool(state.get("paused", False))
-            and bool(getattr(config, "PUMP_DETECTOR_ENABLED", True)))
-
-
 def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
-                        current_price: float, planned_entry: float,
-                        require_bos: bool = True):
-    """Revalidate closed-1m bearish BOS and reserve this symbol for entry.
-
-    ``require_bos=False`` is used only by the realtime WS path: its tick-level
-    pullback confirmation replaces the closed-1m BOS (which needs ~4+ minutes).
-    """
-    if not _pump_runtime_enabled():
-        logger.info(f"[PumpCoord] {source} {symbol}: blocked at reservation (paused/disabled)")
-        return None
+                        current_price: float, planned_entry: float):
+    """Revalidate closed-1m bearish BOS and reserve this symbol for entry."""
     if _pump_entry_coordinator.snapshot(symbol).value == "IN_TRADE":
         try:
             if _get_live_position_amt(exchange, symbol) != 0:
@@ -218,25 +198,19 @@ def _prepare_pump_short(exchange, symbol: str, source: str, peak_price: float,
         )
         return None
     _pump_entry_coordinator.observe_pump(symbol, peak_price, source)
-    if not require_bos:
-        bos = BearishBosResult(
-            True, "ws_realtime_pullback", peak_price=peak_price,
-            bos_close=planned_entry,
+    try:
+        from pump_detector import _to_df
+        klines = exchange.get_klines(
+            symbol, "1m", limit=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30)
         )
-    else:
-        try:
-            from pump_detector import _to_df
-            klines = exchange.get_klines(
-                symbol, "1m", limit=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30)
-            )
-            bos = detect_bearish_bos_1m(
-                _to_df(klines),
-                now_ms=int(time.time() * 1000),
-                lookback=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30),
-            )
-        except Exception as exc:
-            logger.warning(f"[PumpCoord] {source} {symbol}: BOS revalidation failed: {exc}")
-            return None
+        bos = detect_bearish_bos_1m(
+            _to_df(klines),
+            now_ms=int(time.time() * 1000),
+            lookback=getattr(config, "PUMP_BOS_LOOKBACK_CANDLES", 30),
+        )
+    except Exception as exc:
+        logger.warning(f"[PumpCoord] {source} {symbol}: BOS revalidation failed: {exc}")
+        return None
     if not _pump_entry_coordinator.confirm_bos(symbol, bos):
         logger.info(f"[PumpCoord] {source} {symbol}: WATCHING_TOP ({bos.reason})")
         return None
@@ -531,10 +505,6 @@ def _place_reserved_pump_order(exchange, prepared, symbol: str, quantity: float,
     """
     if not prepared:
         return False
-    if not _pump_runtime_enabled():
-        logger.info(f"[PumpOrder] {symbol} blocked at submit boundary (paused/disabled)")
-        _finish_pump_reservation(prepared, placed=False)
-        return False
     client_order_id = _pump_client_order_id(prepared, order_type)
     result = None
     accepted = False
@@ -544,7 +514,6 @@ def _place_reserved_pump_order(exchange, prepared, symbol: str, quantity: float,
             order_type=order_type, price=price,
             client_order_id=client_order_id,
             post_only=(order_type == "LIMIT"),
-            submit_guard=_pump_runtime_enabled,
         )
         accepted = _order_was_accepted(result)
     except Exception as placement_exc:
@@ -1207,21 +1176,10 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         "PUMP_WS_STRONG_MAX_ENTRY_DROP_PCT" if is_strong else "PUMP_WS_LIGHT_MAX_ENTRY_DROP_PCT",
         6.0 if is_strong else 3.0,
     )
-    # Realtime path enters on tick pullback within seconds (8/12s). Only when
-    # PUMP_WS_REQUIRE_BOS is on must the setup live long enough for a 1m BOS.
-    ws_require_bos = bool(getattr(config, "PUMP_WS_REQUIRE_BOS", False))
-    fresh_peak_age = getattr(
+    max_peak_age = getattr(
         config,
         "PUMP_WS_STRONG_PEAK_MAX_AGE_SEC" if is_strong else "PUMP_WS_LIGHT_PEAK_MAX_AGE_SEC",
         12.0 if is_strong else 8.0,
-    )
-    max_peak_age = float(fresh_peak_age)
-    if ws_require_bos:
-        max_peak_age = max(
-            max_peak_age, float(getattr(config, "PUMP_BOS_WATCH_TTL_SEC", 180))
-        )
-    retry_secs = (
-        getattr(config, "PUMP_BOS_RETRY_SECONDS", 5) if ws_require_bos else 1.0
     )
     peak_age = now - float(tracker.get("ws_high_ts", 0.0))
 
@@ -1248,11 +1206,9 @@ def _ws_pump_spike_check(sym: str, price: float, exchange_ref, notifier_ref):
         or drawdown_pct < pullback_pct
         or tracker.get("below_peak_ticks", 0) < confirm_ticks
         or price > previous_price
-        or now - float(tracker.get("bos_retry_ts", 0.0)) < retry_secs
     ):
         return
 
-    tracker["bos_retry_ts"] = now
     with lock:
         open_syms = {
             p.get("symbol") for p in state.get("open_positions", [])
@@ -1347,40 +1303,8 @@ def _ws_realtime_pump_short(sym: str, entry_price: float, ws_high: float,
         prepared = _prepare_pump_short(
             exchange_ref, sym, f"ws_{tier}", ws_high,
             revalidated_price, entry_price,
-            require_bos=bool(getattr(config, "PUMP_WS_REQUIRE_BOS", False)),
         )
-        if not prepared:
-            return
-        decision = prepared[1]
-        if decision.action == "LIMIT":
-            placed_order = _place_reserved_pump_order(
-                exchange_ref, prepared, sym, qty,
-                order_type="LIMIT", price=decision.price,
-                limit_metadata={
-                    "cycle_peak": ws_high,
-                    "sl_price": sl_price,
-                    "tp1_price": tp_price,
-                    "pump_pct": pump_pct,
-                    "tier": tier,
-                },
-            )
-            if not placed_order:
-                return
-            tracker.update({
-                "active": False, "entry_pending": False,
-                "rearm_high": ws_high, "below_peak_ticks": 0,
-            })
-            notifier_ref.telegram.send(
-                f"⏳ <b>REALTIME PUMP RETEST LIMIT</b>\n"
-                f"🪙 {sym} · {tier.upper()} +{pump_pct:.1f}%\n"
-                f"SELL LIMIT: <b>${decision.price:.6g}</b>\n"
-                f"SL: ${sl_price:.6g} · TP: ${tp_price:.6g}"
-            )
-            logger.info(
-                f"[WS-Pump] Retest LIMIT placed {sym} tier={tier} @ {decision.price:.6g}"
-            )
-            return
-        if decision.action != "MARKET":
+        if not prepared or prepared[1].action != "MARKET":
             _finish_pump_reservation(prepared, placed=False)
             return
         placed_order = _place_reserved_pump_order(
@@ -2123,8 +2047,7 @@ def price_ws_streamer():
                 # Giờ check TẤT CẢ coin trong FIXED_COINS → bắt pump realtime < 1s.
                 exc  = _ws_exchange_ref[0]
                 noti = _ws_notifier_ref[0]
-                if (exc and noti and not state.get("paused", False)
-                        and getattr(config, "PUMP_DETECTOR_ENABLED", True)):
+                if exc and noti:
                     # 1. Spike detector — detect pump đang xảy ra (< 1s)
                     _ws_pump_spike_check(sym, mark, exc, noti)
                     
@@ -4892,24 +4815,17 @@ def pump_scan_engine(exchange, notifier):
     logger.info("[PumpEngine] Started — watching for pump tops...")
 
     from pump_detector import PumpDetector, _to_df
-    from orderbook_detector import get_ob_tracker
+    from orderbook_detector import OrderBookTracker
 
-    detector = PumpDetector(config)
-    nhe_detector = PumpDetector(config)  # persistent cooldown across scan cycles
-    ob_tracker = get_ob_tracker(
-        "wss://fstream.binance.com" if not config.USE_TESTNET
-        else "wss://stream.binancefuture.com"
-    )
-    logger.info("[PumpEngine] Shared live OrderBook tracker ready")
+    detector   = PumpDetector(config)
+    ob_tracker = OrderBookTracker()  # Real-time order book cho pump coins
+    logger.info("[PumpEngine] OrderBook tracker initialized")
 
     while state["running"]:
         try:
             # ── Check paused: dừng scan pump khi bot pause ──
             if state.get("paused", False):
                 time.sleep(2)
-                continue
-            if not getattr(config, "PUMP_DETECTOR_ENABLED", True):
-                time.sleep(5)
                 continue
             # Lấy danh sách pump coins từ state (web có thể add/remove)
             with lock:
@@ -5158,7 +5074,8 @@ def pump_scan_engine(exchange, notifier):
             _should_scan_fixed = (_scan_tick_now % max(1, slow_interval // interval) == 0)
 
             if nhe_coins and _should_scan_fixed:
-                # Persistent detector: keep its per-symbol cooldown across scans.
+                # Tạo detector riêng với ngưỡng nhẹ hơn — không ảnh hưởng detector cũ
+                nhe_detector = PumpDetector(config)
                 nhe_detector.cfg["PUMP_TOP_MIN_SCORE"] = nhe_score
                 nhe_detector.cfg["PUMP_PRICE_RISE_PCT"] = nhe_rise
                 nhe_detector.cfg["PUMP_ALERT_COOLDOWN_SECS"] = getattr(config, "PUMP_ALERT_COOLDOWN_SECS", 60)
