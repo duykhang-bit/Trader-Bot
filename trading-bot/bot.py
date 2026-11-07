@@ -310,7 +310,7 @@ def _cancel_reduce_only_orders(exchange, symbol: str, source: str) -> int:
 
 
 def _cancel_all_orders_if_unprotected(exchange, symbol: str, source: str) -> bool:
-    """Cancel broadly only when safe; protected symbols retain entry orders."""
+    """Cancel broadly while preserving protected and Auto Liq entries."""
     with lock:
         if _is_protected_pending_symbol(symbol):
             exits = _cancel_reduce_only_orders(exchange, symbol, source)
@@ -319,7 +319,27 @@ def _cancel_all_orders_if_unprotected(exchange, symbol: str, source: str) -> boo
                 f"removed {exits} stale reduce-only exits"
             )
             return False
-        exchange.cancel_all_orders(symbol)
+
+        # Never use cancel_all_orders here: position-close cleanup must not
+        # remove an alqz_ entry owned and scheduled by the Auto Liq service.
+        # Preserve that exact order and retain the old behavior for all others.
+        cancelled = 0
+        preserved = 0
+        for order in exchange._get(
+            "/fapi/v1/openOrders", {"symbol": symbol}, signed=True
+        ):
+            if _is_auto_liq_zone_order(order):
+                preserved += 1
+                continue
+            exchange._delete(
+                "/fapi/v1/order",
+                {"symbol": symbol, "orderId": order.get("orderId")},
+            )
+            cancelled += 1
+        logger.info(
+            f"[{source}] {symbol}: cancelled {cancelled} non-Auto-Liq orders; "
+            f"preserved {preserved} alqz_ entries"
+        )
         return True
 
 # Serialize close/partial-close actions per symbol. The shared state lock only
