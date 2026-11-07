@@ -2145,8 +2145,8 @@ function renderDashboard(d) {
 
     // Auto Liquidity Zone Orders — only user-selected symbols.
     html += `<div class="section" id="auto-liq-zone-section">
-        <h2>💧 Auto Liquidity Zone Orders <span style="font-size:10px;color:#6e7681;font-weight:400">12h · Binance OI · biên ±5% · threshold 0.36</span></h2>
-        <div style="font-size:10px;color:#d29922;margin-bottom:8px">⚠ Ước tính gần cách Coinglass hiển thị: lọc vạch yếu bằng ngưỡng 0.36; SHORT lấy giá cao nhất phía trên, LONG lấy giá thấp nhất phía dưới trong biên ±5%. Không phải dữ liệu thật của Coinglass.</div>
+        <h2>💧 Auto Liquidity Zone Orders <span style="font-size:10px;color:#6e7681;font-weight:400">12h · Binance OI · khung 12h/mark ±4% · threshold 0.27</span></h2>
+        <div style="font-size:10px;color:#d29922;margin-bottom:8px">⚠ Ước tính gần cách Coinglass hiển thị: bucket giá 0.05%, lọc vạch yếu bằng ngưỡng 0.27; SHORT lấy vùng cao nhất và LONG lấy vùng thấp nhất trong khung hiển thị 12h. Không phải dữ liệu thật của Coinglass.</div>
         <div class="control-row">
           <input id="alq-symbol" placeholder="BTC hoặc BTCUSDT" style="width:145px" onkeydown="if(event.key==='Enter')addAutoLiqZone()">
           <select id="alq-side"><option value="LONG">🟢 LONG · vùng dưới</option><option value="SHORT">🔴 SHORT · vùng trên</option></select>
