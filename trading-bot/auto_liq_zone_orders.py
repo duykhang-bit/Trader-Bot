@@ -644,6 +644,20 @@ class AutoLiqZoneOrderService:
             if not result["ok"] or result.get("exposure"):
                 return
         self._place_entry(item, rounded_target)
+        # Intentional repricing clears the terminal old order, and that safety
+        # helper resets next_update to zero. Restore the cadence only after the
+        # replacement attempt, otherwise the 5-second worker reprices forever.
+        with self._lock:
+            if item.get("status") == "PENDING" and self._has_pending_intent(item):
+                item["next_update"] = self._now() + item["refresh_interval"]
+            elif (
+                not item.get("order", {}).get("protection_started")
+                and not self._has_pending_intent(item)
+            ):
+                item["next_update"] = self._now() + min(
+                    300, item["refresh_interval"]
+                )
+            self._persist_locked()
 
     def _chart_frame(self, symbol: str, mark: float) -> tuple[float, float]:
         """Return 12h price range with at least ±4% visibility around mark."""
