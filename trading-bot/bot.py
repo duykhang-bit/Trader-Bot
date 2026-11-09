@@ -1917,7 +1917,9 @@ def price_ws_streamer():
     subscribed_syms = set(symbols)
     streams = "/".join([f"{s}@markPrice@1s" for s in symbols])
 
-    base_ws = "wss://fstream.binance.com" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
+    # Binance retired legacy USD-M WebSocket URLs on 2026-04-23. markPrice is a
+    # /market stream; the legacy root connects but never delivers it.
+    base_ws = "wss://fstream.binance.com/market" if not config.USE_TESTNET else "wss://stream.binancefuture.com"
     url = f"{base_ws}/stream?streams={streams}"
 
     # Đặt exchange/notifier reference cho spike checker
