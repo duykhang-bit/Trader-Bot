@@ -53,19 +53,21 @@ STOP_LOSS_PCT      = 0.02
 MAX_OPEN_POSITIONS = 3
 MAX_ORDER_USDT     = 15.0
 # --- Max Loss Safety Net (đặt trên web) ---
-# Giá trị lệnh = MAX_ORDER_USDT × LEVERAGE. Vị thế bị thanh lý khi giá chạy
-# ngược ~(100/LEVERAGE − 0.5)%. Max Loss phải cắt TRƯỚC thanh lý (chừa trượt
-# giá) nhưng SAU SL thường (trung vị 1.8% trên 292 lệnh bot).
-# Nên đặt = giá trị lệnh × min(5%, thanh lý − 1.5%):
-#   $15 × 10x = $150 → thanh lý ~9.5% → Max Loss $8   (an toàn $5–$14)
-#   $15 × 15x = $225 → thanh lý ~6.2% → Max Loss $10–11 (an toàn $7–$13)
-#   $20 × 15x = $300 → thanh lý ~6.2% → Max Loss $14  (an toàn $9–$17)
-#   $15 × 20x = $300 → thanh lý ~4.5% → Max Loss $9   (an toàn $9–$12)
-#   $30 × 15x = $450 → thanh lý ~6.2% → Max Loss $21  (an toàn $14–$25)
+# Web dashboard tự tính gợi ý này theo config + vốn thật, cập nhật mỗi 5 giây.
+# Giá trị lệnh = MAX_ORDER_USDT × LEVERAGE. Thanh lý khi giá chạy ngược
+# ~(100/LEVERAGE − MMR)%; MMR coin alt bot hay vào 1.5–5% (BTC/ETH 0.4%),
+# nên tính MMR 2%. Max Loss = min(trước thanh lý 1.5% cho trượt giá, 3% vốn),
+# và không thấp hơn lỗ SL thường (trung vị 1.8% trên 292 lệnh bot).
+# Chuẩn quản lý vốn: rủi ro 1–2% vốn/lệnh, tổng margin các lệnh ≤ 50% vốn.
+#   $15 × 10x = $150 → thanh lý ~8.0% → Max Loss ≤ $9.8  (và ≤ 3% vốn)
+#   $15 × 15x = $225 → thanh lý ~4.7% → Max Loss ≤ $7.1  (vốn $230 → $6.9)
+#   $20 × 15x = $300 → thanh lý ~4.7% → Max Loss ≤ $9.5  (và ≤ 3% vốn)
+#   $30 × 15x = $450 → thanh lý ~4.7% → Max Loss ≤ $14.3 (và ≤ 3% vốn)
+#   $15 × 20x = $300 → thanh lý ~3.0% → Max Loss ≤ $4.5  < SL thường $5.4: leverage quá cao
 # Max Loss lớn hơn mức thanh lý (vd $20 ở $15×15x) là vô dụng: sàn thanh lý trước.
 # Max Loss áp dụng cho MỌI vị thế, kể cả lệnh tay. Lệnh tay nên có SL riêng.
 MAX_LOSS_ENABLED      = True
-MAX_LOSS_PER_POSITION = 11.0
+MAX_LOSS_PER_POSITION = 7.0
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
 
