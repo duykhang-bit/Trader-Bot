@@ -1662,6 +1662,56 @@ async function taCheckLastResult() {
     } catch(e) {}
 }
 
+function _maxLossNoteHtml(d) {
+                    const val = Number(d.max_loss_value || 20);
+                    // Recalculated on every 5s refresh from the live config
+                    // (USD/order, Leverage, Max Positions) and account equity.
+                    const usd = Number((d.settings||{}).max_order_usdt || 0);
+                    const lev = Number((d.settings||{}).leverage || 0);
+                    const maxPos = Number((d.settings||{}).max_open_positions || 0);
+                    const equity = Number(d.margin_balance || d.wallet_balance || 0);
+                    const notional = usd * lev;
+                    if (!(notional > 0)) return '';
+                    // Cap 1 — liquidation. Distance ≈ 100/lev − maintenance
+                    // margin. Bot alts use 1.5–5% MMR (BTC/ETH 0.4%), so assume
+                    // 2% and keep 1.5% for MARKET slippage before liquidation.
+                    const MMR = 2.0, SLIP = 1.5, TYPICAL_SL = 1.8;
+                    const liqPct = Math.max(0.5, 100 / lev - MMR);
+                    const liqUsd = notional * liqPct / 100;
+                    const liqCap = notional * Math.max(0.5, liqPct - SLIP) / 100;
+                    // Cap 2 — account risk. Professional desks risk 1–2% of
+                    // equity per trade; a backstop above the SL allows ≤3%.
+                    const eqCap = equity > 0 ? equity * 0.03 : liqCap;
+                    const floor = notional * TYPICAL_SL / 100;   // median bot SL loss
+                    const rec = Math.max(floor, Math.min(liqCap, eqCap));
+                    const low = floor, high = Math.max(floor, Math.min(liqCap, equity > 0 ? equity * 0.05 : liqCap));
+                    const move = val / notional * 100;
+                    const overLiq = move >= liqPct;
+                    const verdict = overLiq ? 'quá cao: vị thế bị THANH LÝ trước khi Max Loss kịp cắt'
+                                  : val > high ? 'cao: lỗ quá lớn so với tài khoản hoặc sát thanh lý'
+                                  : val < low ? 'thấp: cắt trước cả SL thường'
+                                  : 'hợp lý';
+                    const tone = overLiq ? '#f85149' : (val < low || val > high) ? '#d29922' : '#3fb950';
+                    const pct = (x) => equity > 0 ? (x / equity * 100).toFixed(1) + '%' : '—';
+                    const slRisk = floor;
+                    const slTone = equity > 0 && slRisk / equity > 0.02 ? '#d29922' : '#3fb950';
+                    const totalMargin = maxPos * usd;
+                    const marginTone = equity > 0 && totalMargin / equity > 0.5 ? '#d29922' : '#3fb950';
+                    const tooBig = equity > 0 && floor > equity * 0.03;
+                    return `<div style="flex-basis:100%;font-size:10px;color:#8b949e;margin-top:4px;line-height:1.55">
+                      📏 Lệnh bot = $${usd} × ${lev}x = <b>$${notional.toFixed(0)}</b> · vốn (Margin Equity) <b>$${equity.toFixed(0)}</b> · thanh lý khi giá chạy ngược ~${liqPct.toFixed(1)}% (≈ -$${liqUsd.toFixed(0)}).<br>
+                      Max Loss $${val} = giá chạy ngược <b>${move.toFixed(2)}%</b> = ${pct(val)} vốn
+                      → <span style="color:${tone}">${verdict}</span>.<br>
+                      👉 Nên đặt: <b style="color:#3fb950">$${rec.toFixed(1)}</b> · khoảng an toàn $${low.toFixed(1)}–$${high.toFixed(1)}
+                      (trên SL thường, dưới thanh lý, ≤3–5% vốn).<br>
+                      📊 Chuẩn quản lý vốn: rủi ro 1–2% vốn/lệnh ·
+                      lệnh dính SL thường mất ~$${slRisk.toFixed(1)} = <span style="color:${slTone}">${pct(slRisk)} vốn</span> ·
+                      ${maxPos} lệnh × $${usd} margin = $${totalMargin.toFixed(0)} = <span style="color:${marginTone}">${pct(totalMargin)} vốn</span> (nên ≤50%).
+                      ${tooBig ? '<br><span style="color:#f85149">⚠ Lệnh quá lớn so với vốn: giảm USD/order hoặc Leverage.</span>' : ''}<br>
+                      Max Loss dùng chung cho lệnh tay: lệnh tay to (vd $1,890) với $${val} → giá chạy ngược ${(val/1890*100).toFixed(2)}% là cắt. Lệnh tay nên đặt SL riêng.
+                    </div>`;
+}
+
 function renderDashboard(d) {
     // Bot status
     const running = d.running;
@@ -1786,40 +1836,7 @@ function renderDashboard(d) {
                 <span style="font-size:11px;color:${en?'#f85149':'#8b949e'}">
                     ${en?'Tự đóng khi lỗ > $'+val:'Đã tắt'}
                 </span>
-                ${(() => {
-                    // Position notional = USD/order × Leverage. Bot SLs sit
-                    // about 2–5% from entry, so Max Loss is the safety net just
-                    // beyond a normal SL: ~5% of notional, never below ~3%.
-                    const usd = Number((d.settings||{}).max_order_usdt || 0);
-                    const lev = Number((d.settings||{}).leverage || 0);
-                    const notional = usd * lev;
-                    if (!(notional > 0)) return '';
-                    // Liquidation sits about 1/leverage minus ~0.5% maintenance
-                    // margin away. Max Loss must fire before that, with room
-                    // for MARKET slippage, but after the typical SL (median
-                    // 1.8% from 292 bot trades).
-                    const liqPct = Math.max(0.5, 100 / lev - 0.5);
-                    const highPct = Math.max(1.0, liqPct - 0.5);
-                    const recPct = Math.min(5.0, Math.max(1.0, liqPct - 1.5));
-                    const lowPct = Math.min(3.0, recPct);
-                    const low = notional * lowPct / 100, rec = notional * recPct / 100, high = notional * highPct / 100;
-                    const liqUsd = notional * liqPct / 100;
-                    const move = (val / notional * 100);
-                    const overLiq = move >= liqPct;
-                    const tone = (val < low || val > high) ? '#d29922' : '#3fb950';
-                    const verdict = overLiq ? 'quá cao: vị thế bị THANH LÝ trước khi Max Loss kịp cắt'
-                                  : val > high ? 'cao: sát giá thanh lý, trượt giá dễ bị thanh lý'
-                                  : val < low ? 'thấp: dễ cắt trước SL thường'
-                                  : 'hợp lý';
-                    return `<div style="flex-basis:100%;font-size:10px;color:#8b949e;margin-top:4px;line-height:1.5">
-                      📏 Lệnh bot = $${usd} × ${lev}x = <b>$${notional.toFixed(0)}</b> · thanh lý khi giá chạy ngược ~${liqPct.toFixed(1)}% (≈ -$${liqUsd.toFixed(0)}).<br>
-                      Max Loss $${val} = giá chạy ngược <b>${move.toFixed(2)}%</b>
-                      → <span style="color:${overLiq ? '#f85149' : tone}">${verdict}</span>.<br>
-                      👉 Nên đặt: <b style="color:#3fb950">$${rec.toFixed(0)}</b> (${recPct.toFixed(1)}%) · khoảng an toàn $${low.toFixed(0)}–$${high.toFixed(0)}.
-                      SL bot trung vị cách entry 1.8%, nên Max Loss chỉ bắt lệnh mất SL/giá sập.<br>
-                      Max Loss dùng chung cho lệnh tay: lệnh tay to (vd $1,890) với $${val} → giá chạy ngược ${(val/1890*100).toFixed(2)}% là cắt. Lệnh tay nên đặt SL riêng.
-                    </div>`;
-                })()}`;
+                <div id="max-loss-note" style="flex-basis:100%">${_maxLossNoteHtml(d)}</div>`;
             })()}
         </div>
         <div class="control-row">
@@ -4564,6 +4581,9 @@ function _patchDashboard(d) {
         _lastP0Load = now;
         loadP0Settings();  // Tự động load P0 settings khi panel mở (10s/lần)
     }
+
+    // Max Loss guidance follows live config/equity changes.
+    _setHtml('max-loss-note', _maxLossNoteHtml(d));
 
     // Auto liquidity-zone cards (data is local service snapshot, no network call).
     renderAutoLiqZone(d.auto_liq_zone);
