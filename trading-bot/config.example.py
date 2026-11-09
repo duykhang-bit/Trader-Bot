@@ -53,14 +53,17 @@ STOP_LOSS_PCT      = 0.02
 MAX_OPEN_POSITIONS = 3
 MAX_ORDER_USDT     = 15.0
 # --- Max Loss Safety Net (đặt trên web) ---
-# Giá trị lệnh bot = MAX_ORDER_USDT × LEVERAGE. SL bot thường cách entry 2–5%,
-# nên Max Loss là lưới an toàn ngay sau SL: gợi ý ≈ 5% giá trị lệnh (3–7%).
-#   $15 × 15x = $225  → Max Loss ~$11  ($7–$16)
-#   $15 × 10x = $150  → Max Loss ~$8   ($5–$11)
-#   $20 × 15x = $300  → Max Loss ~$15  ($9–$21)
-#   $30 × 15x = $450  → Max Loss ~$23  ($14–$32)
-# Max Loss áp dụng cho MỌI vị thế, kể cả lệnh tay to hơn: lệnh tay $1,890 với
-# Max Loss $10 sẽ bị cắt khi giá chạy ngược chỉ ~0.5%. Lệnh tay nên có SL riêng.
+# Giá trị lệnh = MAX_ORDER_USDT × LEVERAGE. Vị thế bị thanh lý khi giá chạy
+# ngược ~(100/LEVERAGE − 0.5)%. Max Loss phải cắt TRƯỚC thanh lý (chừa trượt
+# giá) nhưng SAU SL thường (trung vị 1.8% trên 292 lệnh bot).
+# Nên đặt = giá trị lệnh × min(5%, thanh lý − 1.5%):
+#   $15 × 10x = $150 → thanh lý ~9.5% → Max Loss $8   (an toàn $5–$14)
+#   $15 × 15x = $225 → thanh lý ~6.2% → Max Loss $10–11 (an toàn $7–$13)
+#   $20 × 15x = $300 → thanh lý ~6.2% → Max Loss $14  (an toàn $9–$17)
+#   $15 × 20x = $300 → thanh lý ~4.5% → Max Loss $9   (an toàn $9–$12)
+#   $30 × 15x = $450 → thanh lý ~6.2% → Max Loss $21  (an toàn $14–$25)
+# Max Loss lớn hơn mức thanh lý (vd $20 ở $15×15x) là vô dụng: sàn thanh lý trước.
+# Max Loss áp dụng cho MỌI vị thế, kể cả lệnh tay. Lệnh tay nên có SL riêng.
 MAX_LOSS_ENABLED      = True
 MAX_LOSS_PER_POSITION = 11.0
 TRAILING_STOP      = True
