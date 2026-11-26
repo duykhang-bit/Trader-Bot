@@ -19,16 +19,21 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from typing import Any
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 PERSISTENCE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "logs", "intraday_paper.json"
 )
-DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "AVAXUSDT")
+VERIFIED_REAL_SYMBOLS = ("LINKUSDT", "AVAXUSDT")
+SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 ENTRY_COST_RATE = 0.0006  # 0.05% taker + 0.01% slippage
 STOP_COST_RATE = 0.0006
 TP_COST_RATE = 0.0002     # resting reduce-only target
@@ -76,6 +81,7 @@ class IntradayPaperService:
         self.exchange = exchange
         self.real_entry_callback = real_entry_callback
         self._now = now_fn
+        self._sleep = time.sleep
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -84,6 +90,12 @@ class IntradayPaperService:
             "enabled": bool(getattr(config, "INTRADAY_PAPER_ENABLED", False)),
             "real_enabled": False,
             "symbols": list(getattr(config, "INTRADAY_PAPER_SYMBOLS", DEFAULT_SYMBOLS)),
+            "real_symbols": list(VERIFIED_REAL_SYMBOLS),
+            "candidates": {
+                "LINKUSDT": {"eligible": True, "source": "verified_1y", "return_pct": 17.51, "segments": [11.57, 1.82, 4.12]},
+                "AVAXUSDT": {"eligible": True, "source": "verified_1y", "return_pct": 17.35, "segments": [6.17, 8.19, 2.99]},
+            },
+            "selector": {"running": False, "last_scan": 0.0, "progress": "", "error": ""},
             "margin_usdt": float(getattr(config, "INTRADAY_PAPER_MARGIN_USDT", 15.0)),
             "leverage": int(getattr(config, "INTRADAY_PAPER_LEVERAGE", 1)),
             "open": {},
@@ -95,6 +107,18 @@ class IntradayPaperService:
             "updated_at": 0.0,
         }
         self._load()
+        # Migration for journals created before dynamic selection existed.
+        with self._lock:
+            self._data.setdefault("real_symbols", list(VERIFIED_REAL_SYMBOLS))
+            self._data.setdefault("candidates", {})
+            self._data.setdefault("selector", {"running": False, "last_scan": 0.0, "progress": "", "error": ""})
+            self._data["selector"]["running"] = False
+            for symbol in VERIFIED_REAL_SYMBOLS:
+                if symbol not in self._data["symbols"]:
+                    self._data["symbols"].append(symbol)
+                self._data["candidates"].setdefault(
+                    symbol, {"eligible": True, "source": "verified_1y"}
+                )
 
     def start(self):
         with self._lock:
@@ -129,13 +153,71 @@ class IntradayPaperService:
             return {"ok": False, "error": "Nhập đúng ENABLE REAL để bật tiền thật"}
         with self._lock:
             self._data["real_enabled"] = enabled
-            if enabled:
-                self._data["enabled"] = True  # signals must run for REAL mode
+            # REAL is the master switch requested by the user: enabling starts
+            # signal monitoring; disabling stops all new paper/REAL signals and
+            # candidate scans. Existing REAL SL/TP remain on Binance.
+            self._data["enabled"] = enabled
             self._data["updated_at"] = self._now()
             self._persist_locked()
         self._wake.set()
         return {"ok": True, "real_enabled": enabled,
                 "enabled": self._data["enabled"]}
+
+    def add_symbol(self, symbol):
+        symbol = str(symbol or "").strip().upper()
+        if not SYMBOL_RE.match(symbol):
+            return {"ok": False, "error": "Symbol USDT không hợp lệ"}
+        try:
+            if _f(self.exchange.get_ticker_price(symbol)) <= 0:
+                raise ValueError("invalid ticker")
+        except Exception:
+            return {"ok": False, "error": f"Binance không có {symbol}"}
+        with self._lock:
+            if symbol not in self._data["symbols"]:
+                self._data["symbols"].append(symbol)
+            self._data["candidates"].setdefault(
+                symbol, {"eligible": False, "source": "manual", "reason": "Chưa qua backtest tự động"}
+            )
+            self._persist_locked()
+        self._wake.set()
+        return {"ok": True, "symbol": symbol}
+
+    def remove_symbol(self, symbol):
+        symbol = str(symbol or "").strip().upper()
+        with self._lock:
+            if symbol in self._data["open"]:
+                return {"ok": False, "error": "Không thể xóa khi có paper trade đang mở"}
+            self._data["symbols"] = [x for x in self._data["symbols"] if x != symbol]
+            self._data["real_symbols"] = [x for x in self._data["real_symbols"] if x != symbol]
+            self._data["status"].pop(symbol, None)
+            self._persist_locked()
+        return {"ok": True, "symbol": symbol}
+
+    def set_real_symbol(self, symbol, enabled):
+        symbol = str(symbol or "").strip().upper()
+        with self._lock:
+            candidate = self._data.get("candidates", {}).get(symbol, {})
+            if enabled and not candidate.get("eligible"):
+                return {"ok": False, "error": "Coin chưa pass bộ lọc/backtest"}
+            real = set(self._data.get("real_symbols", []))
+            real.add(symbol) if enabled else real.discard(symbol)
+            self._data["real_symbols"] = sorted(real)
+            if enabled and symbol not in self._data["symbols"]:
+                self._data["symbols"].append(symbol)
+            self._persist_locked()
+        return {"ok": True, "symbol": symbol, "real_active": bool(enabled)}
+
+    def start_auto_scan(self):
+        with self._lock:
+            selector = self._data["selector"]
+            if not self._data.get("enabled"):
+                return {"ok": False, "error": "Bật theo dõi hoặc REAL trước khi quét"}
+            if selector.get("running"):
+                return {"ok": False, "error": "Bộ lọc đang chạy"}
+            selector.update({"running": True, "progress": "Đang lấy top volume...", "error": ""})
+            self._persist_locked()
+        threading.Thread(target=self._auto_scan_worker, name="intraday-selector", daemon=True).start()
+        return {"ok": True}
 
     def update_settings(self, margin_usdt, leverage):
         try:
@@ -172,7 +254,7 @@ class IntradayPaperService:
         pnl = sum(_f(row.get("net_pnl")) for row in closed)
         wins = sum(_f(row.get("net_pnl")) > 0 for row in closed)
         data.update({
-            "mode": "PAPER_ONLY",
+            "mode": "REAL_ENABLED" if data.get("real_enabled") else "PAPER_ONLY",
             "strategy": "US session M5 breakout + 4h EMA20/50 + range stop + 2R",
             "notional_per_trade": float(data.get("margin_usdt", 15.0))
                                   * int(data.get("leverage", 1)),
@@ -192,6 +274,178 @@ class IntradayPaperService:
         })
         return json.loads(json.dumps(data, ensure_ascii=False))
 
+    @staticmethod
+    def _ema_series(values, period):
+        out = np.empty(len(values), dtype=float)
+        alpha = 2.0 / (period + 1.0)
+        out[0] = values[0]
+        for i in range(1, len(values)):
+            out[i] = alpha * values[i] + (1.0 - alpha) * out[i - 1]
+        return out
+
+    def _fetch_candidate_bars(self, symbol, days=90):
+        end_ms = int(self._now() * 1000)
+        cursor = end_ms - days * 86_400_000
+        rows = []
+        while cursor < end_ms and not self._stop.is_set():
+            batch = self.exchange._get("/fapi/v1/klines", {
+                "symbol": symbol, "interval": "5m", "startTime": cursor,
+                "endTime": end_ms, "limit": 1500,
+            })
+            if not batch:
+                break
+            rows.extend(batch)
+            next_cursor = int(batch[-1][0]) + 300_000
+            if next_cursor <= cursor:
+                break
+            cursor = next_cursor
+            self._sleep(0.12)
+        return rows
+
+    def _backtest_candidate(self, rows):
+        if len(rows) < 20_000:
+            return {"eligible": False, "reason": "Thiếu 90 ngày dữ liệu", "trades": 0}
+        b = np.array([[float(r[i]) for i in range(6)] for r in rows], dtype=float)
+        n4 = len(b) // 48
+        z = b[:n4 * 48].reshape(-1, 48, 6)
+        close4 = z[:, -1, 4]
+        trend4 = self._ema_series(close4, 20) - self._ema_series(close4, 50)
+        trend_idx = np.clip(np.arange(len(b)) // 48 - 1, 0, len(trend4) - 1)
+        trend = trend4[trend_idx]
+        high, low, close, ts = b[:, 2], b[:, 3], b[:, 4], b[:, 0]
+        # Wilder ATR14 on M5.
+        prev = np.r_[close[0], close[:-1]]
+        tr = np.maximum(high - low, np.maximum(abs(high - prev), abs(low - prev)))
+        atr = self._ema_series(tr, 27)
+        trades = []
+        day_ms = 86_400_000
+        first = int((ts[0] - 13 * 3_600_000) // day_ms)
+        last = int((ts[-1] - 13 * 3_600_000) // day_ms)
+        for day in range(first, last + 1):
+            start = day * day_ms + 13 * 3_600_000
+            i0 = int(np.searchsorted(ts, start)); i1 = i0 + 12
+            if i0 < 250 or i1 + 2 >= len(b):
+                continue
+            range_high = float(high[i0:i1].max()); range_low = float(low[i0:i1].min())
+            side = 0; signal_i = None
+            for i in range(i1, min(len(b) - 1, i1 + 36)):
+                buffer_price = 0.1 * atr[i]
+                if close[i] > range_high + buffer_price and trend[i] > 0:
+                    side, signal_i = 1, i; break
+                if close[i] < range_low - buffer_price and trend[i] < 0:
+                    side, signal_i = -1, i; break
+            if not side:
+                continue
+            entry = b[signal_i + 1, 1]
+            stop = range_low if side > 0 else range_high
+            risk = side * (entry - stop)
+            if risk <= 0 or risk / entry > 0.03:
+                continue
+            target = entry + side * 2.0 * risk
+            result = None
+            for j in range(signal_i + 1, min(len(b), signal_i + 25)):
+                hit_sl = low[j] <= stop if side > 0 else high[j] >= stop
+                hit_tp = high[j] >= target if side > 0 else low[j] <= target
+                if hit_sl:
+                    result = side * (stop - entry) / entry - ENTRY_COST_RATE - STOP_COST_RATE; break
+                if hit_tp:
+                    result = side * (target - entry) / entry - ENTRY_COST_RATE - TP_COST_RATE; break
+            if result is None:
+                j = min(len(b) - 1, signal_i + 24)
+                result = side * (close[j] - entry) / entry - ENTRY_COST_RATE - TIME_COST_RATE
+            trades.append((int(ts[j]), float(result)))
+        if not trades:
+            return {"eligible": False, "reason": "Không có signal", "trades": 0}
+        start_ts, end_ts = int(ts[0]), int(ts[-1]) + 300_000
+        cuts = [start_ts, start_ts + (end_ts - start_ts) // 3,
+                start_ts + 2 * (end_ts - start_ts) // 3, end_ts]
+        segments = []
+        for lo_ts, hi_ts in zip(cuts, cuts[1:]):
+            values = np.array([r for t, r in trades if lo_ts <= t < hi_ts])
+            gross = values[values > 0].sum() if len(values) else 0.0
+            loss = -values[values < 0].sum() if len(values) else 0.0
+            segments.append({
+                "return_pct": float(values.sum() * 100), "trades": int(len(values)),
+                "pf": float(gross / loss) if loss > 0 else (99.0 if gross > 0 else 0.0),
+            })
+        all_values = np.array([r for _, r in trades])
+        equity = np.cumsum(all_values)
+        drawdown = float((np.maximum.accumulate(equity) - equity).max() * 100)
+        eligible = all(
+            segment["return_pct"] > 0 and segment["pf"] >= 1.05
+            and segment["trades"] >= 8 for segment in segments
+        ) and drawdown <= 15.0
+        return {
+            "eligible": bool(eligible), "source": "auto_90d_fixed",
+            "return_pct": float(all_values.sum() * 100), "trades": len(trades),
+            "win_rate": float((all_values > 0).mean() * 100),
+            "pf": float(all_values[all_values > 0].sum() / -all_values[all_values < 0].sum())
+                  if (all_values < 0).any() else 99.0,
+            "max_dd_pct": drawdown, "segments": segments,
+            "reason": "PASS" if eligible else "Không lời ổn định ở cả 3 đoạn 30 ngày",
+            "tested_at": self._now(),
+        }
+
+    def _auto_scan_worker(self):
+        try:
+            now_ms = int(self._now() * 1000)
+            info = self.exchange._get("/fapi/v1/exchangeInfo")
+            tickers = self.exchange._get("/fapi/v1/ticker/24hr")
+            books = self.exchange._get("/fapi/v1/ticker/bookTicker")
+            book_map = {row.get("symbol"): row for row in books if isinstance(row, dict)}
+            allowed = {}
+            for row in info.get("symbols", []):
+                if (row.get("quoteAsset") == "USDT" and row.get("contractType") == "PERPETUAL"
+                        and row.get("status") == "TRADING"
+                        and now_ms - int(row.get("onboardDate", now_ms)) >= 90 * 86_400_000):
+                    allowed[row["symbol"]] = row
+            ranked = []
+            for row in tickers:
+                symbol = row.get("symbol")
+                if symbol not in allowed:
+                    continue
+                volume = _f(row.get("quoteVolume"))
+                book = book_map.get(symbol, {})
+                bid, ask = _f(book.get("bidPrice")), _f(book.get("askPrice"))
+                spread = (ask - bid) / ((ask + bid) / 2) if ask > bid > 0 else 1.0
+                if volume >= 20_000_000 and spread <= 0.0008:
+                    ranked.append((volume, symbol, spread))
+            ranked.sort(reverse=True)
+            selected = ranked[:15]
+            for index, (volume, symbol, spread) in enumerate(selected, 1):
+                with self._lock:
+                    if not self._data.get("enabled"):
+                        self._data["selector"].update({
+                            "running": False, "progress": "Đã dừng", "error": ""
+                        })
+                        self._persist_locked()
+                        return
+                    self._data["selector"]["progress"] = f"{index}/{len(selected)} {symbol}"
+                    self._persist_locked()
+                result = self._backtest_candidate(self._fetch_candidate_bars(symbol))
+                result.update({"volume_24h": volume, "spread_pct": spread * 100})
+                with self._lock:
+                    # One-year verified results are stronger than rolling 90d.
+                    old = self._data["candidates"].get(symbol, {})
+                    if old.get("source") != "verified_1y":
+                        self._data["candidates"][symbol] = result
+                    if result.get("eligible") and symbol not in self._data["symbols"]:
+                        self._data["symbols"].append(symbol)  # paper probation only
+                    self._persist_locked()
+            with self._lock:
+                self._data["selector"].update({
+                    "running": False, "last_scan": self._now(),
+                    "progress": f"Xong {len(selected)} coin", "error": "",
+                })
+                self._persist_locked()
+        except Exception as exc:
+            logger.exception("Intraday auto-selector failed")
+            with self._lock:
+                self._data["selector"].update({
+                    "running": False, "error": str(exc), "progress": "Lỗi",
+                })
+                self._persist_locked()
+
     def _worker(self):
         while not self._stop.is_set():
             try:
@@ -201,6 +455,12 @@ class IntradayPaperService:
                         list(self._data["symbols"]) + list(self._data["open"])
                     ))
                     open_symbols = set(self._data["open"])
+                if enabled:
+                    with self._lock:
+                        selector = dict(self._data.get("selector", {}))
+                    if (not selector.get("running")
+                            and self._now() - _f(selector.get("last_scan")) >= 86_400):
+                        self.start_auto_scan()
                 if enabled or open_symbols:
                     for symbol in symbols:
                         if self._stop.is_set():
@@ -307,7 +567,8 @@ class IntradayPaperService:
 
         with self._lock:
             real_enabled = bool(self._data.get("real_enabled"))
-        if real_enabled and self.real_entry_callback is not None:
+            real_symbol = symbol in set(self._data.get("real_symbols", []))
+        if real_enabled and real_symbol and self.real_entry_callback is not None:
             try:
                 real_result = self.real_entry_callback(copy.deepcopy(paper))
             except Exception as exc:
@@ -376,7 +637,7 @@ class IntradayPaperService:
             with open(PERSISTENCE_FILE, "r", encoding="utf-8") as handle:
                 saved = json.load(handle)
             if isinstance(saved, dict):
-                for key in ("enabled", "real_enabled", "symbols", "margin_usdt", "leverage", "open", "closed", "sessions", "status", "real_events", "errors", "updated_at"):
+                for key in ("enabled", "real_enabled", "symbols", "real_symbols", "candidates", "selector", "margin_usdt", "leverage", "open", "closed", "sessions", "status", "real_events", "errors", "updated_at"):
                     if key in saved:
                         self._data[key] = saved[key]
         except FileNotFoundError:
