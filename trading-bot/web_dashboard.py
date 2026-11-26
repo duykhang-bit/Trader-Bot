@@ -1349,7 +1349,7 @@ function _intradayStateText(value) {
     };
     return labels[value] || value || 'Đang chờ dữ liệu';
 }
-function renderIntradayPaper(data, livePositions=[]) {
+function renderIntradayPaper(data, livePositions=[], botRunning=false) {
     _intradayPaperData = data || _intradayPaperData;
     const root = document.getElementById('intraday-paper-list');
     const summary = document.getElementById('intraday-paper-summary');
@@ -1361,6 +1361,7 @@ function renderIntradayPaper(data, livePositions=[]) {
     const riskNote = document.getElementById('intraday-paper-risk');
     const candidateRoot = document.getElementById('intraday-candidates');
     const selectorStatus = document.getElementById('intraday-selector-status');
+    const liveStatus = document.getElementById('intraday-live-status');
     if (!root) return;
     const margin = Number(_intradayPaperData.margin_usdt || 15);
     const leverage = Number(_intradayPaperData.leverage || 1);
@@ -1377,11 +1378,32 @@ function renderIntradayPaper(data, livePositions=[]) {
           + `<span style="color:${col}">giá thanh lý khoảng ${liqMove.toFixed(1)}% ngược hướng</span>. `
           + `Khuyến nghị paper 1–2x, tối đa 3x; trên 3x có thể bị thanh lý trước SL biên.`;
     }
+    const symbols = Array.isArray(_intradayPaperData.symbols) ? _intradayPaperData.symbols : ['BTCUSDT','ETHUSDT','SOLUSDT'];
     const open = Object.values(_intradayPaperData.open || {});
     const closed = Array.isArray(_intradayPaperData.closed) ? _intradayPaperData.closed : [];
     const status = _intradayPaperData.status || {};
     const enabled = !!_intradayPaperData.enabled;
     const realEnabled = !!_intradayPaperData.real_enabled;
+    const liveIntraday = (Array.isArray(livePositions)?livePositions:[]).filter(p => symbols.includes(p.symbol));
+    if (liveStatus) {
+        let text='', color='#d29922', bg='rgba(210,153,34,.10)';
+        if (!realEnabled) {
+            text='⚫ REAL đang Tắt — không có lệnh thật mới.';
+        } else if (!botRunning) {
+            text='⛔ REAL đang Bật nhưng Bot chính PAUSED — bấm Start Bot, hiện không thể vào lệnh.'; color='#f85149'; bg='rgba(248,81,73,.12)';
+        } else if (liveIntraday.length) {
+            const pnl=liveIntraday.reduce((a,p)=>a+Number(p.pnl||0),0);
+            text=`🔴 ĐANG CÓ ${liveIntraday.length} VỊ THẾ REAL · PnL thật $${pnl.toFixed(2)} · xem card bên dưới/Binance.`; color=pnl>=0?'#3fb950':'#f85149'; bg=pnl>=0?'rgba(63,185,80,.10)':'rgba(248,81,73,.12)';
+        } else {
+            const states=Object.values(status).map(x=>x.state);
+            if (states.includes('WATCHING')) text='🟢 REAL đã sẵn sàng · đang canh phá biên 21:00–00:00 VN · chưa có tín hiệu nên chưa có lệnh.';
+            else if (states.includes('BUILDING_RANGE')) text='🟡 REAL đã sẵn sàng · đang tạo biên 20:00–21:00 VN · chưa vào lệnh.';
+            else if (states.includes('WAIT_SESSION')) text='⏳ REAL đã sẵn sàng · chờ 20:00 VN bắt đầu tạo biên.';
+            else text='🌙 REAL đã sẵn sàng nhưng đã hết cửa sổ hôm nay · phiên tiếp theo bắt đầu 20:00 VN.';
+            color='#3fb950'; bg='rgba(63,185,80,.08)';
+        }
+        liveStatus.textContent=text; liveStatus.style.color=color; liveStatus.style.background=bg;
+    }
     if (btn) {
         btn.className = `btn ${enabled?'btn-red':'btn-green'} btn-sm`;
         btn.textContent = enabled ? 'Tắt theo dõi' : 'Bật theo dõi';
@@ -1412,7 +1434,6 @@ function renderIntradayPaper(data, livePositions=[]) {
             </span>`;
         }).join('') || '<span style="color:#6e7681">Chưa có kết quả lọc.</span>';
     }
-    const symbols = Array.isArray(_intradayPaperData.symbols) ? _intradayPaperData.symbols : ['BTCUSDT','ETHUSDT','SOLUSDT'];
     const liveBySymbol = Object.fromEntries((Array.isArray(livePositions)?livePositions:[]).map(p => [p.symbol,p]));
     const cards = symbols.map(sym => {
         const t = (_intradayPaperData.open||{})[sym];
@@ -2381,6 +2402,7 @@ function renderDashboard(d) {
           Backtest cố định 1 năm sau phí (script: tools/intraday_paper_backtest.py): danh mục equal-weight +8.63% ở 1x, 601 lệnh, win 43.6%, PF 1.111, max DD 10.21%.<br>
           Riêng từng coin nếu cấp đủ 1x cho mỗi coin: BTC −3.03% (không có lợi thế), ETH +9.62%, SOL +19.31%. Vì vậy đây chỉ là paper monitor; không đảm bảo tương lai.
         </div>
+        <div id="intraday-live-status" style="font-size:12px;font-weight:700;padding:7px 10px;border-radius:6px;margin:6px 0;background:#161b22;color:#d29922">Đang tải trạng thái REAL...</div>
         <div class="control-row">
           <button id="intraday-paper-toggle" class="btn btn-gray btn-sm" onclick="toggleIntradayPaper()">Bật theo dõi giấy</button>
           <button id="intraday-real-toggle" class="btn btn-red btn-sm" onclick="toggleIntradayReal()">Bật REAL</button>
@@ -4734,7 +4756,7 @@ async function refresh(){
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_macroCalendarData) renderMacroCalendar();
             renderAutoLiqZone(d.auto_liq_zone);
-            renderIntradayPaper(d.intraday_paper, d.open_positions);
+            renderIntradayPaper(d.intraday_paper, d.open_positions, d.running);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
