@@ -7722,6 +7722,14 @@ if __name__ == "__main__":
     auto_liq_service.start()
     atexit.register(auto_liq_service.stop)
 
+    # Paper-only intraday futures monitor. It is independent of bot Pause and
+    # never receives an order-placement callback, so it cannot trade real funds.
+    from intraday_paper import IntradayPaperService
+    intraday_paper = IntradayPaperService(config, exchange)
+    state["_intraday_paper_service"] = intraday_paper
+    intraday_paper.start()
+    atexit.register(intraday_paper.stop)
+
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after
     # its SL/TP metadata has been discarded.
