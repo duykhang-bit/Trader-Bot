@@ -70,9 +70,11 @@ def _atr(rows: list[list], period=14) -> float:
 
 
 class IntradayPaperService:
-    def __init__(self, config, exchange, *, now_fn=time.time):
+    def __init__(self, config, exchange, *, real_entry_callback=None,
+                 now_fn=time.time):
         self.config = config
         self.exchange = exchange
+        self.real_entry_callback = real_entry_callback
         self._now = now_fn
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -80,6 +82,7 @@ class IntradayPaperService:
         self._thread = None
         self._data = {
             "enabled": bool(getattr(config, "INTRADAY_PAPER_ENABLED", False)),
+            "real_enabled": False,
             "symbols": list(getattr(config, "INTRADAY_PAPER_SYMBOLS", DEFAULT_SYMBOLS)),
             "margin_usdt": float(getattr(config, "INTRADAY_PAPER_MARGIN_USDT", 15.0)),
             "leverage": int(getattr(config, "INTRADAY_PAPER_LEVERAGE", 1)),
@@ -87,6 +90,7 @@ class IntradayPaperService:
             "closed": [],
             "sessions": {},
             "status": {},
+            "real_events": [],
             "errors": [],
             "updated_at": 0.0,
         }
@@ -112,10 +116,26 @@ class IntradayPaperService:
     def toggle(self, enabled: bool):
         with self._lock:
             self._data["enabled"] = bool(enabled)
+            if not enabled:
+                self._data["real_enabled"] = False
             self._data["updated_at"] = self._now()
             self._persist_locked()
         self._wake.set()
         return {"ok": True, "enabled": bool(enabled)}
+
+    def toggle_real(self, enabled: bool, confirmation=""):
+        enabled = bool(enabled)
+        if enabled and str(confirmation or "").strip().upper() != "ENABLE REAL":
+            return {"ok": False, "error": "Nhập đúng ENABLE REAL để bật tiền thật"}
+        with self._lock:
+            self._data["real_enabled"] = enabled
+            if enabled:
+                self._data["enabled"] = True  # signals must run for REAL mode
+            self._data["updated_at"] = self._now()
+            self._persist_locked()
+        self._wake.set()
+        return {"ok": True, "real_enabled": enabled,
+                "enabled": self._data["enabled"]}
 
     def update_settings(self, margin_usdt, leverage):
         try:
@@ -271,7 +291,8 @@ class IntradayPaperService:
         notional = margin * leverage
         paper = {
             "symbol": symbol, "side": side, "entry": entry, "stop": stop,
-            "target": target, "notional": notional, "opened_at": now,
+            "target": target, "margin_usdt": margin, "leverage": leverage,
+            "notional": notional, "opened_at": now,
             "expires_at": now + 2 * 3600, "session_day": day,
             "entry_fee": notional * ENTRY_COST_RATE,
             "mark": mark, "unrealized": -notional * ENTRY_COST_RATE,
@@ -283,6 +304,28 @@ class IntradayPaperService:
             self._data["updated_at"] = now
             self._persist_locked()
         logger.info("[IntradayPaper] OPEN %s %s entry=%.8g SL=%.8g TP=%.8g", symbol, side, entry, stop, target)
+
+        with self._lock:
+            real_enabled = bool(self._data.get("real_enabled"))
+        if real_enabled and self.real_entry_callback is not None:
+            try:
+                real_result = self.real_entry_callback(copy.deepcopy(paper))
+            except Exception as exc:
+                real_result = {"ok": False, "error": str(exc)}
+                logger.exception("[IntradayREAL] entry callback failed for %s", symbol)
+            event = {
+                "time": now, "symbol": symbol, "side": side,
+                "entry": entry, "stop": stop, "target": target,
+                "ok": bool((real_result or {}).get("ok")),
+                "result": real_result or {},
+            }
+            with self._lock:
+                self._data["real_events"] = (self._data.get("real_events", []) + [event])[-200:]
+                self._data["open"][symbol]["real"] = event
+                self._data["status"][symbol]["state"] = (
+                    "REAL_OPEN" if event["ok"] else "REAL_BLOCKED"
+                )
+                self._persist_locked()
 
     def _monitor_trade(self, symbol, trade, mark, now):
         side = trade["side"]
@@ -333,7 +376,7 @@ class IntradayPaperService:
             with open(PERSISTENCE_FILE, "r", encoding="utf-8") as handle:
                 saved = json.load(handle)
             if isinstance(saved, dict):
-                for key in ("enabled", "symbols", "margin_usdt", "leverage", "open", "closed", "sessions", "status", "errors", "updated_at"):
+                for key in ("enabled", "real_enabled", "symbols", "margin_usdt", "leverage", "open", "closed", "sessions", "status", "real_events", "errors", "updated_at"):
                     if key in saved:
                         self._data[key] = saved[key]
         except FileNotFoundError:
