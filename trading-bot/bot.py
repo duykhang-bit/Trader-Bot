@@ -7722,10 +7722,114 @@ if __name__ == "__main__":
     auto_liq_service.start()
     atexit.register(auto_liq_service.stop)
 
-    # Paper-only intraday futures monitor. It is independent of bot Pause and
-    # never receives an order-placement callback, so it cannot trade real funds.
+    # Paper + explicitly confirmed REAL intraday futures monitor. REAL entries
+    # still pass through the central capacity/same-symbol gate and get exchange
+    # SL/TP immediately; an SL failure triggers emergency flattening.
     from intraday_paper import IntradayPaperService
-    intraday_paper = IntradayPaperService(config, exchange)
+
+    def _intraday_real_entry(signal):
+        symbol = str(signal["symbol"])
+        side = str(signal["side"])
+        entry = float(signal["entry"])
+        sl = float(signal["stop"])
+        tp = float(signal["target"])
+        margin = float(signal["margin_usdt"])
+        requested_lev = int(signal["leverage"])
+        if requested_lev > 3:
+            return {"ok": False, "error": "REAL chỉ cho phép tối đa 3x (mức đã test)"}
+        available = float(exchange.get_account_balance() or 0)
+        if available <= 0 or margin > available * 0.25:
+            return {"ok": False, "error": "Margin REAL mỗi lệnh phải <=25% available balance"}
+        def _real_submit_guard():
+            with lock:
+                service = state.get("_intraday_paper_service")
+                runtime_on = bool(state.get("running")) and not bool(state.get("paused"))
+            try:
+                real_on = bool(service and service.snapshot().get("real_enabled"))
+            except Exception:
+                real_on = False
+            return runtime_on and real_on
+
+        if not _real_submit_guard():
+            return {"ok": False, "error": "Bot Pause hoặc REAL vừa tắt; entry bị chặn"}
+        current = float(exchange.get_ticker_price(symbol) or 0)
+        valid_geometry = (
+            side == "LONG" and sl < current < tp
+        ) or (
+            side == "SHORT" and tp < current < sl
+        )
+        if current <= 0 or not valid_geometry:
+            return {"ok": False, "error": "Giá đã rời setup trước khi submit"}
+        risk = abs(current - sl)
+        reward = abs(tp - current)
+        if risk <= 0 or reward / risk < 1.5:
+            return {"ok": False, "error": "RR theo giá submit dưới 1.5"}
+        effective_lev = int(exchange.set_leverage(symbol, requested_lev) or 0)
+        if effective_lev <= 0:
+            return {"ok": False, "error": "Không xác nhận được leverage"}
+        from qty_utils import calc_qty_precise
+        qty, _ = calc_qty_precise(exchange, symbol, margin, effective_lev, current)
+        if qty <= 0 or qty * current < 5:
+            return {"ok": False, "error": "Notional dưới minimum Binance"}
+        order_side = "BUY" if side == "LONG" else "SELL"
+        close_side = "SELL" if side == "LONG" else "BUY"
+        client_id = f"intr_{int(time.time()*1000):x}"[:36]
+        placed = _place_entry_order_safely(
+            exchange, symbol, order_side, qty, order_type="MARKET",
+            client_order_id=client_id,
+            submit_guard=_real_submit_guard,
+        )
+        if not placed:
+            return {"ok": False, "error": "EntryGate chặn position/pending/capacity"}
+        _cache_entry(symbol, side, current, qty)
+        time.sleep(0.3)
+        sl_ok = False
+        for _ in range(3):
+            try:
+                exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+                sl_ok = True
+                break
+            except Exception:
+                time.sleep(0.4)
+        if not sl_ok:
+            flattened = _recover_unprotected_position(
+                exchange, notifier, symbol, "IntradayREAL"
+            )
+            if flattened:
+                return {"ok": False, "error": "SL lỗi; vị thế đã được đóng khẩn cấp"}
+            # Entry is still live and unprotected. Report REAL exposure as open
+            # and critical so the dashboard never disguises it as paper-only.
+            return {
+                "ok": True, "protected": False, "critical": True,
+                "exposure": True, "entry": current, "qty": qty,
+                "leverage": effective_lev, "client_order_id": client_id,
+                "error": "KHẨN CẤP: vị thế REAL còn mở nhưng chưa có SL",
+            }
+        try:
+            exchange.place_take_profit_order(symbol, close_side, qty, tp)
+        except Exception as exc:
+            logger.warning("[IntradayREAL] TP %s failed, backup monitor will retry: %s", symbol, exc)
+        _set_sltp_cooldown(symbol)
+        with lock:
+            _append_trade({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": side, "entry": current,
+                "sl": sl, "tp": tp, "qty": qty, "status": "OPEN",
+                "note": "intraday_real_us_session",
+            })
+        notifier.telegram.send(
+            f"⚡ <b>INTRADAY REAL</b> {symbol} {side}\n"
+            f"Entry ${current:.8g} · SL ${sl:.8g} · TP ${tp:.8g}\n"
+            f"Margin ${margin:.2f} · {effective_lev}x · Qty {qty}"
+        )
+        logger.info("[IntradayREAL] OPEN %s %s qty=%s entry=%.8g SL=%.8g TP=%.8g", symbol, side, qty, current, sl, tp)
+        return {"ok": True, "order_id": placed.get("orderId") if isinstance(placed, dict) else None,
+                "entry": current, "qty": qty, "leverage": effective_lev,
+                "client_order_id": client_id}
+
+    intraday_paper = IntradayPaperService(
+        config, exchange, real_entry_callback=_intraday_real_entry
+    )
     state["_intraday_paper_service"] = intraday_paper
     intraday_paper.start()
     atexit.register(intraday_paper.stop)
