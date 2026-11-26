@@ -147,10 +147,8 @@ class IntradayPaperService:
         self._wake.set()
         return {"ok": True, "enabled": bool(enabled)}
 
-    def toggle_real(self, enabled: bool, confirmation=""):
+    def toggle_real(self, enabled: bool):
         enabled = bool(enabled)
-        if enabled and str(confirmation or "").strip().upper() != "ENABLE REAL":
-            return {"ok": False, "error": "Nhập đúng ENABLE REAL để bật tiền thật"}
         with self._lock:
             self._data["real_enabled"] = enabled
             # REAL is the master switch requested by the user: enabling starts
