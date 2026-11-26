@@ -1344,7 +1344,25 @@ function renderIntradayPaper(data) {
     const root = document.getElementById('intraday-paper-list');
     const summary = document.getElementById('intraday-paper-summary');
     const btn = document.getElementById('intraday-paper-toggle');
+    const marginInput = document.getElementById('intraday-paper-margin');
+    const leverageInput = document.getElementById('intraday-paper-leverage');
+    const riskNote = document.getElementById('intraday-paper-risk');
     if (!root) return;
+    const margin = Number(_intradayPaperData.margin_usdt || 15);
+    const leverage = Number(_intradayPaperData.leverage || 1);
+    const notional = margin * leverage;
+    if (marginInput && document.activeElement !== marginInput) marginInput.value = margin;
+    if (leverageInput && document.activeElement !== leverageInput) leverageInput.value = leverage;
+    if (riskNote) {
+        const liqMove = Math.max(0.5, 100/leverage - 2);
+        const projected = 8.63 * leverage, projectedDd = 10.21 * leverage;
+        const col = leverage <= 2 ? '#3fb950' : leverage <= 3 ? '#d29922' : '#f85149';
+        riskNote.innerHTML = `📐 Notional mỗi lệnh ảo: <b>$${notional.toFixed(0)}</b> ($${margin} × ${leverage}x). `
+          + `Win rate backtest vẫn <b>43.6%</b>, leverage không làm tăng win rate. `
+          + `Ước tính tuyến tính: năm ${projected.toFixed(1)}%, DD ${projectedDd.toFixed(1)}%; `
+          + `<span style="color:${col}">giá thanh lý khoảng ${liqMove.toFixed(1)}% ngược hướng</span>. `
+          + `Khuyến nghị paper 1–2x, tối đa 3x; trên 3x có thể bị thanh lý trước SL biên.`;
+    }
     const open = Object.values(_intradayPaperData.open || {});
     const closed = Array.isArray(_intradayPaperData.closed) ? _intradayPaperData.closed : [];
     const status = _intradayPaperData.status || {};
@@ -1385,6 +1403,17 @@ async function toggleIntradayPaper() {
     const enabled = !_intradayPaperData.enabled;
     const r = await apiPost('/api/intraday-paper/toggle', {enabled});
     if (r.ok) toast(enabled ? 'Đã bật paper intraday — không đặt lệnh thật' : 'Đã tắt paper intraday', true);
+    await refresh();
+}
+async function setIntradayPaperSettings() {
+    const margin_usdt = Number(document.getElementById('intraday-paper-margin')?.value || 0);
+    const leverage = Number(document.getElementById('intraday-paper-leverage')?.value || 0);
+    if (!(margin_usdt >= 1 && margin_usdt <= 500 && leverage >= 1 && leverage <= 20)) {
+        toast('Margin $1–500, leverage 1–20x', false); return;
+    }
+    const r = await apiPost('/api/intraday-paper/settings', {margin_usdt, leverage});
+    if (r.ok) toast(`Paper: $${margin_usdt} × ${leverage}x (win rate không đổi)`, true);
+    else toast(r.error || 'Không thể cập nhật', false);
     await refresh();
 }
 async function resetIntradayPaper() {
@@ -2275,9 +2304,15 @@ function renderDashboard(d) {
         </div>
         <div class="control-row">
           <button id="intraday-paper-toggle" class="btn btn-gray btn-sm" onclick="toggleIntradayPaper()">Bật theo dõi giấy</button>
+          <label style="font-size:11px;color:#8b949e">Margin $</label>
+          <input id="intraday-paper-margin" type="number" min="1" max="500" step="1" value="15" style="width:62px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          <label style="font-size:11px;color:#8b949e">Leverage</label>
+          <input id="intraday-paper-leverage" type="number" min="1" max="20" step="1" value="1" style="width:52px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          <button class="btn btn-blue btn-sm" onclick="setIntradayPaperSettings()">Set</button>
           <button class="btn btn-gray btn-sm" onclick="resetIntradayPaper()">Xóa lịch sử giấy</button>
           <span id="intraday-paper-summary" style="font-size:11px;color:#8b949e"></span>
         </div>
+        <div id="intraday-paper-risk" style="font-size:10px;color:#8b949e;margin:5px 0"></div>
         <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
     </div>`;
 
@@ -5535,6 +5570,18 @@ def api_intraday_paper_toggle():
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     result = service.toggle(bool((request.get_json() or {}).get("enabled")))
     return jsonify(result)
+
+
+@app.route("/api/intraday-paper/settings", methods=["POST"])
+@require_auth
+def api_intraday_paper_settings():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.update_settings(data.get("margin_usdt"), data.get("leverage"))
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 @app.route("/api/intraday-paper/reset", methods=["POST"])
