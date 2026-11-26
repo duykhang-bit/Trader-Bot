@@ -72,6 +72,8 @@ MAX_LOSS_PER_POSITION = 7.0
 # --- Futures Intraday Paper (không đặt lệnh thật) ---
 INTRADAY_PAPER_ENABLED = False
 INTRADAY_PAPER_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+INTRADAY_PAPER_MARGIN_USDT = 15.0
+INTRADAY_PAPER_LEVERAGE = 1  # Paper: nên 1–2x, tối đa 3x; leverage không tăng win rate
 # Fixed after 1-year M5 validation: US-session opening-range breakout,
 # closed 4h EMA20/50 direction, opposite-range SL, 2R TP, max hold 2 hours.
 # Backtest after fees: +8.73% at 1x; win 43.7%; PF 1.115; DD 10.45%.
