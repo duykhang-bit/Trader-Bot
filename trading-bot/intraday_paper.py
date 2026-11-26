@@ -81,6 +81,8 @@ class IntradayPaperService:
         self._data = {
             "enabled": bool(getattr(config, "INTRADAY_PAPER_ENABLED", False)),
             "symbols": list(getattr(config, "INTRADAY_PAPER_SYMBOLS", DEFAULT_SYMBOLS)),
+            "margin_usdt": float(getattr(config, "INTRADAY_PAPER_MARGIN_USDT", 15.0)),
+            "leverage": int(getattr(config, "INTRADAY_PAPER_LEVERAGE", 1)),
             "open": {},
             "closed": [],
             "sessions": {},
@@ -115,6 +117,25 @@ class IntradayPaperService:
         self._wake.set()
         return {"ok": True, "enabled": bool(enabled)}
 
+    def update_settings(self, margin_usdt, leverage):
+        try:
+            margin = float(margin_usdt)
+            lev = int(leverage)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Margin/Leverage không hợp lệ"}
+        if not 1.0 <= margin <= 500.0:
+            return {"ok": False, "error": "Margin phải từ $1 đến $500"}
+        if not 1 <= lev <= 20:
+            return {"ok": False, "error": "Paper leverage phải từ 1x đến 20x"}
+        with self._lock:
+            if self._data["open"]:
+                return {"ok": False, "error": "Chờ lệnh paper đang mở đóng trước khi đổi vốn"}
+            self._data["margin_usdt"] = margin
+            self._data["leverage"] = lev
+            self._data["updated_at"] = self._now()
+            self._persist_locked()
+        return {"ok": True, "margin_usdt": margin, "leverage": lev}
+
     def reset_history(self):
         with self._lock:
             if self._data["open"]:
@@ -133,8 +154,8 @@ class IntradayPaperService:
         data.update({
             "mode": "PAPER_ONLY",
             "strategy": "US session M5 breakout + 4h EMA20/50 + range stop + 2R",
-            "notional_per_trade": float(getattr(self.config, "MAX_ORDER_USDT", 15))
-                                  * int(getattr(self.config, "LEVERAGE", 15)),
+            "notional_per_trade": float(data.get("margin_usdt", 15.0))
+                                  * int(data.get("leverage", 1)),
             "closed_count": len(closed),
             "wins": wins,
             "win_rate": wins / len(closed) * 100.0 if closed else 0.0,
@@ -244,7 +265,10 @@ class IntradayPaperService:
                 self._persist_locked()
             return
         target = entry + 2.0 * risk if side == "LONG" else entry - 2.0 * risk
-        notional = float(getattr(self.config, "MAX_ORDER_USDT", 15)) * int(getattr(self.config, "LEVERAGE", 15))
+        with self._lock:
+            margin = float(self._data.get("margin_usdt", 15.0))
+            leverage = int(self._data.get("leverage", 1))
+        notional = margin * leverage
         paper = {
             "symbol": symbol, "side": side, "entry": entry, "stop": stop,
             "target": target, "notional": notional, "opened_at": now,
@@ -309,7 +333,7 @@ class IntradayPaperService:
             with open(PERSISTENCE_FILE, "r", encoding="utf-8") as handle:
                 saved = json.load(handle)
             if isinstance(saved, dict):
-                for key in ("enabled", "symbols", "open", "closed", "sessions", "status", "errors", "updated_at"):
+                for key in ("enabled", "symbols", "margin_usdt", "leverage", "open", "closed", "sessions", "status", "errors", "updated_at"):
                     if key in saved:
                         self._data[key] = saved[key]
         except FileNotFoundError:
