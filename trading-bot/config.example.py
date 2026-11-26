@@ -68,6 +68,14 @@ MAX_ORDER_USDT     = 15.0
 # Max Loss áp dụng cho MỌI vị thế, kể cả lệnh tay. Lệnh tay nên có SL riêng.
 MAX_LOSS_ENABLED      = True
 MAX_LOSS_PER_POSITION = 7.0
+
+# --- Futures Intraday Paper (không đặt lệnh thật) ---
+INTRADAY_PAPER_ENABLED = False
+INTRADAY_PAPER_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+# Fixed after 1-year M5 validation: US-session opening-range breakout,
+# closed 4h EMA20/50 direction, opposite-range SL, 2R TP, max hold 2 hours.
+# Backtest after fees: +8.73% at 1x; win 43.7%; PF 1.115; DD 10.45%.
+# Past performance is not a guarantee. Enable/disable it on the dashboard.
 TRAILING_STOP      = True
 TRAILING_STOP_PCT  = 0.015
 
