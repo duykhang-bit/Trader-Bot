@@ -1338,6 +1338,62 @@ async function refreshAutoLiqZone(id=null) {
     await _alqPost('/api/auto-liq-zone/refresh', id ? {id} : {});
 }
 
+let _intradayPaperData = {enabled:false,open:{},closed:[],status:{}};
+function renderIntradayPaper(data) {
+    _intradayPaperData = data || _intradayPaperData;
+    const root = document.getElementById('intraday-paper-list');
+    const summary = document.getElementById('intraday-paper-summary');
+    const btn = document.getElementById('intraday-paper-toggle');
+    if (!root) return;
+    const open = Object.values(_intradayPaperData.open || {});
+    const closed = Array.isArray(_intradayPaperData.closed) ? _intradayPaperData.closed : [];
+    const status = _intradayPaperData.status || {};
+    const enabled = !!_intradayPaperData.enabled;
+    if (btn) {
+        btn.className = `btn ${enabled?'btn-red':'btn-green'} btn-sm`;
+        btn.textContent = enabled ? 'Tắt theo dõi giấy' : 'Bật theo dõi giấy';
+    }
+    if (summary) summary.innerHTML = `${enabled?'🟢 Đang theo dõi':'⚫ Đang tắt'} · `
+        + `Open ảo ${open.length} · Đã đóng ${Number(_intradayPaperData.closed_count||0)} · `
+        + `Win ${Number(_intradayPaperData.win_rate||0).toFixed(1)}% · `
+        + `PnL sau phí <b style="color:${Number(_intradayPaperData.net_pnl||0)>=0?'#3fb950':'#f85149'}">$${Number(_intradayPaperData.net_pnl||0).toFixed(2)}</b>`;
+    const symbols = Array.isArray(_intradayPaperData.symbols) ? _intradayPaperData.symbols : ['BTCUSDT','ETHUSDT','SOLUSDT'];
+    const cards = symbols.map(sym => {
+        const t = (_intradayPaperData.open||{})[sym];
+        const s = status[sym] || {};
+        if (t) {
+            const pnl = Number(t.unrealized||0), side = t.side || '';
+            return `<div class="alq-card ${pnl>=0?'pending':'error'}">
+              <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span class="alq-side ${side==='LONG'?'long':'short'}">PAPER ${_macroEsc(side)}</span></div>
+              <div class="alq-target">Entry <b>${_alqFmtPrice(t.entry)}</b> · Mark ${_alqFmtPrice(t.mark)} · SL ${_alqFmtPrice(t.stop)} · TP ${_alqFmtPrice(t.target)}</div>
+              <div class="alq-status">Notional $${Number(t.notional||0).toFixed(0)} · PnL sau entry fee <b style="color:${pnl>=0?'#3fb950':'#f85149'}">$${pnl.toFixed(2)}</b></div>
+            </div>`;
+        }
+        return `<div class="alq-card">
+          <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span style="font-size:10px;color:#6e7681">${_macroEsc(s.state||'WAIT')}</span></div>
+          <div class="alq-target">Trend ${_macroEsc(s.trend||'—')} · Range ${_alqFmtPrice(s.range_low)}–${_alqFmtPrice(s.range_high)} · Mark ${_alqFmtPrice(s.mark)}</div>
+          <div class="alq-status">Mỗi ngày tối đa 1 lệnh ảo · chỉ theo dõi 14:00–17:00 UTC</div>
+        </div>`;
+    }).join('');
+    const recent = closed.slice(-8).reverse().map(t => `<tr>
+      <td>${new Date(Number(t.closed_at||0)*1000).toLocaleString()}</td><td>${_macroEsc(t.symbol)}</td><td>${_macroEsc(t.side)}</td>
+      <td>${_macroEsc(t.reason)}</td><td style="color:${Number(t.net_pnl)>=0?'#3fb950':'#f85149'}">$${Number(t.net_pnl||0).toFixed(2)}</td></tr>`).join('');
+    root.innerHTML = `<div class="alq-grid">${cards}</div>`
+        + (recent ? `<table style="margin-top:8px"><tr><th>Đóng lúc</th><th>Coin</th><th>Side</th><th>Lý do</th><th>PnL sau phí</th></tr>${recent}</table>` : '');
+}
+async function toggleIntradayPaper() {
+    const enabled = !_intradayPaperData.enabled;
+    const r = await apiPost('/api/intraday-paper/toggle', {enabled});
+    if (r.ok) toast(enabled ? 'Đã bật paper intraday — không đặt lệnh thật' : 'Đã tắt paper intraday', true);
+    await refresh();
+}
+async function resetIntradayPaper() {
+    if (!confirm('Xóa toàn bộ lịch sử lệnh giấy?')) return;
+    const r = await apiPost('/api/intraday-paper/reset', {});
+    if (!r.ok) toast(r.error || 'Không thể xóa', false);
+    await refresh();
+}
+
 let _protectedPendingCoins = [];
 
 function renderProtectedPendingCoins(coins) {
@@ -2207,6 +2263,22 @@ function renderDashboard(d) {
         </div>
         <div id="alq-summary" style="font-size:10px;color:#8b949e;margin:7px 0"></div>
         <div id="alq-list"><div style="font-size:11px;color:#6e7681">Chưa thêm coin.</div></div>
+    </div>`;
+
+    // Paper-only futures intraday monitor — never submits an exchange order.
+    html += `<div class="section" id="intraday-paper-section">
+        <h2>⚡ Futures Intraday Paper <span style="font-size:10px;color:#d29922;font-weight:400">PAPER ONLY · KHÔNG ĐẶT LỆNH THẬT</span></h2>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:8px">
+          BTC/ETH/SOL M5 · biên phiên Mỹ 13:00–14:00 UTC · phá biên theo trend 4h · SL mép đối diện · TP 2R · giữ tối đa 2h.<br>
+          Backtest cố định 1 năm sau phí (script: tools/intraday_paper_backtest.py): danh mục equal-weight +8.63% ở 1x, 601 lệnh, win 43.6%, PF 1.111, max DD 10.21%.<br>
+          Riêng từng coin nếu cấp đủ 1x cho mỗi coin: BTC −3.03% (không có lợi thế), ETH +9.62%, SOL +19.31%. Vì vậy đây chỉ là paper monitor; không đảm bảo tương lai.
+        </div>
+        <div class="control-row">
+          <button id="intraday-paper-toggle" class="btn btn-gray btn-sm" onclick="toggleIntradayPaper()">Bật theo dõi giấy</button>
+          <button class="btn btn-gray btn-sm" onclick="resetIntradayPaper()">Xóa lịch sử giấy</button>
+          <span id="intraday-paper-summary" style="font-size:11px;color:#8b949e"></span>
+        </div>
+        <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
     </div>`;
 
     // Open Positions
@@ -4540,6 +4612,7 @@ async function refresh(){
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_macroCalendarData) renderMacroCalendar();
             renderAutoLiqZone(d.auto_liq_zone);
+            renderIntradayPaper(d.intraday_paper);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
@@ -4587,6 +4660,7 @@ function _patchDashboard(d) {
 
     // Auto liquidity-zone cards (data is local service snapshot, no network call).
     renderAutoLiqZone(d.auto_liq_zone);
+    renderIntradayPaper(d.intraday_paper);
 
     // Bot status dot
     const running = d.running;
@@ -5380,6 +5454,7 @@ def api_state():
         } for sym, sp in splits.items()],
         "entry_targets": entry_targets,
         "auto_liq_zone": _get_auto_liq_zone_safe(),
+        "intraday_paper": _get_intraday_paper_safe(),
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
@@ -5449,6 +5524,28 @@ def api_auto_liq_zone_refresh():
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     result = service.force_refresh((request.get_json() or {}).get("id"))
     return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/intraday-paper/toggle", methods=["POST"])
+@require_auth
+def api_intraday_paper_toggle():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.toggle(bool((request.get_json() or {}).get("enabled")))
+    return jsonify(result)
+
+
+@app.route("/api/intraday-paper/reset", methods=["POST"])
+@require_auth
+def api_intraday_paper_reset():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.reset_history()
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 @app.route("/api/protected-pending-coins", methods=["GET"])
@@ -5597,6 +5694,18 @@ def _get_auto_liq_zone_safe():
         }
     except Exception as exc:
         return {"enabled": False, "items": [], "errors": [str(exc)]}
+
+
+def _get_intraday_paper_safe():
+    try:
+        with _lock:
+            service = _state.get("_intraday_paper_service") if _state else None
+        return service.snapshot() if service else {
+            "enabled": False, "mode": "PAPER_ONLY", "symbols": [],
+            "open": {}, "closed": [], "status": {}, "errors": [],
+        }
+    except Exception as exc:
+        return {"enabled": False, "mode": "PAPER_ONLY", "errors": [str(exc)]}
 
 
 def _get_ai_bias_safe():
