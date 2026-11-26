@@ -1339,6 +1339,16 @@ async function refreshAutoLiqZone(id=null) {
 }
 
 let _intradayPaperData = {enabled:false,open:{},closed:[],status:{}};
+function _intradayStateText(value) {
+    const labels = {
+      WAIT_SESSION:'Chờ 20:00 VN để tạo biên', BUILDING_RANGE:'Đang tạo biên 20:00–21:00 VN',
+      WATCHING:'Đang canh phá biên 21:00–00:00 VN', WINDOW_CLOSED:'Hết giờ vào lệnh hôm nay',
+      DONE_TODAY:'Đã dùng tín hiệu hôm nay', PAPER_OPEN:'Đang có lệnh PAPER', REAL_OPEN:'Đang có lệnh REAL',
+      REAL_BLOCKED:'Có tín hiệu nhưng REAL bị chặn', SKIP_RISK:'Bỏ qua: khoảng SL quá rộng',
+      CLOSED_TP:'Đã chốt TP', CLOSED_SL:'Đã chạm SL', CLOSED_TIME:'Đã hết 2 giờ'
+    };
+    return labels[value] || value || 'Đang chờ dữ liệu';
+}
 function renderIntradayPaper(data, livePositions=[]) {
     _intradayPaperData = data || _intradayPaperData;
     const root = document.getElementById('intraday-paper-list');
@@ -1422,7 +1432,7 @@ function renderIntradayPaper(data, livePositions=[]) {
             </div>`;
         }
         return `<div class="alq-card">
-          <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span><span style="font-size:10px;color:#6e7681">${_macroEsc(s.state||'WAIT')}</span> <button style="background:none;border:none;color:#f85149;cursor:pointer" onclick="removeIntradaySymbol('${_macroEsc(sym)}')">×</button></span></div>
+          <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span><span style="font-size:10px;color:#6e7681">${_macroEsc(_intradayStateText(s.state))}</span> <button style="background:none;border:none;color:#f85149;cursor:pointer" onclick="removeIntradaySymbol('${_macroEsc(sym)}')">×</button></span></div>
           <div class="alq-target">Trend ${_macroEsc(s.trend||'—')} · Range ${_alqFmtPrice(s.range_low)}–${_alqFmtPrice(s.range_high)} · Mark ${_alqFmtPrice(s.mark)}</div>
           <div class="alq-status">Mỗi ngày tối đa 1 tín hiệu/coin · PAPER luôn ghi mô phỏng · REAL chỉ đặt Binance khi nút REAL đang bật · theo dõi 14:00–17:00 UTC</div>
         </div>`;
@@ -5291,6 +5301,16 @@ async function saveP0Settings() {
 </script>
 </body>
 </html>"""
+
+
+@app.after_request
+def disable_dashboard_cache(response):
+    """Always deliver the current embedded dashboard after a deployment."""
+    if response.mimetype == "text/html" or request.path in {"/", "/login"}:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 @app.before_request
