@@ -7823,9 +7823,10 @@ if __name__ == "__main__":
             f"Margin ${margin:.2f} · {effective_lev}x · Qty {qty}"
         )
         logger.info("[IntradayREAL] OPEN %s %s qty=%s entry=%.8g SL=%.8g TP=%.8g", symbol, side, qty, current, sl, tp)
-        return {"ok": True, "order_id": placed.get("orderId") if isinstance(placed, dict) else None,
+        return {"ok": True, "protected": True,
+                "order_id": placed.get("orderId") if isinstance(placed, dict) else None,
                 "entry": current, "qty": qty, "leverage": effective_lev,
-                "client_order_id": client_id}
+                "sl": sl, "tp": tp, "client_order_id": client_id}
 
     intraday_paper = IntradayPaperService(
         config, exchange, real_entry_callback=_intraday_real_entry
