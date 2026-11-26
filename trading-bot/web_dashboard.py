@@ -1344,6 +1344,8 @@ function renderIntradayPaper(data) {
     const root = document.getElementById('intraday-paper-list');
     const summary = document.getElementById('intraday-paper-summary');
     const btn = document.getElementById('intraday-paper-toggle');
+    const realBtn = document.getElementById('intraday-real-toggle');
+    const modeLabel = document.getElementById('intraday-mode-label');
     const marginInput = document.getElementById('intraday-paper-margin');
     const leverageInput = document.getElementById('intraday-paper-leverage');
     const riskNote = document.getElementById('intraday-paper-risk');
@@ -1367,9 +1369,18 @@ function renderIntradayPaper(data) {
     const closed = Array.isArray(_intradayPaperData.closed) ? _intradayPaperData.closed : [];
     const status = _intradayPaperData.status || {};
     const enabled = !!_intradayPaperData.enabled;
+    const realEnabled = !!_intradayPaperData.real_enabled;
     if (btn) {
         btn.className = `btn ${enabled?'btn-red':'btn-green'} btn-sm`;
-        btn.textContent = enabled ? 'Tắt theo dõi giấy' : 'Bật theo dõi giấy';
+        btn.textContent = enabled ? 'Tắt theo dõi' : 'Bật theo dõi';
+    }
+    if (realBtn) {
+        realBtn.className = `btn ${realEnabled?'btn-red':'btn-gray'} btn-sm`;
+        realBtn.textContent = realEnabled ? '🔴 REAL ĐANG BẬT — TẮT' : 'Bật REAL';
+    }
+    if (modeLabel) {
+        modeLabel.textContent = realEnabled ? '🔴 REAL FUTURES ĐANG BẬT' : 'PAPER · REAL TẮT';
+        modeLabel.style.color = realEnabled ? '#f85149' : '#d29922';
     }
     if (summary) summary.innerHTML = `${enabled?'🟢 Đang theo dõi':'⚫ Đang tắt'} · `
         + `Open ảo ${open.length} · Đã đóng ${Number(_intradayPaperData.closed_count||0)} · `
@@ -1381,10 +1392,13 @@ function renderIntradayPaper(data) {
         const s = status[sym] || {};
         if (t) {
             const pnl = Number(t.unrealized||0), side = t.side || '';
-            return `<div class="alq-card ${pnl>=0?'pending':'error'}">
-              <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span class="alq-side ${side==='LONG'?'long':'short'}">PAPER ${_macroEsc(side)}</span></div>
+            const isReal = !!(t.real && t.real.ok);
+            const realCritical = !!(t.real && t.real.result && t.real.result.critical);
+            const realError = t.real && t.real.result ? (t.real.result.error || '') : '';
+            return `<div class="alq-card ${realCritical?'error':pnl>=0?'pending':'error'}">
+              <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span class="alq-side ${side==='LONG'?'long':'short'}">${realCritical?'🚨 REAL CHƯA CÓ SL':isReal?'🔴 REAL + PAPER':'PAPER'} ${_macroEsc(side)}</span></div>
               <div class="alq-target">Entry <b>${_alqFmtPrice(t.entry)}</b> · Mark ${_alqFmtPrice(t.mark)} · SL ${_alqFmtPrice(t.stop)} · TP ${_alqFmtPrice(t.target)}</div>
-              <div class="alq-status">Notional $${Number(t.notional||0).toFixed(0)} · PnL sau entry fee <b style="color:${pnl>=0?'#3fb950':'#f85149'}">$${pnl.toFixed(2)}</b></div>
+              <div class="alq-status">Notional $${Number(t.notional||0).toFixed(0)} · PnL sau entry fee <b style="color:${pnl>=0?'#3fb950':'#f85149'}">$${pnl.toFixed(2)}</b>${realError?`<br><span style="color:#f85149">${_macroEsc(realError)}</span>`:''}</div>
             </div>`;
         }
         return `<div class="alq-card">
@@ -1403,6 +1417,19 @@ async function toggleIntradayPaper() {
     const enabled = !_intradayPaperData.enabled;
     const r = await apiPost('/api/intraday-paper/toggle', {enabled});
     if (r.ok) toast(enabled ? 'Đã bật paper intraday — không đặt lệnh thật' : 'Đã tắt paper intraday', true);
+    await refresh();
+}
+async function toggleIntradayReal() {
+    const enabled = !_intradayPaperData.real_enabled;
+    let confirmation = '';
+    if (enabled) {
+        confirmation = prompt('⚠ TIỀN THẬT: bot sẽ đặt MARKET + SL/TP thật theo tín hiệu.\\nNhập chính xác ENABLE REAL để bật:') || '';
+        if (confirmation.trim().toUpperCase() !== 'ENABLE REAL') { toast('Đã hủy bật REAL', false); return; }
+        if (!confirm(`Xác nhận REAL: Margin $${_intradayPaperData.margin_usdt||15} × ${_intradayPaperData.leverage||1}x cho mỗi coin?`)) return;
+    }
+    const r = await apiPost('/api/intraday-paper/real-toggle', {enabled, confirmation});
+    if (r.ok) toast(enabled ? '🔴 REAL đã bật — lệnh tiếp theo sẽ vào Binance' : 'Đã tắt lệnh REAL mới; SL/TP cũ vẫn giữ', true);
+    else toast(r.error || 'Không thể đổi REAL mode', false);
     await refresh();
 }
 async function setIntradayPaperSettings() {
@@ -2296,7 +2323,7 @@ function renderDashboard(d) {
 
     // Paper-only futures intraday monitor — never submits an exchange order.
     html += `<div class="section" id="intraday-paper-section">
-        <h2>⚡ Futures Intraday Paper <span style="font-size:10px;color:#d29922;font-weight:400">PAPER ONLY · KHÔNG ĐẶT LỆNH THẬT</span></h2>
+        <h2>⚡ Futures Intraday <span id="intraday-mode-label" style="font-size:10px;color:#d29922;font-weight:400">PAPER · REAL TẮT</span></h2>
         <div style="font-size:10px;color:#8b949e;margin-bottom:8px">
           BTC/ETH/SOL M5 · biên phiên Mỹ 13:00–14:00 UTC · phá biên theo trend 4h · SL mép đối diện · TP 2R · giữ tối đa 2h.<br>
           Backtest cố định 1 năm sau phí (script: tools/intraday_paper_backtest.py): danh mục equal-weight +8.63% ở 1x, 601 lệnh, win 43.6%, PF 1.111, max DD 10.21%.<br>
@@ -2304,6 +2331,7 @@ function renderDashboard(d) {
         </div>
         <div class="control-row">
           <button id="intraday-paper-toggle" class="btn btn-gray btn-sm" onclick="toggleIntradayPaper()">Bật theo dõi giấy</button>
+          <button id="intraday-real-toggle" class="btn btn-red btn-sm" onclick="toggleIntradayReal()">Bật REAL</button>
           <label style="font-size:11px;color:#8b949e">Margin $</label>
           <input id="intraday-paper-margin" type="number" min="1" max="500" step="1" value="15" style="width:62px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
           <label style="font-size:11px;color:#8b949e">Leverage</label>
@@ -5570,6 +5598,18 @@ def api_intraday_paper_toggle():
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     result = service.toggle(bool((request.get_json() or {}).get("enabled")))
     return jsonify(result)
+
+
+@app.route("/api/intraday-paper/real-toggle", methods=["POST"])
+@require_auth
+def api_intraday_real_toggle():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.toggle_real(bool(data.get("enabled")), data.get("confirmation", ""))
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 @app.route("/api/intraday-paper/settings", methods=["POST"])
