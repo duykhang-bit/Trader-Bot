@@ -1339,7 +1339,7 @@ async function refreshAutoLiqZone(id=null) {
 }
 
 let _intradayPaperData = {enabled:false,open:{},closed:[],status:{}};
-function renderIntradayPaper(data) {
+function renderIntradayPaper(data, livePositions=[]) {
     _intradayPaperData = data || _intradayPaperData;
     const root = document.getElementById('intraday-paper-list');
     const summary = document.getElementById('intraday-paper-summary');
@@ -1349,6 +1349,8 @@ function renderIntradayPaper(data) {
     const marginInput = document.getElementById('intraday-paper-margin');
     const leverageInput = document.getElementById('intraday-paper-leverage');
     const riskNote = document.getElementById('intraday-paper-risk');
+    const candidateRoot = document.getElementById('intraday-candidates');
+    const selectorStatus = document.getElementById('intraday-selector-status');
     if (!root) return;
     const margin = Number(_intradayPaperData.margin_usdt || 15);
     const leverage = Number(_intradayPaperData.leverage || 1);
@@ -1386,25 +1388,43 @@ function renderIntradayPaper(data) {
         + `Open ảo ${open.length} · Đã đóng ${Number(_intradayPaperData.closed_count||0)} · `
         + `Win ${Number(_intradayPaperData.win_rate||0).toFixed(1)}% · `
         + `PnL sau phí <b style="color:${Number(_intradayPaperData.net_pnl||0)>=0?'#3fb950':'#f85149'}">$${Number(_intradayPaperData.net_pnl||0).toFixed(2)}</b>`;
+    const candidates = _intradayPaperData.candidates || {};
+    const realSymbols = new Set(_intradayPaperData.real_symbols || []);
+    const selector = _intradayPaperData.selector || {};
+    if (selectorStatus) selectorStatus.textContent = selector.running ? `⏳ ${selector.progress||'Đang lọc'}` : (selector.error ? `⚠ ${selector.error}` : selector.last_scan ? `Lọc gần nhất: ${new Date(selector.last_scan*1000).toLocaleString()}` : 'Chưa quét tự động');
+    if (candidateRoot) {
+        const rows = Object.entries(candidates).sort((a,b) => Number(b[1].eligible)-Number(a[1].eligible) || Number(b[1].return_pct||0)-Number(a[1].return_pct||0));
+        candidateRoot.innerHTML = rows.slice(0,20).map(([sym,c]) => {
+            const eligible=!!c.eligible, active=realSymbols.has(sym), seg=Array.isArray(c.segments)?c.segments.map(x=>typeof x==='object'?Number(x.return_pct||0).toFixed(1):Number(x).toFixed(1)).join('/'):'—';
+            return `<span style="display:inline-flex;align-items:center;gap:4px;margin:2px;padding:3px 6px;border:1px solid ${eligible?'#238636':'#30363d'};border-radius:10px;color:${eligible?'#3fb950':'#8b949e'}">
+              ${_macroEsc(sym.replace('USDT',''))} ${eligible?'PASS':'FAIL'} · ${Number(c.return_pct||0).toFixed(1)}% · seg ${seg}
+              ${eligible?`<button class="btn btn-sm ${active?'btn-red':'btn-green'}" style="padding:1px 5px" onclick="setIntradayRealSymbol('${_macroEsc(sym)}',${!active})">${active?'REAL ON':'REAL OFF'}</button>`:''}
+            </span>`;
+        }).join('') || '<span style="color:#6e7681">Chưa có kết quả lọc.</span>';
+    }
     const symbols = Array.isArray(_intradayPaperData.symbols) ? _intradayPaperData.symbols : ['BTCUSDT','ETHUSDT','SOLUSDT'];
+    const liveBySymbol = Object.fromEntries((Array.isArray(livePositions)?livePositions:[]).map(p => [p.symbol,p]));
     const cards = symbols.map(sym => {
         const t = (_intradayPaperData.open||{})[sym];
+        const live = liveBySymbol[sym];
         const s = status[sym] || {};
-        if (t) {
-            const pnl = Number(t.unrealized||0), side = t.side || '';
-            const isReal = !!(t.real && t.real.ok);
-            const realCritical = !!(t.real && t.real.result && t.real.result.critical);
-            const realError = t.real && t.real.result ? (t.real.result.error || '') : '';
+        if (t || live) {
+            const pnl = Number(live ? live.pnl : t.unrealized||0), side = (live ? live.side : t.side) || '';
+            const isReal = !!live || !!(t && t.real && t.real.ok);
+            const realCritical = !!(t && t.real && t.real.result && t.real.result.critical);
+            const realError = t && t.real && t.real.result ? (t.real.result.error || '') : '';
+            const entry = live ? live.entry : t.entry, mark = live ? live.mark : t.mark;
+            const rr = t && t.real ? (t.real.result||{}) : {};
             return `<div class="alq-card ${realCritical?'error':pnl>=0?'pending':'error'}">
-              <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span class="alq-side ${side==='LONG'?'long':'short'}">${realCritical?'🚨 REAL CHƯA CÓ SL':isReal?'🔴 REAL + PAPER':'PAPER'} ${_macroEsc(side)}</span></div>
-              <div class="alq-target">Entry <b>${_alqFmtPrice(t.entry)}</b> · Mark ${_alqFmtPrice(t.mark)} · SL ${_alqFmtPrice(t.stop)} · TP ${_alqFmtPrice(t.target)}</div>
-              <div class="alq-status">Notional $${Number(t.notional||0).toFixed(0)} · PnL sau entry fee <b style="color:${pnl>=0?'#3fb950':'#f85149'}">$${pnl.toFixed(2)}</b>${realError?`<br><span style="color:#f85149">${_macroEsc(realError)}</span>`:''}</div>
+              <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span class="alq-side ${side==='LONG'?'long':'short'}">${realCritical?'🚨 REAL CHƯA CÓ SL':isReal?'🔴 REAL':'PAPER'} ${_macroEsc(side)}</span></div>
+              <div class="alq-target">Entry thật <b>${_alqFmtPrice(entry)}</b> · Mark ${_alqFmtPrice(mark)} · Qty ${live?Number(live.qty||0):'—'} · ${live?Number(live.lev||0)+'x':''}<br>SL ${_alqFmtPrice(rr.sl || (t&&t.stop))} · TP ${_alqFmtPrice(rr.tp || (t&&t.target))} · ${rr.protected?'🛡 Đã đặt SL/TP':''}</div>
+              <div class="alq-status">PnL ${isReal?'THẬT':'giả lập'} <b style="color:${pnl>=0?'#3fb950':'#f85149'}">$${pnl.toFixed(2)}</b>${live?` · ROE ${Number(live.pct||0).toFixed(2)}%`:''}${realError?`<br><span style="color:#f85149">${_macroEsc(realError)}</span>`:''}</div>
             </div>`;
         }
         return `<div class="alq-card">
-          <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span style="font-size:10px;color:#6e7681">${_macroEsc(s.state||'WAIT')}</span></div>
+          <div class="alq-head"><span class="alq-title">${_macroEsc(sym)}</span><span><span style="font-size:10px;color:#6e7681">${_macroEsc(s.state||'WAIT')}</span> <button style="background:none;border:none;color:#f85149;cursor:pointer" onclick="removeIntradaySymbol('${_macroEsc(sym)}')">×</button></span></div>
           <div class="alq-target">Trend ${_macroEsc(s.trend||'—')} · Range ${_alqFmtPrice(s.range_low)}–${_alqFmtPrice(s.range_high)} · Mark ${_alqFmtPrice(s.mark)}</div>
-          <div class="alq-status">Mỗi ngày tối đa 1 lệnh ảo · chỉ theo dõi 14:00–17:00 UTC</div>
+          <div class="alq-status">Mỗi ngày tối đa 1 tín hiệu/coin · PAPER luôn ghi mô phỏng · REAL chỉ đặt Binance khi nút REAL đang bật · theo dõi 14:00–17:00 UTC</div>
         </div>`;
     }).join('');
     const recent = closed.slice(-8).reverse().map(t => `<tr>
@@ -1428,7 +1448,7 @@ async function toggleIntradayReal() {
         if (!confirm(`Xác nhận REAL: Margin $${_intradayPaperData.margin_usdt||15} × ${_intradayPaperData.leverage||1}x cho mỗi coin?`)) return;
     }
     const r = await apiPost('/api/intraday-paper/real-toggle', {enabled, confirmation});
-    if (r.ok) toast(enabled ? '🔴 REAL đã bật — lệnh tiếp theo sẽ vào Binance' : 'Đã tắt lệnh REAL mới; SL/TP cũ vẫn giữ', true);
+    if (r.ok) toast(enabled ? '🔴 REAL đã bật — lệnh tiếp theo sẽ vào Binance' : 'Đã tắt REAL + toàn bộ theo dõi tín hiệu mới; SL/TP cũ vẫn giữ', true);
     else toast(r.error || 'Không thể đổi REAL mode', false);
     await refresh();
 }
@@ -1441,6 +1461,33 @@ async function setIntradayPaperSettings() {
     const r = await apiPost('/api/intraday-paper/settings', {margin_usdt, leverage});
     if (r.ok) toast(`Paper: $${margin_usdt} × ${leverage}x (win rate không đổi)`, true);
     else toast(r.error || 'Không thể cập nhật', false);
+    await refresh();
+}
+async function addIntradaySymbol() {
+    let symbol = (document.getElementById('intraday-symbol')?.value || '').trim().toUpperCase();
+    if (!symbol) { toast('Nhập coin', false); return; }
+    if (!symbol.endsWith('USDT')) symbol += 'USDT';
+    const r = await apiPost('/api/intraday-paper/symbol/add', {symbol});
+    if (r.ok) { toast(`Đã thêm ${symbol} vào paper; chưa tự bật REAL`, true); document.getElementById('intraday-symbol').value=''; }
+    else toast(r.error || 'Không thể thêm coin', false);
+    await refresh();
+}
+async function removeIntradaySymbol(symbol) {
+    if (!confirm(`Xóa ${symbol} khỏi Intraday? REAL của coin này cũng tắt; vị thế đã mở giữ SL/TP.`)) return;
+    const r = await apiPost('/api/intraday-paper/symbol/remove', {symbol});
+    if (!r.ok) toast(r.error || 'Không thể xóa coin', false);
+    await refresh();
+}
+async function setIntradayRealSymbol(symbol, enabled) {
+    const r = await apiPost('/api/intraday-paper/real-symbol', {symbol, enabled});
+    if (r.ok) toast(`${symbol}: REAL ${enabled?'ON':'OFF'}`, true);
+    else toast(r.error || 'Coin chưa đủ điều kiện REAL', false);
+    await refresh();
+}
+async function scanIntradayCandidates() {
+    const r = await apiPost('/api/intraday-paper/auto-scan', {});
+    if (r.ok) toast('Đã bắt đầu lọc top coin trong nền', true);
+    else toast(r.error || 'Không thể chạy bộ lọc', false);
     await refresh();
 }
 async function resetIntradayPaper() {
@@ -2325,7 +2372,8 @@ function renderDashboard(d) {
     html += `<div class="section" id="intraday-paper-section">
         <h2>⚡ Futures Intraday <span id="intraday-mode-label" style="font-size:10px;color:#d29922;font-weight:400">PAPER · REAL TẮT</span></h2>
         <div style="font-size:10px;color:#8b949e;margin-bottom:8px">
-          BTC/ETH/SOL M5 · biên phiên Mỹ 13:00–14:00 UTC · phá biên theo trend 4h · SL mép đối diện · TP 2R · giữ tối đa 2h.<br>
+          Coin đã chọn · M5 · biên phiên Mỹ 13:00–14:00 UTC · phá biên theo trend 4h · SL mép đối diện · TP 2R · giữ tối đa 2h.<br>
+          <b>Bật theo dõi</b> = tìm tín hiệu + paper + tự lọc coin, không vào Binance. <b>Bật REAL</b> = tự bật theo dõi và đặt lệnh thật cho coin REAL ON.<br>
           Backtest cố định 1 năm sau phí (script: tools/intraday_paper_backtest.py): danh mục equal-weight +8.63% ở 1x, 601 lệnh, win 43.6%, PF 1.111, max DD 10.21%.<br>
           Riêng từng coin nếu cấp đủ 1x cho mỗi coin: BTC −3.03% (không có lợi thế), ETH +9.62%, SOL +19.31%. Vì vậy đây chỉ là paper monitor; không đảm bảo tương lai.
         </div>
@@ -2341,6 +2389,13 @@ function renderDashboard(d) {
           <span id="intraday-paper-summary" style="font-size:11px;color:#8b949e"></span>
         </div>
         <div id="intraday-paper-risk" style="font-size:10px;color:#8b949e;margin:5px 0"></div>
+        <div class="control-row" style="margin-top:5px">
+          <input id="intraday-symbol" placeholder="LINK hoặc LINKUSDT" style="width:145px" onkeydown="if(event.key==='Enter')addIntradaySymbol()">
+          <button class="btn btn-blue btn-sm" onclick="addIntradaySymbol()">+ Thêm theo dõi</button>
+          <button class="btn btn-gray btn-sm" onclick="scanIntradayCandidates()">🔍 Quét & tự lọc top coin</button>
+          <span id="intraday-selector-status" style="font-size:10px;color:#8b949e"></span>
+        </div>
+        <div id="intraday-candidates" style="font-size:10px;margin:5px 0"></div>
         <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
     </div>`;
 
@@ -4675,7 +4730,7 @@ async function refresh(){
             // không gọi API lần nữa (tránh chờ và tránh thêm tải).
             if (_macroCalendarData) renderMacroCalendar();
             renderAutoLiqZone(d.auto_liq_zone);
-            renderIntradayPaper(d.intraday_paper);
+            renderIntradayPaper(d.intraday_paper, d.open_positions);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
@@ -5310,7 +5365,7 @@ def api_state():
         amt = float(p.get("positionAmt", 0))
         open_fmt.append({"symbol": p.get("symbol",""), "side": "LONG" if amt > 0 else "SHORT",
             "entry": float(p.get("entryPrice",0)), "mark": p.get("_mark",0),
-            "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
+            "qty": abs(amt), "pnl": p.get("_pnl",0), "pct": p.get("_pct",0), "lev": p.get("_lev",10)})
 
     # Pending orders — đọc từ state cache (không cần lock riêng)
     pending_orders = list(s.get("pending_orders_cache", []))
@@ -5621,6 +5676,51 @@ def api_intraday_paper_settings():
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     data = request.get_json() or {}
     result = service.update_settings(data.get("margin_usdt"), data.get("leverage"))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/intraday-paper/symbol/add", methods=["POST"])
+@require_auth
+def api_intraday_symbol_add():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.add_symbol((request.get_json() or {}).get("symbol"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/intraday-paper/symbol/remove", methods=["POST"])
+@require_auth
+def api_intraday_symbol_remove():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.remove_symbol((request.get_json() or {}).get("symbol"))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/intraday-paper/real-symbol", methods=["POST"])
+@require_auth
+def api_intraday_real_symbol():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    data = request.get_json() or {}
+    result = service.set_real_symbol(data.get("symbol"), bool(data.get("enabled")))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/intraday-paper/auto-scan", methods=["POST"])
+@require_auth
+def api_intraday_auto_scan():
+    with _lock:
+        service = _state.get("_intraday_paper_service") if _state else None
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.start_auto_scan()
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
