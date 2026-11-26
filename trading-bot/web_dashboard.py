@@ -1441,13 +1441,7 @@ async function toggleIntradayPaper() {
 }
 async function toggleIntradayReal() {
     const enabled = !_intradayPaperData.real_enabled;
-    let confirmation = '';
-    if (enabled) {
-        confirmation = prompt('⚠ TIỀN THẬT: bot sẽ đặt MARKET + SL/TP thật theo tín hiệu.\\nNhập chính xác ENABLE REAL để bật:') || '';
-        if (confirmation.trim().toUpperCase() !== 'ENABLE REAL') { toast('Đã hủy bật REAL', false); return; }
-        if (!confirm(`Xác nhận REAL: Margin $${_intradayPaperData.margin_usdt||15} × ${_intradayPaperData.leverage||1}x cho mỗi coin?`)) return;
-    }
-    const r = await apiPost('/api/intraday-paper/real-toggle', {enabled, confirmation});
+    const r = await apiPost('/api/intraday-paper/real-toggle', {enabled});
     if (r.ok) toast(enabled ? '🔴 REAL đã bật — lệnh tiếp theo sẽ vào Binance' : 'Đã tắt REAL + toàn bộ theo dõi tín hiệu mới; SL/TP cũ vẫn giữ', true);
     else toast(r.error || 'Không thể đổi REAL mode', false);
     await refresh();
@@ -5663,7 +5657,7 @@ def api_intraday_real_toggle():
     if service is None:
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     data = request.get_json() or {}
-    result = service.toggle_real(bool(data.get("enabled")), data.get("confirmation", ""))
+    result = service.toggle_real(bool(data.get("enabled")))
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
