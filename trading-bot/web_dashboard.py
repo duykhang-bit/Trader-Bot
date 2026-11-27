@@ -1557,7 +1557,7 @@ function renderCopyTrading(data, botRunning) {
         const reqs = reqAll.bots || {};
         const avail = Number(reqAll.available);
         const levIn = Math.max(1, Math.min(5, Number(document.getElementById('grid-lev')?.value || 5)));
-        const canUse = Number.isFinite(avail) ? avail * 0.5 : null;
+        const canUse = Number.isFinite(avail) ? avail * 0.75 : null;
         const needCell = b => {
             const q = reqs[String(b.id)];
             if (!q) return '<span style="color:#6e7681">đang tính…</span>';
@@ -1576,7 +1576,7 @@ function renderCopyTrading(data, botRunning) {
         br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">Bấm Copy → bot đặt grid Neutral cùng coin/range/số lưới trên tài khoản của mày, dùng Margin/Lev/Stop/Max lỗ ở trên (không dùng Lev 50–75x của bot gốc). Vốn nhỏ thì số lưới tự giảm để mỗi lệnh đủ tối thiểu Binance.</span>
             <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th>Margin tối thiểu để copy</th><th></th></tr>${rows}</table></div>
             <div style="font-size:10px;color:#8b949e;margin-top:3px">Margin tối thiểu tính theo Lev đang nhập ở trên, cập nhật mỗi 5 phút.
-            ${canUse !== null ? `Hiện mày đặt được tối đa <b>$${canUse.toFixed(2)}</b> (50% số dư khả dụng $${avail.toFixed(2)}): <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
+            ${canUse !== null ? `Hiện mày đặt được tối đa <b>$${canUse.toFixed(2)}</b> (75% số dư khả dụng $${avail.toFixed(2)}). Muốn copy thì nhập ô Margin ≥ số ở cột này rồi bấm Copy: <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
     }
     const ev = document.getElementById('copy-events');
     if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
