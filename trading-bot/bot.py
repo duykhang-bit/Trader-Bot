@@ -8013,6 +8013,13 @@ if __name__ == "__main__":
     state["_grid_copy_service"] = grid_copy
     grid_copy.start()
     atexit.register(grid_copy.stop)
+
+    # Telegram discipline alerts: position/account size vs equity (all sources).
+    from risk_alert import RiskAlertService
+    risk_alert = RiskAlertService(exchange, notifier)
+    state["_risk_alert_service"] = risk_alert
+    risk_alert.start()
+    atexit.register(risk_alert.stop)
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after
     # its SL/TP metadata has been discarded.
