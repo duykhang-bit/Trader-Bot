@@ -7804,18 +7804,22 @@ if __name__ == "__main__":
             except Exception:
                 time.sleep(0.4)
         if not sl_ok:
-            flattened = _recover_unprotected_position(
-                exchange, notifier, symbol, "IntradayREAL"
-            )
-            if flattened:
-                return {"ok": False, "error": "SL lỗi; vị thế đã được đóng khẩn cấp"}
-            # Entry is still live and unprotected. Report REAL exposure as open
-            # and critical so the dashboard never disguises it as paper-only.
+            # User choice: never force-close. Keep the position, alert, and let
+            # AutoSLTP (retries every 30s) and Max Loss protect it.
+            try:
+                notifier.telegram.send(
+                    f"⚠️ <b>INTRADAY REAL {symbol} {side}: đặt SL lỗi</b>\n"
+                    f"Vị thế vẫn giữ (không đóng khẩn cấp). Bot sẽ thử đặt lại SL mỗi 30s.\n"
+                    f"SL dự kiến ${sl:.8g} · Entry ${current:.8g}"
+                )
+            except Exception:
+                pass
+            logger.warning("[IntradayREAL] SL failed %s, position kept open (no emergency close)", symbol)
             return {
                 "ok": True, "protected": False, "critical": True,
                 "exposure": True, "entry": current, "qty": qty,
                 "leverage": effective_lev, "client_order_id": client_id,
-                "error": "KHẨN CẤP: vị thế REAL còn mở nhưng chưa có SL",
+                "error": "Vị thế REAL đang mở, SL chưa đặt được — bot đang thử lại",
             }
         try:
             exchange.place_take_profit_order(symbol, close_side, qty, tp)
