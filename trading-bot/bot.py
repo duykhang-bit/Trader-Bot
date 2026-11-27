@@ -8015,6 +8015,47 @@ if __name__ == "__main__":
     grid_copy.start()
     atexit.register(grid_copy.stop)
 
+    # Fast Max Loss: Binance pushes fills (<1s) and every open position gets a
+    # mark-price check each second. Same settings and close guard as the old
+    # WS/REST Max Loss, which keeps running as a backup.
+    from fast_max_loss import FastMaxLossGuard
+
+    def _fast_max_loss_close(sym, amt, pnl, max_loss):
+        key = f"_ml_closing_{sym}"
+        with lock:
+            if state.get(key):
+                return None  # another Max Loss path is closing it
+            state[key] = True
+        try:
+            with _position_close_lock(sym):
+                exchange.place_market_order(sym, "SELL" if amt > 0 else "BUY", abs(amt), reduce_only=True)
+            _cancel_all_orders_if_unprotected(exchange, sym, "FastMaxLoss")
+            _remove_entry_cache(sym)
+            logger.info(f"[FastMaxLoss] Closed {sym} pnl=${pnl:.2f} (max loss ${max_loss:.2f})")
+            try:
+                notifier.telegram.send(
+                    f"🚨 <b>MAX LOSS CẮT LỖ</b>: {sym}\n"
+                    f"💵 PnL lúc cắt: <b>${pnl:.2f}</b> (mức -${max_loss:.2f})\n"
+                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            logger.error(f"[FastMaxLoss] close {sym} failed: {exc}")
+            return False
+        finally:
+            with lock:
+                state.pop(key, None)
+
+    fast_max_loss = FastMaxLossGuard(
+        exchange, config, close_callback=_fast_max_loss_close, skip_symbol=_is_grid_symbol,
+    )
+    state["_fast_max_loss"] = fast_max_loss
+    if not config.USE_TESTNET:
+        fast_max_loss.start()
+    atexit.register(fast_max_loss.stop)
+
     # Telegram discipline alerts: position/account size vs equity (all sources).
     from risk_alert import RiskAlertService
     risk_alert = RiskAlertService(exchange, notifier)
