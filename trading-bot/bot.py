@@ -7750,8 +7750,8 @@ if __name__ == "__main__":
         if not (1 <= requested_lev <= 20):
             return {"ok": False, "error": "Leverage REAL phải trong 1–20x"}
         available = float(exchange.get_account_balance() or 0)
-        if available <= 0 or margin > available * 0.25:
-            return {"ok": False, "error": "Margin REAL mỗi lệnh phải <=25% available balance"}
+        if available <= 0 or margin > available * 0.90:
+            return {"ok": False, "error": f"Không đủ tiền: margin ${margin:.2f} > 90% khả dụng ${available:.2f}"}
         def _real_submit_guard():
             with lock:
                 service = state.get("_intraday_paper_service")
