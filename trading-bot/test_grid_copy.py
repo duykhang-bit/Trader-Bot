@@ -243,7 +243,11 @@ class GridCopyTests(unittest.TestCase):
         self.assertTrue(self.svc.update_settings(11, 5, 2, 2)["ok"])
         reloaded = gc.GridCopyService(self.ex, persistence_file=self.svc._file)
         self.assertEqual(reloaded.snapshot()["settings"],
-                         {"margin_usdt": 11.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0})
+                         {"margin_usdt": 11.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0,
+                          "trailing": False, "trail_limit_pct": 30.0})
+        self.assertTrue(self.svc.update_settings(11, 5, 2, 2, True, 40)["ok"])
+        self.assertTrue(gc.GridCopyService(self.ex, persistence_file=self.svc._file).snapshot()["settings"]["trailing"])
+        self.assertFalse(self.svc.update_settings(11, 5, 2, 2, True, 200)["ok"])
         self.assertFalse(self.svc.update_settings(11, 9, 2, 2)["ok"])
         self.assertFalse(self.svc.update_settings(0, 5, 2, 2)["ok"])
 
@@ -253,6 +257,59 @@ class GridCopyTests(unittest.TestCase):
         la = self.svc.snapshot()["last_attempt"]
         self.assertFalse(la["ok"])
         self.assertIn("Pause", la["error"])
+
+    def _fill_all_sells_up_to(self, price):
+        for o in sorted(list(self.ex.orders.values()), key=lambda x: x["price"]):
+            if o["side"] == "SELL" and o["price"] <= price:
+                self.ex.fill(o["orderId"])
+
+    def test_trailing_up_shifts_range_and_keeps_structure(self):
+        self.start(trailing=True, trail_limit_pct=30)
+        self._fill_all_sells_up_to(110)
+        self.ex.price = 111
+        self.svc.cycle("TESTUSDT")   # settle fills, risk check stores mark
+        self.svc.cycle("TESTUSDT")   # trail with the new mark
+        g = self.svc.snapshot()["grids"]["TESTUSDT"]
+        self.assertGreaterEqual(g["trail_shifts"], 1)
+        self.assertGreater(g["upper"], 110)
+        self.assertGreater(g["lower"], 90)
+        prices = self.orders_by_price()
+        self.assertEqual(prices[g["upper"]]["side"], "SELL")        # new top level has a SELL
+        self.assertTrue(all(o["side"] == "BUY" for p, o in prices.items() if p < 111))
+        self.assertNotIn(90, prices)                                  # lowest BUY cancelled
+        self.assertEqual(len(prices), 10)
+        self.assertAlmostEqual(self.ex.amount, -0.1 * 5, places=6)    # no market trade during shift
+
+    def test_trailing_down_shifts_range(self):
+        self.start(trailing=True, trail_limit_pct=30)
+        for o in sorted(list(self.ex.orders.values()), key=lambda x: -x["price"]):
+            if o["side"] == "BUY":
+                self.ex.fill(o["orderId"])
+        self.ex.price = 89
+        self.svc.cycle("TESTUSDT"); self.svc.cycle("TESTUSDT")
+        g = self.svc.snapshot()["grids"]["TESTUSDT"]
+        self.assertGreaterEqual(g["trail_shifts"], 1)
+        self.assertLess(g["lower"], 90)
+        prices = self.orders_by_price()
+        self.assertEqual(prices[g["lower"]]["side"], "BUY")
+        self.assertNotIn(110, prices)
+
+    def test_trailing_stops_beyond_limit(self):
+        self.start(trailing=True, trail_limit_pct=10, stop_pct=2)
+        self._fill_all_sells_up_to(110)
+        self.ex.price = 110 * 1.1 * 1.03   # beyond trail limit + stop band
+        self.svc.cycle("TESTUSDT")
+        self.assertNotIn("TESTUSDT", self.svc.snapshot()["grids"])
+        self.assertEqual(self.ex.amount, 0)
+
+    def test_fixed_grid_never_shifts(self):
+        self.start()
+        self._fill_all_sells_up_to(110)
+        self.ex.price = 111
+        self.svc.cycle("TESTUSDT"); self.svc.cycle("TESTUSDT")
+        g = self.svc.snapshot()["grids"]["TESTUSDT"]
+        self.assertEqual(g["trail_shifts"], 0)
+        self.assertEqual(g["upper"], 110)
 
     def test_manual_stop(self):
         self.start()
