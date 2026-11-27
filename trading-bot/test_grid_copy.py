@@ -239,6 +239,21 @@ class GridCopyTests(unittest.TestCase):
         self.assertIn("5", req["bots"]["8"]["margin_at"])
         self.assertEqual(req["available"], 100.0)
 
+    def test_settings_persist_and_validate(self):
+        self.assertTrue(self.svc.update_settings(11, 5, 2, 2)["ok"])
+        reloaded = gc.GridCopyService(self.ex, persistence_file=self.svc._file)
+        self.assertEqual(reloaded.snapshot()["settings"],
+                         {"margin_usdt": 11.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0})
+        self.assertFalse(self.svc.update_settings(11, 9, 2, 2)["ok"])
+        self.assertFalse(self.svc.update_settings(0, 5, 2, 2)["ok"])
+
+    def test_failed_attempt_is_recorded(self):
+        self.trading = False
+        self.start()
+        la = self.svc.snapshot()["last_attempt"]
+        self.assertFalse(la["ok"])
+        self.assertIn("Pause", la["error"])
+
     def test_manual_stop(self):
         self.start()
         self.assertTrue(self.svc.stop_grid("TESTUSDT")["ok"])
