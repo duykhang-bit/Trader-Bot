@@ -43,6 +43,7 @@ MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min noti
 CYCLE_SECONDS = 5
 MAX_AVAILABLE_FRACTION = 0.75  # keep 25% free for fees/funding/other exits
 REQUIREMENT_REFRESH_S = 300
+BALANCE_REFRESH_S = 30
 MIN_GRIDS = 5
 MAX_STEP_PCT = 3.0
 MISMATCH_CONFIRMATIONS = 3
@@ -139,12 +140,13 @@ class GridCopyService:
         self.on_symbols_changed = on_symbols_changed
         self.bots_provider = bots_provider
         self._req_ts = 0.0
+        self._bal_ts = 0.0
         self._now = now_fn
         self._file = persistence_file
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
-        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {},
+        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {}, "balance": {},
                       "settings": {"margin_usdt": 10.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0}}
         self._load()
 
@@ -231,6 +233,12 @@ class GridCopyService:
                             grid["error"] = str(exc)[:200]
                             self._persist_locked()
             self._settle_history()
+            if self._now() - self._bal_ts >= BALANCE_REFRESH_S:
+                self._bal_ts = self._now()
+                try:
+                    self.refresh_balance()
+                except Exception as exc:
+                    logger.warning("[GridCopy] balance refresh failed: %s", exc)
             if self._now() - self._req_ts >= REQUIREMENT_REFRESH_S:
                 self._req_ts = self._now()
                 try:
@@ -238,6 +246,25 @@ class GridCopyService:
                 except Exception as exc:
                     logger.warning("[GridCopy] requirement refresh failed: %s", exc)
             self._stop.wait(CYCLE_SECONDS)
+
+    def refresh_balance(self):
+        """Live account breakdown so the web shows why margin is short."""
+        acc = self.exchange._get("/fapi/v2/account", signed=True) or {}
+        bal = {
+            "ts": self._now(),
+            "equity": round(_f(acc.get("totalMarginBalance")), 2),
+            "available": round(_f(acc.get("availableBalance")), 2),
+            "orders_margin": round(_f(acc.get("totalOpenOrderInitialMargin")), 2),
+            "positions_margin": round(_f(acc.get("totalPositionInitialMargin")), 2),
+        }
+        bal["grid_cap"] = round(bal["available"] * MAX_AVAILABLE_FRACTION, 2)
+        with self._lock:
+            self._data["balance"] = bal
+            req = self._data.get("requirements")
+            if isinstance(req, dict):
+                req["available"] = bal["available"]
+            self._persist_locked()
+        return bal
 
     def refresh_requirements(self):
         """Estimate the margin each listed Binance bot needs (shown on the web)."""
