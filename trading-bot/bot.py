@@ -7746,8 +7746,9 @@ if __name__ == "__main__":
         tp = float(signal["target"])
         margin = float(signal["margin_usdt"])
         requested_lev = int(signal["leverage"])
-        if requested_lev > 3:
-            return {"ok": False, "error": "REAL chỉ cho phép tối đa 3x (mức đã test)"}
+        # User chose the leverage on the web (1–20x, validated by the service).
+        if not (1 <= requested_lev <= 20):
+            return {"ok": False, "error": "Leverage REAL phải trong 1–20x"}
         available = float(exchange.get_account_balance() or 0)
         if available <= 0 or margin > available * 0.25:
             return {"ok": False, "error": "Margin REAL mỗi lệnh phải <=25% available balance"}
