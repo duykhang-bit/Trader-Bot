@@ -1464,6 +1464,92 @@ function renderIntradayPaper(data, livePositions=[], botRunning=false) {
     root.innerHTML = `<div class="alq-grid">${cards}</div>`
         + (recent ? `<table style="margin-top:8px"><tr><th>Đóng lúc</th><th>Coin</th><th>Side</th><th>Lý do</th><th>PnL sau phí</th></tr>${recent}</table>` : '');
 }
+let _copyData = {enabled:false};
+let _copyInputsInit = false;
+function _usd(v){ const n=Number(v||0); return (n>=0?'+':'-')+'$'+Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:0}); }
+function renderCopyTrading(data, botRunning) {
+    if (!data) return;
+    _copyData = data;
+    const esc = _macroEsc;
+    const label = document.getElementById('copy-mode-label');
+    const btn = document.getElementById('copy-toggle');
+    const live = document.getElementById('copy-live-status');
+    if (!label || !btn || !live) return;
+    const on = !!data.enabled;
+    label.textContent = on ? 'REAL ĐANG BẬT' : 'TẮT';
+    label.style.color = on ? '#f85149' : '#d29922';
+    btn.textContent = on ? 'Tắt Copy REAL' : 'Bật Copy REAL';
+    if (!_copyInputsInit) {
+        _copyInputsInit = true;
+        const setv=(id,v)=>{const el=document.getElementById(id); if(el && v!=null) el.value=v;};
+        setv('copy-margin', data.margin_usdt); setv('copy-lev', data.max_leverage);
+        setv('copy-sl', data.sl_pct); setv('copy-max', data.max_copies);
+    }
+    const following = data.following || {};
+    const copies = Object.values(data.copies || {});
+    const pnl = copies.reduce((a,c)=>a+Number(c.pnl||0),0);
+    const names = Object.values(following).map(f=>esc(f.nickname)).join(', ') || 'chưa chọn trader';
+    live.style.color = on ? (botRunning ? '#3fb950' : '#d29922') : '#8b949e';
+    live.innerHTML = (on ? (botRunning ? '🟢 Copy REAL đang chạy' : '⏸ Copy REAL bật nhưng bot đang Pause — bấm Start Bot') : '⚪ Copy REAL tắt (chỉ xem)')
+        + ` · Theo: ${names} · Lệnh copy mở: ${copies.length} · PnL mở: <span style="color:${pnl>=0?'#3fb950':'#f85149'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</span>`;
+    const scan = data.scan || {};
+    const st = document.getElementById('copy-scan-status');
+    if (st) st.textContent = scan.running ? (scan.progress || 'Đang quét...') : ((scan.last_scan ? 'Cập nhật: ' + new Date(Number(scan.last_scan)*1000).toLocaleString() + ' · ' : '') + (scan.error ? 'Lỗi: ' + scan.error : (scan.progress || '')));
+    const openRoot = document.getElementById('copy-open');
+    if (openRoot) {
+        const fol = Object.entries(following).map(([id,f]) => {
+            const lp = Object.values(f.last_positions || {});
+            const base = new Set(f.baseline || []);
+            const rows = lp.map(p => `${esc(p.side)} ${esc(p.symbol)} @${Number(p.entry).toPrecision(6)} ${p.leverage}x${base.has(p.symbol+'|'+p.side)?' <span style="color:#6e7681">(cũ, không copy)</span>':''}`).join('<br>') || '<span style="color:#6e7681">trader chưa có vị thế</span>';
+            return `<div class="alq-card"><div class="alq-head"><span class="alq-title">${esc(f.nickname)}</span><button class="btn btn-gray btn-sm" onclick="followCopyLeader('${esc(id)}', false)">Bỏ copy</button></div>
+              <div style="font-size:10px;color:#8b949e">Vị thế trader hiện tại:</div><div style="font-size:11px">${rows}</div>
+              ${f.error ? `<div style="color:#f85149;font-size:10px">${esc(f.error)}</div>` : ''}</div>`;
+        }).join('');
+        const cps = copies.map(c => `<div class="alq-card" style="border-left:3px solid ${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">
+              <div class="alq-head"><span class="alq-title">${esc(c.symbol)} ${esc(c.side)}</span><span style="font-size:10px">${esc(c.nickname)}</span></div>
+              <div style="font-size:11px">Entry ${Number(c.entry).toPrecision(6)} · Mark ${Number(c.mark||0).toPrecision(6)} · ${c.leverage}x · Qty ${c.qty}<br>
+              SL ${Number(c.sl).toPrecision(6)} · PnL <b style="color:${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">${Number(c.pnl||0)>=0?'+':''}$${Number(c.pnl||0).toFixed(2)}</b>${c.protected===false?' <b style="color:#f85149">CHƯA CÓ SL</b>':''}</div></div>`).join('');
+        openRoot.innerHTML = (fol || cps) ? `<div class="alq-grid">${cps}${fol}</div>` : '';
+    }
+    const lr = document.getElementById('copy-leaders');
+    if (lr) {
+        const rows = (data.leaders || []).map(x => `<tr style="${x.pass?'':'opacity:.55'}">
+            <td>${esc(x.nickname)}</td><td style="color:${x.copier_pnl>=0?'#3fb950':'#f85149'}">${_usd(x.copier_pnl)}</td>
+            <td>${Number(x.roi).toFixed(0)}%</td><td>${Number(x.mdd).toFixed(1)}%</td><td>${Number(x.win_rate).toFixed(0)}%</td><td>${Number(x.days).toFixed(0)}</td><td>${x.copiers}</td>
+            <td>${x.pass ? (following[x.id] ? '<button class="btn btn-gray btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', false)">Bỏ</button>' : '<button class="btn btn-green btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', true)">Copy</button>') : '<span style="font-size:9px;color:#8b949e">'+esc((x.reasons||[]).join(', '))+'</span>'}</td></tr>`).join('');
+        lr.innerHTML = rows ? `<b>Top trader</b><div style="overflow-x:auto"><table><tr><th>Trader</th><th>Người copy lời</th><th>ROI</th><th>MDD</th><th>Win</th><th>Ngày</th><th>Copy</th><th></th></tr>${rows}</table></div>` : '<span style="color:#6e7681">Chưa có dữ liệu — bấm Cập nhật top ngay</span>';
+    }
+    const br = document.getElementById('copy-bots');
+    if (br) {
+        const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
+            <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td><td>$${Number(b.min_investment).toFixed(0)}</td></tr>`).join('');
+        br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">(Binance không cho tạo grid bot qua API → copy tay trong app: Giao dịch → Bot → Quảng trường. ROI app hiện chưa tính hết lỗ vị thế của các bot đã dừng.)</span>
+            <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev</th><th>Vốn tối thiểu</th></tr>${rows}</table></div>` : '';
+    }
+    const ev = document.getElementById('copy-events');
+    if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
+}
+async function toggleCopyTrading() {
+    const enabled = !_copyData.enabled;
+    const r = await apiPost('/api/copy-trading/toggle', {enabled});
+    if (r.ok) toast(enabled ? 'Đã bật Copy REAL' : 'Đã tắt Copy REAL', true);
+    await refresh();
+}
+async function saveCopySettings() {
+    const v = id => Number(document.getElementById(id)?.value || 0);
+    const r = await apiPost('/api/copy-trading/settings', {margin_usdt:v('copy-margin'), max_leverage:v('copy-lev'), sl_pct:v('copy-sl'), max_copies:v('copy-max')});
+    toast(r.ok ? 'Đã lưu cài đặt copy' : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function followCopyLeader(id, enabled) {
+    const r = await apiPost('/api/copy-trading/follow', {id, enabled});
+    toast(r.ok ? (enabled ? `Đã copy · bỏ qua ${r.ignored_existing||0} vị thế cũ, chờ lệnh mới` : 'Đã bỏ copy') : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function scanCopyLeaders() {
+    const r = await apiPost('/api/copy-trading/scan', {});
+    toast(r.ok ? 'Đang cập nhật top trader & bot...' : (r.error || 'Lỗi'), !!r.ok);
+}
 async function toggleIntradayPaper() {
     const enabled = !_intradayPaperData.enabled;
     const r = await apiPost('/api/intraday-paper/toggle', {enabled});
@@ -2423,6 +2509,29 @@ function renderDashboard(d) {
         </div>
         <div id="intraday-candidates" style="font-size:10px;margin:5px 0"></div>
         <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
+    </div>`;
+    html += `<div class="section" id="copy-trading-section">
+        <h2>👥 Copy Trader Binance <span id="copy-mode-label" style="font-size:10px;color:#d29922;font-weight:400">TẮT</span></h2>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:6px">
+          Mỗi ngày tự cập nhật top trader theo <b>lời/lỗ của người copy (180 ngày)</b>. PASS = công khai vị thế, chạy ≥90 ngày, MDD ≤30%, người copy đang lời, ≥20 người copy.
+          Bấm <b>Copy</b> để bot vào lệnh theo khi trader <b>mở lệnh mới</b> (lệnh cũ của trader bỏ qua), tự đóng khi trader đóng, luôn đặt SL trên Binance.
+          Các monitor bảo vệ lời/Max Loss hiện có vẫn áp dụng. Lời quá khứ không đảm bảo tương lai.
+        </div>
+        <div id="copy-live-status" style="font-size:12px;font-weight:700;padding:7px 10px;border-radius:6px;margin:6px 0;background:#161b22;color:#d29922">Đang tải...</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px">
+          <button id="copy-toggle" class="btn btn-red btn-sm" onclick="toggleCopyTrading()">Bật Copy REAL</button>
+          Margin $<input id="copy-margin" type="number" min="1" max="500" step="1" value="2" style="width:52px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          Lev tối đa <input id="copy-lev" type="number" min="1" max="10" step="1" value="5" style="width:44px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          SL % <input id="copy-sl" type="number" min="0.5" max="10" step="0.5" value="3" style="width:48px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          Số lệnh <input id="copy-max" type="number" min="1" max="10" step="1" value="3" style="width:40px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          <button class="btn btn-blue btn-sm" onclick="saveCopySettings()">Set</button>
+          <button class="btn btn-gray btn-sm" onclick="scanCopyLeaders()">🔍 Cập nhật top ngay</button>
+          <span id="copy-scan-status" style="font-size:10px;color:#8b949e"></span>
+        </div>
+        <div id="copy-open" style="margin-top:8px"></div>
+        <div id="copy-leaders" style="margin-top:8px;font-size:11px"></div>
+        <div id="copy-bots" style="margin-top:8px;font-size:11px"></div>
+        <div id="copy-events" style="margin-top:8px;font-size:10px;color:#8b949e"></div>
     </div>`;
 
     // Open Positions
@@ -4757,6 +4866,7 @@ async function refresh(){
             if (_macroCalendarData) renderMacroCalendar();
             renderAutoLiqZone(d.auto_liq_zone);
             renderIntradayPaper(d.intraday_paper, d.open_positions, d.running);
+            renderCopyTrading(d.copy_trading, d.running);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
             updatePPMonitor(d);  // vẽ tier progression ngay lần load đầu
@@ -4805,6 +4915,7 @@ function _patchDashboard(d) {
     // Auto liquidity-zone cards (data is local service snapshot, no network call).
     renderAutoLiqZone(d.auto_liq_zone);
     renderIntradayPaper(d.intraday_paper);
+    renderCopyTrading(d.copy_trading, d.running);
 
     // Bot status dot
     const running = d.running;
@@ -5609,6 +5720,7 @@ def api_state():
         "entry_targets": entry_targets,
         "auto_liq_zone": _get_auto_liq_zone_safe(),
         "intraday_paper": _get_intraday_paper_safe(),
+        "copy_trading": _get_copy_trading_safe(),
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
@@ -5917,6 +6029,68 @@ def _get_auto_liq_zone_safe():
         }
     except Exception as exc:
         return {"enabled": False, "items": [], "errors": [str(exc)]}
+
+
+def _copy_service():
+    with _lock:
+        return _state.get("_copy_trading_service") if _state else None
+
+
+def _get_copy_trading_safe():
+    try:
+        service = _copy_service()
+        if service is None:
+            return {"enabled": False, "leaders": [], "bots": [], "following": {}, "copies": {}}
+        snap = service.snapshot()
+        snap["leaders"] = (snap.get("leaders") or [])[:40]
+        snap["closed"] = (snap.get("closed") or [])[-20:]
+        snap["events"] = (snap.get("events") or [])[-20:]
+        for info in (snap.get("following") or {}).values():
+            info.pop("tried", None)
+        return snap
+    except Exception as exc:
+        return {"enabled": False, "error": str(exc)}
+
+
+@app.route("/api/copy-trading/toggle", methods=["POST"])
+@require_auth
+def api_copy_trading_toggle():
+    service = _copy_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    return jsonify(service.toggle(bool((request.get_json() or {}).get("enabled"))))
+
+
+@app.route("/api/copy-trading/settings", methods=["POST"])
+@require_auth
+def api_copy_trading_settings():
+    service = _copy_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    d = request.get_json() or {}
+    result = service.update_settings(d.get("margin_usdt"), d.get("max_leverage"), d.get("sl_pct"), d.get("max_copies"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/copy-trading/follow", methods=["POST"])
+@require_auth
+def api_copy_trading_follow():
+    service = _copy_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    d = request.get_json() or {}
+    result = service.follow(d.get("id"), bool(d.get("enabled")))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/copy-trading/scan", methods=["POST"])
+@require_auth
+def api_copy_trading_scan():
+    service = _copy_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.start_scan()
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 def _get_intraday_paper_safe():
