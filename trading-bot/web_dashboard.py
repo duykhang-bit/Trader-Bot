@@ -1695,6 +1695,9 @@ function renderGridCopy(data) {
             Lev <input id="grid-lev" type="number" min="1" max="5" step="1" value="${Number((data.settings||{}).leverage ?? 5)}" onchange="saveGridSettings()" style="width:40px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
             Dừng khi giá ra khỏi range % <input id="grid-stop" type="number" min="0.5" max="20" step="0.5" value="${Number((data.settings||{}).stop_pct ?? 2)}" onchange="saveGridSettings()" style="width:46px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
             Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="${Number((data.settings||{}).max_loss_usdt ?? 2)}" onchange="saveGridSettings()" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            <label style="display:flex;align-items:center;gap:3px"><input id="grid-trailing" type="checkbox" ${(data.settings||{}).trailing ? 'checked' : ''} onchange="saveGridSettings()"> Trailing (range dời theo giá)</label>
+            <span style="font-size:9px;color:#f85149">⚠ test 30 ngày, 14 coin: Trailing −$126 vs cố định −$0.6 → nên TẮT</span>
+            giới hạn ±<input id="grid-trail-limit" type="number" min="5" max="100" step="5" value="${Number((data.settings||{}).trail_limit_pct ?? 30)}" onchange="saveGridSettings()" style="width:44px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">%
           </div>
           <span id="grid-settings-saved" style="font-size:10px;color:#3fb950"></span>
           <div id="grid-balance" style="font-size:11px;margin:4px 0"></div>
@@ -1703,7 +1706,9 @@ function renderGridCopy(data) {
           <div id="grid-active" style="margin-top:6px"></div><div id="grid-history" style="margin-top:6px;font-size:11px"></div></div>`;
     }
     const st = data.settings || {};
-    for (const [id, key] of [['grid-margin','margin_usdt'],['grid-lev','leverage'],['grid-stop','stop_pct'],['grid-maxloss','max_loss_usdt']]) {
+    const tEl = document.getElementById('grid-trailing');
+    if (tEl && document.activeElement !== tEl) tEl.checked = !!st.trailing;
+    for (const [id, key] of [['grid-margin','margin_usdt'],['grid-lev','leverage'],['grid-stop','stop_pct'],['grid-maxloss','max_loss_usdt'],['grid-trail-limit','trail_limit_pct']]) {
         const el = document.getElementById(id);
         if (el && document.activeElement !== el && st[key] != null) el.value = st[key];
     }
@@ -1723,7 +1728,7 @@ function renderGridCopy(data) {
     const grids = Object.values(data.grids || {});
     const act = document.getElementById('grid-active');
     if (act) act.innerHTML = grids.length ? `<div class="alq-grid">${grids.map(g => `<div class="alq-card" style="border-left:3px solid ${Number(g.pnl||0)>=0?'#3fb950':'#f85149'}">
-        <div class="alq-head"><span class="alq-title">${esc(g.symbol)} · ${esc(g.status)}</span><button class="btn btn-red btn-sm" onclick="stopGridCopy('${esc(g.symbol)}')">Dừng & đóng</button></div>
+        <div class="alq-head"><span class="alq-title">${esc(g.symbol)} · ${esc(g.status)}${g.trailing ? ` · trailing (${g.trail_shifts||0} lần dời)` : ''}</span><button class="btn btn-red btn-sm" onclick="stopGridCopy('${esc(g.symbol)}')">Dừng & đóng</button></div>
         <div style="font-size:11px">Range ${Number(g.lower).toPrecision(6)}–${Number(g.upper).toPrecision(6)} · ${g.grids} lưới${g.grids < g.source_grids ? ` (gốc ${g.source_grids})` : ''} · qty ${g.qty}/lệnh · ${g.leverage}x · margin $${Number(g.margin).toFixed(2)}<br>
         Giá ${Number(g.mark||0).toPrecision(6)} · Vị thế ${Number(g.position||0)} · Lệnh chờ ${g.open_orders} · Khớp ${g.fills} (mua ${g.buys}/bán ${g.sells})<br>
         Đã chốt ${money(Number(g.realized||0)+Number(g.fee||0))} · Đang mở ${money(g.unrealized)} · <b>Tổng ${money(g.pnl)}</b> · Max lỗ $${Number(g.max_loss).toFixed(2)}<br>
@@ -1744,14 +1749,16 @@ async function refreshGridBalance() {
 }
 async function saveGridSettings() {
     const v = id => Number(document.getElementById(id)?.value || 0);
-    const r = await apiPost('/api/grid-copy/settings', {margin_usdt: v('grid-margin'), leverage: v('grid-lev'), stop_pct: v('grid-stop'), max_loss_usdt: v('grid-maxloss')});
+    const r = await apiPost('/api/grid-copy/settings', {margin_usdt: v('grid-margin'), leverage: v('grid-lev'), stop_pct: v('grid-stop'), max_loss_usdt: v('grid-maxloss'),
+        trailing: !!document.getElementById('grid-trailing')?.checked, trail_limit_pct: v('grid-trail-limit')});
     const el = document.getElementById('grid-settings-saved');
     if (el) { el.style.color = r.ok ? '#3fb950' : '#f85149'; el.textContent = r.ok ? '✓ Đã lưu' : ('Lỗi: ' + (r.error || '')); }
     if (r.ok && _gridData) { _gridData.settings = r.settings; await refresh(); }
 }
 async function startGridCopy(botId, sym, margin, lev) {
     const gs = (_gridData && _gridData.settings) || {};
-    const body = {bot_id: botId, margin_usdt: margin, leverage: lev || gs.leverage, stop_pct: gs.stop_pct, max_loss_usdt: gs.max_loss_usdt};
+    const body = {bot_id: botId, margin_usdt: margin, leverage: lev || gs.leverage, stop_pct: gs.stop_pct, max_loss_usdt: gs.max_loss_usdt,
+        trailing: !!gs.trailing, trail_limit_pct: gs.trail_limit_pct};
     if (!confirm(`Chạy grid THẬT ${sym}: margin $${body.margin_usdt} × ${body.leverage}x, max lỗ $${body.max_loss_usdt}?`)) return;
     const r = await apiPost('/api/grid-copy/start', body);
     toast(r.ok ? `Đã chạy grid ${sym}: ${r.grids} lưới${r.reduced ? ' (giảm để đủ vốn)' : ''}, đặt ${r.placed} lệnh` : (r.error || 'Lỗi'), !!r.ok);
@@ -6338,6 +6345,7 @@ def api_grid_copy_start():
             grids=source.get("grids"), kind=source.get("type") or "ARITHMETIC",
             margin_usdt=d.get("margin_usdt"), leverage=d.get("leverage"),
             stop_pct=d.get("stop_pct", 2), max_loss_usdt=d.get("max_loss_usdt"),
+            trailing=bool(d.get("trailing")), trail_limit_pct=float(d.get("trail_limit_pct") or 30),
             source={"bot_id": bot_id, "roi": source.get("roi"), "leverage": source.get("leverage")},
         )
     except Exception as exc:
@@ -6353,7 +6361,8 @@ def api_grid_copy_settings():
     if service is None:
         return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
     d = request.get_json() or {}
-    result = service.update_settings(d.get("margin_usdt"), d.get("leverage"), d.get("stop_pct"), d.get("max_loss_usdt"))
+    result = service.update_settings(d.get("margin_usdt"), d.get("leverage"), d.get("stop_pct"), d.get("max_loss_usdt"),
+                                     bool(d.get("trailing")), d.get("trail_limit_pct", 30))
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
