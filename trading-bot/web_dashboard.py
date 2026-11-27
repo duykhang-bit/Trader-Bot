@@ -1555,7 +1555,8 @@ function renderCopyTrading(data, botRunning) {
         const gridActive = new Set(Object.keys((_gridData && _gridData.grids) || {}));
         const reqAll = (_gridData && _gridData.requirements) || {};
         const reqs = reqAll.bots || {};
-        const avail = Number(reqAll.available);
+        const bal = (_gridData && _gridData.balance) || {};
+        const avail = Number(bal.available ?? reqAll.available);
         const gs = (_gridData && _gridData.settings) || {};
         const levIn = Math.max(1, Math.min(5, Number(gs.leverage || 5)));
         const myMargin = Number(gs.margin_usdt || 0);
@@ -1578,7 +1579,11 @@ function renderCopyTrading(data, botRunning) {
             const atLev = Number((q.margin_at || {})[String(levIn)] || q.need_notional / levIn);
             const need = Math.ceil(atLev * 1.02 * 100) / 100;
             const use = Math.max(myMargin, need);
-            if (canUse !== null && use > canUse) return `<span style="font-size:10px;color:#f85149">Thiếu $${(use - canUse).toFixed(2)}</span>`;
+            if (canUse !== null && use > canUse) {
+                const at5 = Math.ceil(Number((q.margin_at || {})['5'] || q.need_notional / 5) * 1.02 * 100) / 100;
+                const hint = levIn < 5 && at5 <= canUse ? `<br><span style="color:#d29922">đủ nếu đổi Lev = 5</span>` : '';
+                return `<span style="font-size:10px;color:#f85149">Cần $${use.toFixed(2)} · có $${canUse.toFixed(2)}<br>thiếu $${(use - canUse).toFixed(2)}</span>${hint}`;
+            }
             return `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}', ${use})">Copy $${use.toFixed(2)} · ${levIn}x</button>`;
         };
         const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
@@ -1690,10 +1695,23 @@ function renderGridCopy(data) {
             Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="${Number((data.settings||{}).max_loss_usdt ?? 2)}" onchange="saveGridSettings()" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
           </div>
           <span id="grid-settings-saved" style="font-size:10px;color:#3fb950"></span>
+          <div id="grid-balance" style="font-size:11px;margin:4px 0"></div>
           <div style="font-size:10px;color:#8b949e">Thay đổi ô nào là tự LƯU (giữ sau khi restart). Tự dừng + đóng hết khi: giá ra khỏi range quá X% · lỗ (đã trừ phí, gồm lỗ đang mở) chạm Max lỗ · vị thế bị lệnh khác can thiệp. Bot Pause thì không đặt lệnh lưới mới nhưng vẫn canh dừng lỗ.</div>
           <div id="grid-last-attempt" style="margin-top:6px;font-size:11px"></div>
           <div id="grid-active" style="margin-top:6px"></div><div id="grid-history" style="margin-top:6px;font-size:11px"></div></div>`;
     }
+    const st = data.settings || {};
+    for (const [id, key] of [['grid-margin','margin_usdt'],['grid-lev','leverage'],['grid-stop','stop_pct'],['grid-maxloss','max_loss_usdt']]) {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el && st[key] != null) el.value = st[key];
+    }
+    const b = data.balance || {};
+    const balEl = document.getElementById('grid-balance');
+    if (balEl && b.ts) balEl.innerHTML = `💰 Vốn $${Number(b.equity).toFixed(2)} · <b>khả dụng $${Number(b.available).toFixed(2)}</b>
+        · lệnh chờ đang giữ $${Number(b.orders_margin).toFixed(2)} · vị thế đang giữ $${Number(b.positions_margin).toFixed(2)}
+        → grid dùng được tối đa <b style="color:#3fb950">$${Number(b.grid_cap).toFixed(2)}</b> (75% khả dụng).
+        ${Number(b.orders_margin) > 0 ? '<span style="color:#d29922">Muốn thêm tiền cho grid: hủy bớt lệnh chờ (Auto Liq…) để trả margin.</span>' : ''}
+        <span style="color:#6e7681">(${new Date(Number(b.ts)*1000).toLocaleTimeString()})</span>`;
     const la = data.last_attempt || {};
     const laEl = document.getElementById('grid-last-attempt');
     if (laEl) laEl.innerHTML = la.ts ? `<div style="padding:6px 8px;border-radius:5px;background:#0d1117;border:1px solid ${la.ok ? '#3fb950' : '#f85149'}">
