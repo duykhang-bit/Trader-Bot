@@ -134,6 +134,36 @@ class CopyTradingTests(unittest.TestCase):
         self.http.position_show = False
         self.assertFalse(self.svc.follow("123", True)["ok"])
 
+    def test_closed_copy_gets_binance_net_pnl_and_stats(self):
+        clock = [1_000_000.0]
+        self.svc._now = lambda: clock[0]
+        calls = []
+
+        def pnl_cb(symbol, start_ms, end_ms):
+            calls.append((symbol, start_ms, end_ms))
+            return {"ok": True, "realized": 1.5, "fee": -0.1, "records": 3}
+
+        self.svc.pnl_callback = pnl_cb
+        self.svc.follow("123", True)
+        self.http.positions = pos_payload(("SOLUSDT", 10, 70, 3, "LONG"))
+        self.svc.poll_once()
+        self.http.positions = pos_payload()
+        self.svc.poll_once(); self.svc.poll_once()
+        self.svc._settle_closed()
+        self.assertEqual(calls, [])  # waits 15s for Binance to book income
+        self.assertEqual(self.svc.snapshot()["stats"]["pending"], 1)
+        clock[0] += 20
+        self.svc._settle_closed()
+        snap = self.svc.snapshot()
+        self.assertAlmostEqual(snap["closed"][0]["net_pnl"], 1.4)
+        stats = snap["stats"]
+        self.assertEqual((stats["trades"], stats["wins"], stats["pending"]), (1, 1, 0))
+        self.assertAlmostEqual(stats["today"], 1.4)
+        self.assertAlmostEqual(stats["net"], 1.4)
+        self.assertAlmostEqual(stats["by_leader"]["Leader"]["net"], 1.4)
+        self.svc._settle_closed()
+        self.assertEqual(len(calls), 1)  # settled once only
+
     def test_settings_validation(self):
         self.assertFalse(self.svc.update_settings(2, 50, 3, 3)["ok"])
         self.assertFalse(self.svc.update_settings(2, 5, 0, 3)["ok"])
