@@ -28,6 +28,7 @@ PERSISTENCE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "logs", "risk_alert.json"
 )
 CYCLE = 20
+NO_SL_GRACE_S = 90
 DEFAULTS = {
     "enabled": True,
     "pos_lev_warn": 2.0,     # one position notional > 2x equity
@@ -35,7 +36,7 @@ DEFAULTS = {
     "margin_warn_pct": 60.0, # margin used (positions + orders) > 60% equity
     "sl_risk_warn_pct": 5.0, # loss at SL > 5% equity
     "leverage_warn": 20,     # exchange leverage setting >= 20x
-    "repeat_minutes": 30,
+    "repeat_minutes": 60,
 }
 LEVELS = ("AN TOÀN", "CAO", "RẤT CAO", "CỰC CAO")
 ICONS = ("🟢", "🟡", "🟠", "🔴")
@@ -134,7 +135,8 @@ class RiskAlertService:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
-        self._data = {"settings": dict(DEFAULTS), "last": {}, "alerts": [], "sent": {}, "seen": {}}
+        self._data = {"settings": dict(DEFAULTS), "last": {}, "alerts": [], "sent": {}, "seen": {},
+                      "no_sl_since": {}}
         self._load()
 
     def _load(self):
@@ -243,22 +245,37 @@ class RiskAlertService:
         if not settings.get("enabled", True):
             return report
         messages = []
+        current_syms = {p["symbol"] for p in report["positions"]}
         for p in report["positions"]:
             key = p["symbol"]
             with self._lock:
-                first_seen = self._data["seen"].setdefault(key, now)
-                self._persist_locked()
+                self._data["seen"].setdefault(key, now)
+                no_sl = self._data.setdefault("no_sl_since", {})
+                if p["sl"] is None:
+                    no_sl.setdefault(key, now)
+                else:
+                    no_sl.pop(key, None)
+                missing_for = now - no_sl[key] if key in no_sl else 0
             reasons = []
             if p["eff_lev"] > settings["pos_lev_warn"]:
                 reasons.append(f"lệnh to = {p['pct_equity']:.0f}% vốn ({p['eff_lev']:.1f}x vốn)")
             if p["leverage"] >= settings["leverage_warn"]:
                 reasons.append(f"đòn bẩy {p['leverage']}x")
-            if p["sl"] is None and now - first_seen >= 60:
+            # SL can vanish for a few seconds while a monitor replaces it.
+            if p["sl"] is None and missing_for >= NO_SL_GRACE_S:
                 reasons.append("KHÔNG có SL")
             elif p["sl_loss_pct"] is not None and p["sl_loss_pct"] > settings["sl_risk_warn_pct"]:
                 reasons.append(f"dính SL mất {p['sl_loss_pct']:.1f}% vốn (${p['sl_loss']:.2f})")
-            if reasons and self._should_send(f"pos:{key}:{'|'.join(sorted(r.split(' ')[0] for r in reasons))}", settings, now):
-                messages.append(self._position_text(p, report, reasons))
+            if reasons:
+                level = self._position_level(p, missing_for)
+                if self._should_send(f"pos:{key}", level, settings, now):
+                    messages.append(self._position_text(p, report, reasons, level))
+        with self._lock:
+            tracked = self._data.setdefault("no_sl_since", {})
+            for sym in list(tracked):
+                if sym not in current_syms:
+                    tracked.pop(sym, None)
+            self._persist_locked()
         account_reasons = []
         if report["total_eff_lev"] > settings["total_lev_warn"]:
             account_reasons.append(f"tổng lệnh = {report['total_pct_equity']:.0f}% vốn ({report['total_eff_lev']:.1f}x)")
@@ -266,20 +283,36 @@ class RiskAlertService:
             account_reasons.append(f"margin đang dùng {report['margin_pct']:.0f}% vốn (gồm lệnh chờ)")
         if report["sl_total_pct"] > settings["sl_risk_warn_pct"] * 2:
             account_reasons.append(f"dính hết SL mất {report['sl_total_pct']:.1f}% vốn")
-        if account_reasons and self._should_send(f"acct:L{report['level']}", settings, now):
+        # With one position the position alert already says it all; only send
+        # the account alert for several positions or high pending-order margin.
+        single_dup = (len(report["positions"]) <= 1 and report["margin_pct"] <= settings["margin_warn_pct"])
+        acct_level = max(lev_level(report["total_eff_lev"]), margin_level(report["margin_pct"]),
+                         sl_level(report["sl_total_pct"]))
+        if account_reasons and not single_dup and self._should_send("acct", acct_level, settings, now):
             messages.append(self._account_text(report, account_reasons))
-        for text in messages:
-            self._send(text)
+        if messages:
+            self._send("\n\n".join(messages))
         return report
 
-    def _should_send(self, key, settings, now):
+    def _position_level(self, p, missing_for=0):
+        no_sl = p["sl"] is None and missing_for >= NO_SL_GRACE_S
+        return max(lev_level(p["eff_lev"]), 2 if no_sl else 0,
+                   sl_level(p["sl_loss_pct"] or 0), 2 if p["leverage"] >= 20 else 0)
+
+    def _should_send(self, key, level, settings, now):
+        """Once per key per repeat window; earlier only if the level escalates."""
         with self._lock:
             sent = self._data.setdefault("sent", {})
-            if key in sent and now - _f(sent[key]) < settings["repeat_minutes"] * 60:
-                return False
-            sent[key] = now
+            prev = sent.get(key)
+            if isinstance(prev, dict):
+                recent = now - _f(prev.get("ts")) < settings["repeat_minutes"] * 60
+                if recent and level <= int(prev.get("level", 0)):
+                    return False
+            sent[key] = {"ts": now, "level": int(level)}
             for k in list(sent):
-                if now - _f(sent[k]) > 86400:
+                v = sent[k]
+                ts = _f(v.get("ts")) if isinstance(v, dict) else _f(v)
+                if now - ts > 86400:
                     sent.pop(k, None)
             self._persist_locked()
             return True
@@ -294,9 +327,7 @@ class RiskAlertService:
             parts.append(f"mất {loss}% vốn khi giá ngược {move:.2f}%")
         return " · ".join(parts)
 
-    def _position_text(self, p, report, reasons):
-        lvl = max(lev_level(p["eff_lev"]), 2 if p["sl"] is None else 0,
-                  sl_level(p["sl_loss_pct"] or 0), 2 if p["leverage"] >= 20 else 0)
+    def _position_text(self, p, report, reasons, lvl):
         sl_line = (f"SL {p['sl']:.8g} → mất ${p['sl_loss']:.2f} = {p['sl_loss_pct']:.1f}% vốn"
                    if p["sl"] is not None else "⚠ CHƯA CÓ SL")
         return (f"{ICONS[lvl]} <b>CẢNH BÁO KỶ LUẬT · {LEVELS[lvl]}</b>\n"
