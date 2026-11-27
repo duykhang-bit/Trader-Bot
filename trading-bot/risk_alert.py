@@ -217,15 +217,19 @@ class RiskAlertService:
     def _fetch(self):
         ex = self.exchange
         account = ex._get("/fapi/v2/account", signed=True)
+        # A failed read reuses the last good list so a transient Binance error
+        # never looks like "position has no SL".
         try:
             algo = ex._get("/fapi/v1/openAlgoOrders", signed=True)
             algo = algo if isinstance(algo, list) else (algo or {}).get("orders", []) if isinstance(algo, dict) else []
+            self._last_algo = algo
         except Exception:
-            algo = []
+            algo = getattr(self, "_last_algo", [])
         try:
             orders = ex._get("/fapi/v1/openOrders", signed=True) or []
+            self._last_orders = orders
         except Exception:
-            orders = []
+            orders = getattr(self, "_last_orders", [])
         return account, algo, orders
 
     def check_once(self):
