@@ -325,8 +325,10 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
         #        chỉ dùng để biết lệnh entry LIMIT nào chưa fill) ──
         try:
             regular_orders = exchange._get("/fapi/v1/openOrders", signed=True)
-        except Exception:
-            regular_orders = []
+        except Exception as e:
+            # Unknown is not "unprotected": skip instead of placing duplicates.
+            logger.warning(f"get_positions_without_sltp: openOrders failed, skip this check: {e}")
+            return []
 
         # Regular reduce-only orders (STOP_MARKET / TAKE_PROFIT_MARKET đặt qua v1/order)
         regular_sl_syms = set()
@@ -387,7 +389,10 @@ def get_positions_without_sltp(exchange) -> List[Dict]:
                         algo_tp_syms.add(sym)
 
         except Exception as e:
-            logger.debug(f"get_positions_without_sltp: algo orders error: {e}")
+            # A failed read must not look like "no SL/TP" (caused duplicate
+            # SL/TP pairs after transient Binance 400s). Skip this check.
+            logger.warning(f"get_positions_without_sltp: openAlgoOrders failed, skip this check: {e}")
+            return []
 
         # ── 4. Check từng position ────────────────────────────
         unprotected = []
