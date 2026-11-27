@@ -43,6 +43,8 @@ MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min noti
 CYCLE_SECONDS = 5
 MAX_AVAILABLE_FRACTION = 0.90  # keep 10% free for fees/funding
 REQUIREMENT_REFRESH_S = 300
+DEFAULT_TRAIL_LIMIT_PCT = 30.0
+MAX_TRAIL_SHIFTS_PER_CYCLE = 3
 BALANCE_REFRESH_S = 1800  # 30 phút; còn cập nhật ngay sau mỗi lần Copy/Dừng
 MIN_GRIDS = 5
 MAX_STEP_PCT = 3.0
@@ -147,7 +149,8 @@ class GridCopyService:
         self._stop = threading.Event()
         self._thread = None
         self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {}, "balance": {},
-                      "settings": {"margin_usdt": 10.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0}}
+                      "settings": {"margin_usdt": 10.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0,
+                                   "trailing": False, "trail_limit_pct": DEFAULT_TRAIL_LIMIT_PCT}}
         self._load()
 
     # ---------------- persistence ----------------
@@ -306,12 +309,16 @@ class GridCopyService:
         return result
 
     # ---------------- start ----------------
-    def update_settings(self, margin_usdt, leverage, stop_pct, max_loss_usdt):
+    def update_settings(self, margin_usdt, leverage, stop_pct, max_loss_usdt,
+                        trailing=False, trail_limit_pct=DEFAULT_TRAIL_LIMIT_PCT):
         try:
             values = {"margin_usdt": round(float(margin_usdt), 2), "leverage": int(leverage),
-                      "stop_pct": float(stop_pct), "max_loss_usdt": float(max_loss_usdt)}
+                      "stop_pct": float(stop_pct), "max_loss_usdt": float(max_loss_usdt),
+                      "trailing": bool(trailing), "trail_limit_pct": float(trail_limit_pct)}
         except (TypeError, ValueError):
             return {"ok": False, "error": "Giá trị không hợp lệ"}
+        if not (5 <= values["trail_limit_pct"] <= 100):
+            return {"ok": False, "error": "Giới hạn trailing 5–100%"}
         if not (1 <= values["margin_usdt"] <= 500):
             return {"ok": False, "error": "Margin 1–500 USDT"}
         if not (1 <= values["leverage"] <= MAX_LEVERAGE):
@@ -340,7 +347,7 @@ class GridCopyService:
 
     def _start_grid(self, *, symbol, lower, upper, grids, kind="ARITHMETIC",
                     margin_usdt, leverage, stop_pct=2.0, max_loss_usdt=None,
-                    source=None):
+                    source=None, trailing=False, trail_limit_pct=DEFAULT_TRAIL_LIMIT_PCT):
         symbol = str(symbol or "").strip().upper()
         try:
             lower, upper = float(lower), float(upper)
@@ -420,12 +427,15 @@ class GridCopyService:
             "filled_pos": 0.0, "fills": 0, "buys": 0, "sells": 0, "seq": 0,
             "mismatch": 0, "status": "RUNNING", "error": "",
             "realized": 0.0, "fee": 0.0, "unrealized": 0.0, "pnl": 0.0, "mark": price,
+            "trailing": bool(trailing), "trail_limit_pct": float(trail_limit_pct),
+            "orig_lower": lower, "orig_upper": upper, "trail_shifts": 0,
         }
         with self._lock:
             self._data["grids"][symbol] = grid
             self._event_locked(
                 f"START grid {symbol} {lower:.8g}–{upper:.8g} · {count} lưới (bot gốc {grids}) · "
-                f"qty {qty} · ${margin:.2f} × {effective}x · stop ±{stop_pct}% · max lỗ ${max_loss:.2f}", symbol)
+                f"qty {qty} · ${margin:.2f} × {effective}x · stop ±{stop_pct}% · max lỗ ${max_loss:.2f}"
+                + (f" · trailing ±{float(trail_limit_pct):.0f}%" if trailing else ""), symbol)
             self._persist_locked()
         self._symbols_changed()
         self._place_missing(symbol)
@@ -506,8 +516,82 @@ class GridCopyService:
                         self._event_locked(f"Lệnh lưới {order['side']} @{order['price']:.8g} bị {state} → đặt lại", symbol)
                         self._persist_locked()
             # Unknown/empty status: retry next cycle.
+        self._trail(symbol)
         self._place_missing(symbol)
         self._risk_check(symbol, partial)
+
+    # ---------------- trailing ----------------
+    def _trail_bounds(self, grid):
+        limit = float(grid.get("trail_limit_pct", DEFAULT_TRAIL_LIMIT_PCT)) / 100
+        return float(grid["orig_lower"]) * (1 - limit), float(grid["orig_upper"]) * (1 + limit)
+
+    def _next_level(self, grid, up):
+        lv = grid["levels"]
+        if grid.get("kind") == "GEO":
+            ratio = lv[1] / lv[0]
+            raw = lv[-1] * ratio if up else lv[0] / ratio
+        else:
+            step = lv[1] - lv[0]
+            raw = lv[-1] + step if up else lv[0] - step
+        return float(self.exchange._round_price(raw, grid["symbol"]))
+
+    def _trail(self, symbol):
+        """Shift the whole grid one level at a time while price is outside it.
+
+        Up: cancel the lowest level's order, add a new top level with a SELL.
+        Down: cancel the highest level's order, add a new bottom level with a BUY.
+        Positions are never traded here; bounded by trail_limit_pct around the
+        original range (beyond that the normal range stop applies).
+        """
+        for _ in range(MAX_TRAIL_SHIFTS_PER_CYCLE):
+            with self._lock:
+                grid = self._data["grids"].get(symbol)
+                if grid is None or not grid.get("trailing") or grid["status"] != "RUNNING":
+                    return
+                mark = _f(grid.get("mark"))
+                lv = grid["levels"]
+                lo_b, hi_b = self._trail_bounds(grid)
+                if mark <= 0:
+                    return
+                if mark > lv[-1]:
+                    up = True
+                elif mark < lv[0]:
+                    up = False
+                else:
+                    return
+                new_level = self._next_level(grid, up)
+                if (up and new_level > hi_b) or (not up and new_level < lo_b) or new_level <= 0:
+                    return
+                drop = "0" if up else str(len(lv) - 1)
+                order = grid["orders"].get(drop)
+            executed = 0.0
+            if order and order.get("order_id") is not None:
+                try:
+                    res = self.exchange._delete("/fapi/v1/order", {"symbol": symbol, "orderId": order["order_id"]}) or {}
+                    executed = _f(res.get("executedQty"))
+                except Exception:
+                    return  # maybe filled meanwhile; the next cycle settles it first
+            with self._lock:
+                grid = self._data["grids"].get(symbol)
+                if grid is None:
+                    return
+                if executed > 0 and order:
+                    grid["filled_pos"] += executed if order["side"] == "BUY" else -executed
+                n = len(grid["levels"])
+                shift = -1 if up else 1
+                rekey = lambda d: {str(int(k) + shift): v for k, v in d.items() if k != drop}
+                grid["orders"] = rekey(grid["orders"])
+                grid["desired"] = rekey(grid["desired"])
+                if up:
+                    grid["levels"] = grid["levels"][1:] + [new_level]
+                    grid["desired"][str(n - 1)] = "SELL"
+                else:
+                    grid["levels"] = [new_level] + grid["levels"][:-1]
+                    grid["desired"]["0"] = "BUY"
+                grid["lower"], grid["upper"] = grid["levels"][0], grid["levels"][-1]
+                grid["trail_shifts"] = int(grid.get("trail_shifts", 0)) + 1
+                self._event_locked(f"Trailing {'LÊN' if up else 'XUỐNG'}: range {grid['lower']:.8g}–{grid['upper']:.8g}", symbol)
+                self._persist_locked()
 
     def _on_fill(self, symbol, level, order, qty):
         with self._lock:
@@ -573,8 +657,13 @@ class GridCopyService:
             else:
                 grid["mismatch"] = 0
             reason = ""
-            band_low = grid["lower"] * (1 - grid["stop_pct"] / 100)
-            band_high = grid["upper"] * (1 + grid["stop_pct"] / 100)
+            if grid.get("trailing"):
+                lo_b, hi_b = self._trail_bounds(grid)
+                band_low = min(lo_b, grid["lower"]) * (1 - grid["stop_pct"] / 100)
+                band_high = max(hi_b, grid["upper"]) * (1 + grid["stop_pct"] / 100)
+            else:
+                band_low = grid["lower"] * (1 - grid["stop_pct"] / 100)
+                band_high = grid["upper"] * (1 + grid["stop_pct"] / 100)
             if mark > 0 and (mark < band_low or mark > band_high):
                 reason = f"Giá {mark:.8g} ra khỏi range quá {grid['stop_pct']}%"
             elif grid["pnl"] <= -grid["max_loss"]:
