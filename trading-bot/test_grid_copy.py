@@ -165,8 +165,8 @@ class GridCopyTests(unittest.TestCase):
         self.ex.amount = 1
         self.assertFalse(self.start()["ok"])  # symbol not flat
         self.ex.amount = 0
-        self.assertFalse(self.start(margin_usdt=80)["ok"])  # > 75% balance
-        self.assertIn("tối đa $75.00", self.start(margin_usdt=80)["error"])
+        self.assertFalse(self.start(margin_usdt=95)["ok"])  # > 90% balance
+        self.assertIn("tối đa $90.00", self.start(margin_usdt=95)["error"])
         self.trading = False
         self.assertFalse(self.start()["ok"])
 
