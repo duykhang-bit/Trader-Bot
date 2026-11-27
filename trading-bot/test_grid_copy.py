@@ -210,6 +210,34 @@ class GridCopyTests(unittest.TestCase):
         self.assertGreaterEqual(r["grids"], 5)
         self.assertTrue(all((b - a) / a <= 0.0301 for a, b in zip(prices, prices[1:])))
 
+    def test_requirement_estimate_matches_start(self):
+        bot = {"id": 1, "symbol": "TESTUSDT", "lower": 80, "upper": 125, "grids": 60, "type": "ARITHMETIC"}
+        est = gc.estimate_requirement(bot, 100.0, (0.01, 2, 5.0))
+        self.assertTrue(est["ok"], est)
+        need = est["need_notional"] / 5
+        self.assertFalse(self.start(lower=80, upper=125, grids=60, margin_usdt=need * 0.95, leverage=5)["ok"])
+        r = self.start(lower=80, upper=125, grids=60, margin_usdt=need * 1.01, leverage=5)
+        self.assertTrue(r["ok"], r)
+
+    def test_requirement_out_of_range_and_refresh(self):
+        bot = {"id": 7, "symbol": "TESTUSDT", "lower": 80, "upper": 95, "grids": 20}
+        self.assertFalse(gc.estimate_requirement(bot, 100.0, (0.01, 2, 5.0))["ok"])
+        ok_bot = {"id": 8, "symbol": "TESTUSDT", "lower": 90, "upper": 110, "grids": 10}
+        self.svc.bots_provider = lambda: [bot, ok_bot]
+        ex = self.ex
+        orig = ex._get
+        ex._get = lambda path, params=None, signed=False: (
+            {"symbols": [{"symbol": "TESTUSDT", "filters": [
+                {"filterType": "LOT_SIZE", "stepSize": "0.01"}, {"filterType": "MIN_NOTIONAL", "notional": "5"}]}]}
+            if path == "/fapi/v1/exchangeInfo" else
+            [{"symbol": "TESTUSDT", "markPrice": "100"}] if path == "/fapi/v1/premiumIndex" else orig(path, params, signed))
+        self.svc.refresh_requirements()
+        req = self.svc.snapshot()["requirements"]
+        self.assertFalse(req["bots"]["7"]["ok"])
+        self.assertTrue(req["bots"]["8"]["ok"])
+        self.assertIn("5", req["bots"]["8"]["margin_at"])
+        self.assertEqual(req["available"], 100.0)
+
     def test_manual_stop(self):
         self.start()
         self.assertTrue(self.svc.stop_grid("TESTUSDT")["ok"])
