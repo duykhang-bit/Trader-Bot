@@ -144,7 +144,7 @@ class GridCopyService:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
-        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}}
+        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {}}
         self._load()
 
     # ---------------- persistence ----------------
@@ -278,9 +278,21 @@ class GridCopyService:
         return result
 
     # ---------------- start ----------------
-    def start_grid(self, *, symbol, lower, upper, grids, kind="ARITHMETIC",
-                   margin_usdt, leverage, stop_pct=2.0, max_loss_usdt=None,
-                   source=None):
+    def start_grid(self, **kwargs):
+        """Start a grid and remember the outcome so the web can show it."""
+        result = self._start_grid(**kwargs)
+        with self._lock:
+            self._data["last_attempt"] = {
+                "ts": self._now(), "symbol": str(kwargs.get("symbol") or ""),
+                "margin": kwargs.get("margin_usdt"), "leverage": kwargs.get("leverage"),
+                "ok": bool(result.get("ok")), "error": result.get("error", ""),
+            }
+            self._persist_locked()
+        return result
+
+    def _start_grid(self, *, symbol, lower, upper, grids, kind="ARITHMETIC",
+                    margin_usdt, leverage, stop_pct=2.0, max_loss_usdt=None,
+                    source=None):
         symbol = str(symbol or "").strip().upper()
         try:
             lower, upper = float(lower), float(upper)
