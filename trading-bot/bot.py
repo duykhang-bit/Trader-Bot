@@ -7835,6 +7835,138 @@ if __name__ == "__main__":
     intraday_paper.start()
     atexit.register(intraday_paper.stop)
 
+    # Copy Binance lead traders (public positions). Entries go through the
+    # same EntryGate as every other strategy and always get an exchange SL.
+    from copy_trading import CopyTradingService, HARD_MAX_LEVERAGE as _COPY_MAX_LEV
+
+    def _copy_runtime_on():
+        with lock:
+            service = state.get("_copy_trading_service")
+            runtime_on = bool(state.get("running")) and not bool(state.get("paused"))
+        try:
+            return runtime_on and bool(service and service.snapshot().get("enabled"))
+        except Exception:
+            return False
+
+    def _copy_real_entry(signal):
+        symbol = str(signal["symbol"])
+        side = str(signal["side"])
+        margin = float(signal["margin_usdt"])
+        requested_lev = int(signal["leverage"])
+        sl_pct = float(signal["sl_pct"]) / 100.0
+        drift = float(signal.get("max_entry_drift_pct", 1.0)) / 100.0
+        leader_entry = float(signal.get("leader_entry") or 0)
+        if not (1 <= requested_lev <= _COPY_MAX_LEV):
+            return {"ok": False, "error": f"Leverage copy tối đa {_COPY_MAX_LEV}x"}
+        if not _copy_runtime_on():
+            return {"ok": False, "error": "Bot Pause hoặc Copy vừa tắt"}
+        available = float(exchange.get_account_balance() or 0)
+        if available <= 0 or margin > available * 0.25:
+            return {"ok": False, "error": "Margin copy mỗi lệnh phải <=25% available balance"}
+        current = float(exchange.get_ticker_price(symbol) or 0)
+        if current <= 0:
+            return {"ok": False, "error": "Không lấy được giá"}
+        if leader_entry > 0:
+            worse = (current - leader_entry) / leader_entry if side == "LONG" else (leader_entry - current) / leader_entry
+            if worse > drift:
+                return {"ok": False, "error": f"Giá đã chạy {worse*100:.2f}% so với entry trader (> {drift*100:.1f}%)"}
+        effective_lev = int(exchange.set_leverage(symbol, requested_lev) or 0)
+        if effective_lev <= 0:
+            return {"ok": False, "error": "Không xác nhận được leverage"}
+        from qty_utils import calc_qty_precise
+        qty, _ = calc_qty_precise(exchange, symbol, margin, effective_lev, current)
+        if qty <= 0 or qty * current < 5:
+            return {"ok": False, "error": "Notional dưới minimum Binance (coin giá cao cần margin lớn hơn)"}
+        sl = current * (1 - sl_pct) if side == "LONG" else current * (1 + sl_pct)
+        order_side = "BUY" if side == "LONG" else "SELL"
+        close_side = "SELL" if side == "LONG" else "BUY"
+        client_id = f"copy_{int(time.time()*1000):x}"[:36]
+        placed = _place_entry_order_safely(
+            exchange, symbol, order_side, qty, order_type="MARKET",
+            client_order_id=client_id, submit_guard=_copy_runtime_on,
+        )
+        if not placed:
+            return {"ok": False, "error": "EntryGate chặn (đã có vị thế/pending/đủ số lệnh)"}
+        _cache_entry(symbol, side, current, qty)
+        time.sleep(0.3)
+        sl_order = None
+        for _ in range(3):
+            try:
+                sl_order = exchange.place_stop_loss_order(symbol, close_side, qty, sl)
+                break
+            except Exception:
+                time.sleep(0.4)
+        if sl_order is None:
+            if _recover_unprotected_position(exchange, notifier, symbol, "CopyTrade"):
+                return {"ok": False, "error": "SL lỗi; vị thế đã được đóng khẩn cấp"}
+            return {"ok": True, "protected": False, "entry": current, "qty": qty,
+                    "leverage": effective_lev, "sl": sl, "client_order_id": client_id,
+                    "error": "KHẨN CẤP: vị thế copy còn mở nhưng chưa có SL"}
+        _set_sltp_cooldown(symbol)
+        with lock:
+            _append_trade({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol, "side": side, "entry": current,
+                "sl": sl, "tp": 0, "qty": qty, "status": "OPEN",
+                "note": "copy_trade",
+            })
+        try:
+            notifier.telegram.send(
+                f"👥 <b>COPY TRADE</b> {symbol} {side}\n"
+                f"Entry ${current:.8g} · SL ${sl:.8g}\n"
+                f"Margin ${margin:.2f} · {effective_lev}x · Qty {qty}"
+            )
+        except Exception:
+            pass
+        logger.info("[CopyTrade] OPEN %s %s qty=%s entry=%.8g SL=%.8g", symbol, side, qty, current, sl)
+        sl_ref = {}
+        if isinstance(sl_order, dict):
+            sl_ref = {k: sl_order.get(k) for k in ("algoId", "orderId") if sl_order.get(k)}
+        return {"ok": True, "protected": True, "entry": current, "qty": qty,
+                "leverage": effective_lev, "sl": sl, "client_order_id": client_id,
+                "sl_order": sl_ref}
+
+    def _copy_real_close(item):
+        symbol = item["symbol"]
+        live = exchange.get_position(symbol)
+        amount = float((live or {}).get("positionAmt") or 0)
+        same_side = (amount > 0 and item["side"] == "LONG") or (amount < 0 and item["side"] == "SHORT")
+        if not live or amount == 0 or not same_side:
+            return {"ok": True, "already_closed": True}
+        qty = min(abs(amount), float(item.get("qty") or abs(amount)))
+        close_side = "SELL" if amount > 0 else "BUY"
+        exchange.place_market_order(symbol, close_side, qty, reduce_only=True)
+        sl_ref = item.get("sl_order") or {}
+        try:
+            if sl_ref.get("algoId"):
+                exchange._delete("/fapi/v1/algoOrder", {"algoId": sl_ref["algoId"], "symbol": symbol})
+            elif sl_ref.get("orderId"):
+                exchange._delete("/fapi/v1/order", {"symbol": symbol, "orderId": sl_ref["orderId"]})
+        except Exception as exc:
+            logger.info("[CopyTrade] SL cancel %s: %s (orphan cleanup will handle)", symbol, exc)
+        remaining = abs(amount) - qty
+        if remaining <= 0:
+            _remove_entry_cache(symbol)
+        _set_local_position_amt(symbol, (remaining if amount > 0 else -remaining))
+        exit_price = float(exchange.get_ticker_price(symbol) or 0)
+        try:
+            notifier.telegram.send(f"👥 <b>COPY ĐÓNG</b> {symbol} {item['side']} · trader đã đóng · giá ${exit_price:.8g}")
+        except Exception:
+            pass
+        logger.info("[CopyTrade] CLOSE %s %s qty=%s", symbol, item["side"], qty)
+        return {"ok": True, "exit": exit_price}
+
+    copy_trading = CopyTradingService(
+        config, exchange,
+        open_callback=_copy_real_entry,
+        close_callback=_copy_real_close,
+        position_callback=exchange.get_position,
+        is_trading_enabled=lambda: bool(state.get("running")) and not bool(state.get("paused")),
+    )
+    state["_copy_trading_service"] = copy_trading
+    copy_trading.start()
+    atexit.register(copy_trading.stop)
+
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after
     # its SL/TP metadata has been discarded.
