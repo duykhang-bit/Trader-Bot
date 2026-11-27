@@ -126,6 +126,29 @@ class RiskAlertTests(unittest.TestCase):
         self.assertEqual(len(self.n.telegram.sent), 1)
         self.assertIn("KHÔNG có SL", self.n.telegram.sent[0])
 
+    def test_one_message_per_hour_for_whole_account(self):
+        # Two big coins at once -> exactly one bundled message.
+        self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10), ("ETHUSDT", 0.08, 3500, 10)])
+        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True},
+                        {"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "triggerPrice": "3480", "reduceOnly": True}]
+        self.svc.check_once()
+        sent = self.n.telegram.sent
+        self.assertEqual(len(sent), 1)
+        self.assertIn("SOLUSDT", sent[0])
+        self.assertIn("ETHUSDT", sent[0])
+        # Same level for the next 59 minutes: silence, even if a coin closes/reopens.
+        for k in range(59):
+            self.clock[0] += 60
+            if k == 10:
+                self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10)])
+            if k == 20:
+                self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10), ("ETHUSDT", 0.08, 3500, 10)])
+            self.svc.check_once()
+        self.assertEqual(len(sent), 1)
+        self.clock[0] += 2 * 60
+        self.svc.check_once()
+        self.assertEqual(len(sent), 2)
+
     def test_account_margin_usage_alert_includes_pending_orders(self):
         self.ex.acc = account(33, [], pos_margin=0, order_margin=32)
         self.svc.check_once()
