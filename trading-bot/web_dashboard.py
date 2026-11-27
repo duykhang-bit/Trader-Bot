@@ -1501,12 +1501,21 @@ function renderCopyTrading(data, botRunning) {
             const lp = Object.values(f.last_positions || {});
             const base = new Set(f.baseline || []);
             const rows = lp.map(p => `${esc(p.side)} ${esc(p.symbol)} @${Number(p.entry).toPrecision(6)} ${p.leverage}x${base.has(p.symbol+'|'+p.side)?' <span style="color:#6e7681">(cũ, không copy)</span>':''}`).join('<br>') || '<span style="color:#6e7681">trader chưa có vị thế</span>';
-            return `<div class="alq-card"><div class="alq-head"><span class="alq-title">${esc(f.nickname)}</span><button class="btn btn-gray btn-sm" onclick="followCopyLeader('${esc(id)}', false)">Bỏ copy</button></div>
+            const act = f.active !== false;
+            const myOpen = copies.filter(c => c.leader === id).length;
+            const polled = f.last_poll ? new Date(Number(f.last_poll)*1000).toLocaleTimeString() : '-';
+            let stt;
+            if (!act) stt = `<span style="color:#d29922">⏹ Đã bỏ copy · không mở lệnh mới · ${myOpen} lệnh copy còn mở sẽ đóng khi trader đóng</span>`;
+            else if (!on) stt = `<span style="color:#f85149">⚠ Copy REAL đang TẮT → trader mở lệnh mới bot sẽ KHÔNG vào. Bấm "Bật Copy REAL".</span>`;
+            else if (!botRunning) stt = `<span style="color:#f85149">⚠ Bot đang Pause → chưa vào lệnh. Bấm Start Bot.</span>`;
+            else stt = `<span style="color:#3fb950">🟢 Đang canh: trader mở lệnh MỚI là bot vào theo ngay (kiểm tra mỗi 10s, lần cuối ${polled})</span>`;
+            return `<div class="alq-card"><div class="alq-head"><span class="alq-title">${esc(f.nickname)}</span>${act ? `<button class="btn btn-gray btn-sm" onclick="followCopyLeader('${esc(id)}', false)">Bỏ copy</button>` : ''}</div>
+              <div style="font-size:10px;margin-bottom:3px">${stt}</div>
               <div style="font-size:10px;color:#8b949e">Vị thế trader hiện tại:</div><div style="font-size:11px">${rows}</div>
               ${f.error ? `<div style="color:#f85149;font-size:10px">${esc(f.error)}</div>` : ''}</div>`;
         }).join('');
-        const cps = copies.map(c => `<div class="alq-card" style="border-left:3px solid ${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">
-              <div class="alq-head"><span class="alq-title">${esc(c.symbol)} ${esc(c.side)}</span><span style="font-size:10px">${esc(c.nickname)}</span></div>
+        const cps = Object.entries(data.copies || {}).map(([cid, c]) => `<div class="alq-card" style="border-left:3px solid ${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">
+              <div class="alq-head"><span class="alq-title">${esc(c.symbol)} ${esc(c.side)}</span><span style="font-size:10px">${esc(c.nickname)} <button class="btn btn-red btn-sm" onclick="closeCopyTrade('${esc(cid)}', '${esc(c.symbol)}')">Đóng lệnh</button></span></div>
               <div style="font-size:11px">Entry ${Number(c.entry).toPrecision(6)} · Mark ${Number(c.mark||0).toPrecision(6)} · ${c.leverage}x · Qty ${c.qty}<br>
               SL ${Number(c.sl).toPrecision(6)} · PnL <b style="color:${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">${Number(c.pnl||0)>=0?'+':''}$${Number(c.pnl||0).toFixed(2)}</b>${c.protected===false?' <b style="color:#f85149">CHƯA CÓ SL</b>':''}</div></div>`).join('');
         openRoot.innerHTML = (fol || cps) ? `<div class="alq-grid">${cps}${fol}</div>` : '';
@@ -1538,14 +1547,14 @@ function renderCopyTrading(data, botRunning) {
         const rows = (data.leaders || []).map(x => `<tr style="${x.pass?'':'opacity:.55'}">
             <td>${esc(x.nickname)}</td><td style="color:${x.copier_pnl>=0?'#3fb950':'#f85149'}">${_usd(x.copier_pnl)}</td>
             <td>${Number(x.roi).toFixed(0)}%</td><td>${Number(x.mdd).toFixed(1)}%</td><td>${Number(x.win_rate).toFixed(0)}%</td><td>${Number(x.days).toFixed(0)}</td><td>${x.copiers}</td>
-            <td>${x.pass ? (following[x.id] ? '<button class="btn btn-gray btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', false)">Bỏ</button>' : '<button class="btn btn-green btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', true)">Copy</button>') : '<span style="font-size:9px;color:#8b949e">'+esc((x.reasons||[]).join(', '))+'</span>'}</td></tr>`).join('');
+            <td>${x.pass ? (following[x.id] && following[x.id].active !== false ? '<button class="btn btn-gray btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', false)">Bỏ</button>' : '<button class="btn btn-green btn-sm" onclick="followCopyLeader(\\''+esc(x.id)+'\\', true)">Copy</button>') : '<span style="font-size:9px;color:#8b949e">'+esc((x.reasons||[]).join(', '))+'</span>'}</td></tr>`).join('');
         lr.innerHTML = rows ? `<b>Top trader</b><div style="overflow-x:auto"><table><tr><th>Trader</th><th>Người copy lời</th><th>ROI</th><th>MDD</th><th>Win</th><th>Ngày</th><th>Copy</th><th></th></tr>${rows}</table></div>` : '<span style="color:#6e7681">Chưa có dữ liệu — bấm Cập nhật top ngay</span>';
     }
     const br = document.getElementById('copy-bots');
     if (br) {
         const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
             <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td><td>$${Number(b.min_investment).toFixed(0)}</td></tr>`).join('');
-        br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">(Binance không cho tạo grid bot qua API → copy tay trong app: Giao dịch → Bot → Quảng trường. ROI app hiện chưa tính hết lỗ vị thế của các bot đã dừng.)</span>
+        br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">(Chỉ để xem: Binance KHÔNG cho tạo grid bot qua API nên bot không tự copy được. Muốn chạy thì vào app Binance → Giao dịch → Bot → Grid Futures → Quảng trường, chọn đúng coin/range/lưới rồi bấm Copy. Bảng lọc bot chạy ≥30 ngày; Lev 50–75x rất dễ cháy.)</span>
             <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev</th><th>Vốn tối thiểu</th></tr>${rows}</table></div>` : '';
     }
     const ev = document.getElementById('copy-events');
@@ -1566,6 +1575,12 @@ async function saveCopySettings() {
 async function followCopyLeader(id, enabled) {
     const r = await apiPost('/api/copy-trading/follow', {id, enabled});
     toast(r.ok ? (enabled ? `Đã copy · bỏ qua ${r.ignored_existing||0} vị thế cũ, chờ lệnh mới` : 'Đã bỏ copy') : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function closeCopyTrade(id, sym) {
+    if (!confirm(`Đóng lệnh copy ${sym} ngay bằng MARKET?`)) return;
+    const r = await apiPost('/api/copy-trading/close', {id});
+    toast(r.ok ? `Đã đóng ${sym}` : (r.error || 'Lỗi'), !!r.ok);
     await refresh();
 }
 async function scanCopyLeaders() {
@@ -6107,6 +6122,16 @@ def api_copy_trading_follow():
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
+@app.route("/api/copy-trading/close", methods=["POST"])
+@require_auth
+def api_copy_trading_close():
+    service = _copy_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.manual_close((request.get_json() or {}).get("id"))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
 @app.route("/api/copy-trading/scan", methods=["POST"])
 @require_auth
 def api_copy_trading_scan():
@@ -6622,6 +6647,22 @@ def api_settings():
     if not msgs:
         return jsonify({"ok": False, "msg": "No valid settings"})
 
+    # Persist so a restart/deploy keeps the user's sizing.
+    try:
+        import os as _os, re as _re
+        config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.py")
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        for key, val_str in (
+            ("MAX_ORDER_USDT", repr(float(_config.MAX_ORDER_USDT))),
+            ("LEVERAGE", str(int(_config.LEVERAGE))),
+            ("MAX_OPEN_POSITIONS", str(int(_config.MAX_OPEN_POSITIONS))),
+        ):
+            content = _re.sub(rf"^({key}\s*=\s*)[^#\n]*", lambda m: m.group(1) + val_str + " ", content, count=1, flags=_re.MULTILINE)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as _e:
+        logger.warning(f"[Settings] Config write failed: {_e}")
     logger.info(f"Settings updated: {', '.join(msgs)}")
     return jsonify({"ok": True, "msg": f"Updated: {', '.join(msgs)}"})
 
