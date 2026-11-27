@@ -1579,6 +1579,67 @@ async function followCopyLeader(id, enabled) {
     toast(r.ok ? (enabled ? `Đã copy · bỏ qua ${r.ignored_existing||0} vị thế cũ, chờ lệnh mới` : 'Đã bỏ copy') : (r.error || 'Lỗi'), !!r.ok);
     await refresh();
 }
+let _riskData = {};
+function renderRiskAlert(data) {
+    const root = document.getElementById('risk-alert-panel');
+    if (!root || !data) return;
+    _riskData = data;
+    const esc = _macroEsc;
+    const st = data.settings || {};
+    const r = data.last || {};
+    const colors = ['#3fb950','#d29922','#f0883e','#f85149'];
+    const lvl = Number(r.level || 0);
+    if (!document.getElementById('risk-pos-lev')) {
+        const inp = (id, v, w, step) => `<input id="${id}" type="number" step="${step}" value="${v}" style="width:${w}px;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">`;
+        root.innerHTML = `<div id="risk-summary"></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;margin:6px 0">
+            <button id="risk-toggle" class="btn btn-sm" onclick="toggleRiskAlert()"></button>
+            Báo khi 1 lệnh > ${inp('risk-pos-lev', st.pos_lev_warn, 46, 0.5)}x vốn ·
+            tổng lệnh > ${inp('risk-total-lev', st.total_lev_warn, 46, 0.5)}x vốn ·
+            margin dùng > ${inp('risk-margin', st.margin_warn_pct, 46, 5)}% ·
+            SL mất > ${inp('risk-sl', st.sl_risk_warn_pct, 46, 0.5)}% vốn ·
+            đòn bẩy ≥ ${inp('risk-lev', st.leverage_warn, 42, 1)}x ·
+            nhắc lại sau ${inp('risk-repeat', st.repeat_minutes, 46, 5)} phút
+            <button class="btn btn-blue btn-sm" onclick="saveRiskAlert()">Set</button>
+            <button class="btn btn-gray btn-sm" onclick="testRiskAlert()">Gửi thử Tele</button>
+          </div>
+          <div style="font-size:10px;color:#8b949e">Thang %: 100% vốn = toàn bộ tài khoản. "Lệnh = 300% vốn" nghĩa là notional gấp 3 lần vốn → giá đi ngược 33% là mất 100% vốn, ngược 3.3% là mất 10% vốn.
+          Mức: 🟢 ≤200% vốn · 🟡 ≤500% · 🟠 ≤1000% · 🔴 >1000% (giá ngược &lt;10% là cháy). Margin dùng: 🟢 ≤30% · 🟡 ≤60% · 🟠 ≤85% · 🔴 >85%. Rủi ro tại SL: 🟢 ≤2% vốn · 🟡 ≤5% · 🟠 ≤10% · 🔴 >10%.
+          Áp dụng cho MỌI lệnh: bot, copy, grid và lệnh mày tự vào trên app.</div>
+          <div id="risk-positions" style="margin-top:6px;font-size:11px"></div>`;
+    }
+    const tg = document.getElementById('risk-toggle');
+    if (tg) { tg.textContent = st.enabled === false ? 'Bật cảnh báo' : 'Tắt cảnh báo'; tg.className = 'btn btn-sm ' + (st.enabled === false ? 'btn-green' : 'btn-gray'); }
+    const sum = document.getElementById('risk-summary');
+    if (sum) sum.innerHTML = r.ts ? `<div style="font-size:12px;font-weight:700;padding:7px 10px;border-radius:6px;background:#161b22;color:${colors[lvl]}">
+        Rủi ro: ${esc(r.level_text||'')} · Vốn $${Number(r.equity||0).toFixed(2)} · Tổng lệnh ${Number(r.total_pct_equity||0).toFixed(0)}% vốn (${Number(r.total_eff_lev||0).toFixed(1)}x)
+        · Margin dùng ${Number(r.margin_pct||0).toFixed(0)}% (gồm lệnh chờ) · Dính hết SL mất ${Number(r.sl_total_pct||0).toFixed(1)}% vốn
+        ${r.wipe_move_pct ? ` · giá ngược ${Number(r.wipe_move_pct).toFixed(1)}% là mất 100% vốn` : ''}${(r.no_sl||[]).length ? ` · <span style="color:#f85149">chưa SL: ${esc(r.no_sl.join(', '))}</span>` : ''}</div>`
+        : '<span style="font-size:11px;color:#6e7681">Đang tải...</span>';
+    const pr = document.getElementById('risk-positions');
+    if (pr) {
+        const rows = (r.positions || []).map(p => `<tr><td>${esc(p.symbol)}</td><td>${esc(p.side)}</td><td>$${Number(p.notional).toFixed(2)}</td><td>${p.leverage}x</td>
+          <td style="color:${colors[p.eff_lev<=2?0:p.eff_lev<=5?1:p.eff_lev<=10?2:3]}">${Number(p.pct_equity).toFixed(0)}%</td>
+          <td>${Number(p.wipe_move_pct).toFixed(1)}%</td><td>${p.sl ? '$'+Number(p.sl_loss).toFixed(2)+' ('+Number(p.sl_loss_pct).toFixed(1)+'%)' : '<span style="color:#f85149">không SL</span>'}</td></tr>`).join('');
+        pr.innerHTML = rows ? `<table><tr><th>Coin</th><th>Side</th><th>Notional</th><th>Lev</th><th>% vốn</th><th>Ngược bao nhiêu % thì mất hết</th><th>Mất nếu dính SL</th></tr>${rows}</table>` : '';
+    }
+}
+async function toggleRiskAlert() {
+    const enabled = (_riskData.settings || {}).enabled === false;
+    const r = await apiPost('/api/risk-alert/settings', {enabled});
+    toast(r.ok ? (enabled ? 'Đã bật cảnh báo rủi ro' : 'Đã tắt cảnh báo rủi ro') : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function saveRiskAlert() {
+    const v = id => document.getElementById(id)?.value;
+    const r = await apiPost('/api/risk-alert/settings', {pos_lev_warn:v('risk-pos-lev'), total_lev_warn:v('risk-total-lev'), margin_warn_pct:v('risk-margin'), sl_risk_warn_pct:v('risk-sl'), leverage_warn:v('risk-lev'), repeat_minutes:v('risk-repeat')});
+    toast(r.ok ? 'Đã lưu ngưỡng cảnh báo' : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function testRiskAlert() {
+    const r = await apiPost('/api/risk-alert/test', {});
+    toast(r.ok ? 'Đã gửi thử Telegram' : (r.error || 'Lỗi'), !!r.ok);
+}
 let _gridData = {grids:{}, history:[], events:[]};
 let _gridInputsInit = false;
 function renderGridCopy(data) {
@@ -2600,6 +2661,10 @@ function renderDashboard(d) {
         </div>
         <div id="intraday-candidates" style="font-size:10px;margin:5px 0"></div>
         <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
+    </div>`;
+    html += `<div class="section" id="risk-alert-section">
+        <h2>🛡 Cảnh báo rủi ro / kỷ luật (Telegram)</h2>
+        <div id="risk-alert-panel"></div>
     </div>`;
     html += `<div class="section" id="copy-trading-section">
         <h2>👥 Copy Trader Binance <span id="copy-mode-label" style="font-size:10px;color:#d29922;font-weight:400">TẮT</span></h2>
@@ -4961,6 +5026,7 @@ async function refresh(){
             renderAutoLiqZone(d.auto_liq_zone);
             renderIntradayPaper(d.intraday_paper, d.open_positions, d.running);
             renderGridCopy(d.grid_copy);
+            renderRiskAlert(d.risk_alert);
             renderCopyTrading(d.copy_trading, d.running);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
@@ -5011,6 +5077,7 @@ function _patchDashboard(d) {
     renderAutoLiqZone(d.auto_liq_zone);
     renderIntradayPaper(d.intraday_paper);
     renderGridCopy(d.grid_copy);
+    renderRiskAlert(d.risk_alert);
     renderCopyTrading(d.copy_trading, d.running);
 
     // Bot status dot
@@ -5818,6 +5885,7 @@ def api_state():
         "intraday_paper": _get_intraday_paper_safe(),
         "copy_trading": _get_copy_trading_safe(),
         "grid_copy": _get_grid_copy_safe(),
+        "risk_alert": _get_risk_alert_safe(),
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
@@ -6126,6 +6194,45 @@ def _get_auto_liq_zone_safe():
         }
     except Exception as exc:
         return {"enabled": False, "items": [], "errors": [str(exc)]}
+
+
+def _risk_service():
+    with _lock:
+        return _state.get("_risk_alert_service") if _state else None
+
+
+def _get_risk_alert_safe():
+    try:
+        service = _risk_service()
+        return service.snapshot() if service else {}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.route("/api/risk-alert/settings", methods=["POST"])
+@require_auth
+def api_risk_alert_settings():
+    service = _risk_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.update_settings(request.get_json() or {})
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/risk-alert/test", methods=["POST"])
+@require_auth
+def api_risk_alert_test():
+    service = _risk_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    report = service.check_once()
+    lines = [f"🧪 <b>Kiểm tra rủi ro</b> · {report['level_text']}",
+             f"Vốn ${report['equity']:.2f} · tổng lệnh {report['total_pct_equity']:.0f}% vốn · margin dùng {report['margin_pct']:.0f}%"]
+    try:
+        service.notifier.telegram.send("\n".join(lines))
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 def _grid_service():
