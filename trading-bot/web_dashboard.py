@@ -1553,11 +1553,30 @@ function renderCopyTrading(data, botRunning) {
     const br = document.getElementById('copy-bots');
     if (br) {
         const gridActive = new Set(Object.keys((_gridData && _gridData.grids) || {}));
+        const reqAll = (_gridData && _gridData.requirements) || {};
+        const reqs = reqAll.bots || {};
+        const avail = Number(reqAll.available);
+        const levIn = Math.max(1, Math.min(5, Number(document.getElementById('grid-lev')?.value || 5)));
+        const canUse = Number.isFinite(avail) ? avail * 0.5 : null;
+        const needCell = b => {
+            const q = reqs[String(b.id)];
+            if (!q) return '<span style="color:#6e7681">đang tính…</span>';
+            if (!q.ok) return `<span style="color:#f85149">${esc(q.reason || 'không copy được')}</span>`;
+            const atLev = Number((q.margin_at || {})[String(levIn)] || q.need_notional / levIn);
+            const at5 = Number((q.margin_at || {})['5'] || q.need_notional / 5);
+            const ok = canUse !== null && atLev <= canUse;
+            return `<b style="color:${ok ? '#3fb950' : '#f85149'}">$${atLev.toFixed(2)}</b> ở ${levIn}x`
+                + (levIn < 5 ? ` <span style="color:#8b949e">($${at5.toFixed(2)} ở 5x)</span>` : '')
+                + `<br><span style="font-size:9px;color:#8b949e">≥${q.grids_at_min} lưới · nấc ≤${Number(q.max_step).toFixed(1)}%</span>`;
+        };
         const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
             <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td>
+            <td>${needCell(b)}</td>
             <td>${gridActive.has(b.symbol) ? '<span style="color:#3fb950">đang chạy</span>' : `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}')">Copy</button>`}</td></tr>`).join('');
         br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">Bấm Copy → bot đặt grid Neutral cùng coin/range/số lưới trên tài khoản của mày, dùng Margin/Lev/Stop/Max lỗ ở trên (không dùng Lev 50–75x của bot gốc). Vốn nhỏ thì số lưới tự giảm để mỗi lệnh đủ tối thiểu Binance.</span>
-            <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th></th></tr>${rows}</table></div>` : '';
+            <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th>Margin tối thiểu để copy</th><th></th></tr>${rows}</table></div>
+            <div style="font-size:10px;color:#8b949e;margin-top:3px">Margin tối thiểu tính theo Lev đang nhập ở trên, cập nhật mỗi 5 phút.
+            ${canUse !== null ? `Hiện mày đặt được tối đa <b>$${canUse.toFixed(2)}</b> (50% số dư khả dụng $${avail.toFixed(2)}): <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
     }
     const ev = document.getElementById('copy-events');
     if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
