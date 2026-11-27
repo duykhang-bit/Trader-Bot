@@ -279,8 +279,15 @@ class CopyTradingService:
             return {"ok": False, "error": "portfolioId không hợp lệ"}
         if not enabled:
             with self._lock:
-                self._data["following"].pop(pid, None)
-                self._event_locked("unfollow", f"Bỏ theo dõi {pid} (lệnh copy đang mở vẫn giữ SL)")
+                info = self._data["following"].get(pid)
+                open_copies = self._open_copies_locked(pid)
+                if info is not None and open_copies:
+                    # Stop new copies but keep closing the open ones with the leader.
+                    info["active"] = False
+                    self._event_locked("unfollow", f"Bỏ copy {info.get('nickname', pid)}: không mở lệnh mới; {open_copies} lệnh đang mở vẫn đóng theo trader")
+                else:
+                    self._data["following"].pop(pid, None)
+                    self._event_locked("unfollow", f"Bỏ copy {pid}")
                 self._persist_locked()
             return {"ok": True, "following": False}
         try:
@@ -296,13 +303,15 @@ class CopyTradingService:
         if current is None:
             return {"ok": False, "error": "Không đọc được vị thế trader, thử lại sau"}
         with self._lock:
+            previous = self._data["following"].get(pid) or {}
             self._data["following"][pid] = {
+                "active": True,
                 "nickname": detail.get("nickname") or pid,
                 "since": self._now(),
                 # Existing leader positions are never copied (late entry).
                 "baseline": sorted(current.keys()),
                 "last_positions": current,
-                "missing": {},
+                "missing": previous.get("missing", {}),
                 "last_poll": self._now(),
                 "error": "",
             }
@@ -310,6 +319,20 @@ class CopyTradingService:
             self._persist_locked()
         self._wake.set()
         return {"ok": True, "following": True, "ignored_existing": len(current)}
+
+    def _open_copies_locked(self, pid):
+        return sum(1 for x in self._data["copies"].values()
+                   if x.get("leader") == pid and x.get("status") == "OPEN")
+
+    def manual_close(self, copy_id):
+        with self._lock:
+            item = self._data["copies"].get(str(copy_id or ""))
+            if not item or item.get("status") != "OPEN":
+                return {"ok": False, "error": "Không tìm thấy lệnh copy đang mở"}
+        self._close_copy(str(copy_id), "Đóng tay trên web")
+        with self._lock:
+            still_open = str(copy_id) in self._data["copies"]
+        return {"ok": not still_open, "error": "Đóng lỗi, xem nhật ký" if still_open else ""}
 
     def start_scan(self):
         with self._lock:
@@ -481,11 +504,19 @@ class CopyTradingService:
             info["tried"] = tried
             new = [p for k, p in current.items()
                    if k not in baseline and k not in open_keys and k not in tried]
+            if not info.get("active", True):
+                new = []
             self._persist_locked()
         for cid in to_close:
             self._close_copy(cid, "Trader đã đóng")
         for pos in new:
             self._open_copy(pid, pos)
+        with self._lock:
+            info = self._data["following"].get(pid)
+            if info is not None and not info.get("active", True) and not self._open_copies_locked(pid):
+                self._data["following"].pop(pid, None)
+                self._event_locked("unfollow", f"{info.get('nickname', pid)}: hết lệnh copy, đã gỡ khỏi danh sách")
+                self._persist_locked()
 
     def _open_copy(self, pid, pos):
         key = _position_key(pos["symbol"], pos["side"])
@@ -499,7 +530,9 @@ class CopyTradingService:
             nickname = info.get("nickname", pid)
             self._persist_locked()
         reason = ""
-        if not enabled:
+        if not info.get("active", True):
+            reason = "Đã bỏ copy trader này"
+        elif not enabled:
             reason = "Copy REAL đang tắt"
         elif not self.is_trading_enabled():
             reason = "Bot đang Pause"
