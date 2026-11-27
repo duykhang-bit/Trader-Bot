@@ -1617,6 +1617,46 @@ async function followCopyLeader(id, enabled) {
     toast(r.ok ? (enabled ? `Đã copy · bỏ qua ${r.ignored_existing||0} vị thế cũ, chờ lệnh mới` : 'Đã bỏ copy') : (r.error || 'Lỗi'), !!r.ok);
     await refresh();
 }
+let _liqaLast = null;
+let _liqaHtml = null;
+function restoreLiqAnalysis() {
+    if (!_liqaHtml) return;
+    const root = document.getElementById('liqa-result'), st = document.getElementById('liqa-status'), inp = document.getElementById('liqa-symbol');
+    if (root && !root.innerHTML) root.innerHTML = _liqaHtml[0];
+    if (st && !st.textContent) st.textContent = _liqaHtml[1];
+    if (inp && !inp.value) inp.value = _liqaHtml[2];
+}
+function _liqaPx(v) { const n = Number(v); return n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toPrecision(5); }
+function _liqaUsd(v) { const n = Number(v||0); return n >= 1e6 ? '$' + (n/1e6).toFixed(2) + 'M' : '$' + Math.round(n/1e3) + 'k'; }
+function _liqaTable(side, isAbove) {
+    if (!side || !(side.zones || []).length) return '<span style="color:#6e7681;font-size:11px">Không có vùng</span>';
+    const t = side.target || {}, st = side.strongest || {};
+    const rows = side.zones.map(z => {
+        const tag = (z.price === t.price ? (isAbove ? ' ← vùng cao nhất đủ ngưỡng' : ' ← vùng thấp nhất đủ ngưỡng') : '') + (z.price === st.price ? ' (lớn nhất)' : '');
+        return `<tr style="${z.qualified ? '' : 'opacity:.5'}${z.price === t.price ? ';font-weight:700' : ''}"><td style="color:${isAbove ? '#f85149' : '#3fb950'}">${_liqaPx(z.price)}</td><td>${_liqaUsd(z.usd)}</td><td>${isAbove ? '+' : '-'}${Number(z.dist_pct).toFixed(2)}%</td><td style="font-size:10px">${tag}</td></tr>`;
+    }).join('');
+    return `<table><tr><th>Giá</th><th>Thanh khoản ước tính</th><th>Cách giá</th><th></th></tr>${rows}</table>`;
+}
+async function runLiqAnalysis() {
+    let sym = (document.getElementById('liqa-symbol')?.value || '').trim().toUpperCase();
+    if (!sym) return;
+    if (!sym.endsWith('USDT')) sym += 'USDT';
+    const st = document.getElementById('liqa-status'), root = document.getElementById('liqa-result');
+    if (st) st.textContent = 'Đang tính...';
+    try {
+        const r = await fetch('/api/liq-analysis?symbol=' + encodeURIComponent(sym), {cache: 'no-store'}).then(x => x.json());
+        if (!r.ok) { if (st) st.textContent = 'Lỗi: ' + (r.error || ''); return; }
+        _liqaLast = r;
+        if (st) st.textContent = `${r.symbol} · giá ${_liqaPx(r.mark)} · ${new Date(Number(r.ts)*1000).toLocaleTimeString()}`;
+        root.innerHTML = '<div class="alq-grid">' + Object.entries(r.frames).map(([name, f]) => `<div class="alq-card">
+            <div class="alq-head"><span class="alq-title">Khung ${_macroEsc(name)}</span><span style="font-size:10px;color:#8b949e">nến cao ${_liqaPx(f.candle_high)} · thấp ${_liqaPx(f.candle_low)}</span></div>
+            <div style="font-size:11px;margin:3px 0">🔴 <b>Phía trên</b> (hút giá lên, vùng để SHORT): ${f.above.target ? `<b style="color:#f85149">${_liqaPx(f.above.target.price)}</b> (+${Number(f.above.target.dist_pct).toFixed(2)}%)` : '-'}</div>
+            ${_liqaTable(f.above, true)}
+            <div style="font-size:11px;margin:6px 0 3px">🟢 <b>Phía dưới</b> (hút giá xuống, vùng để LONG): ${f.below.target ? `<b style="color:#3fb950">${_liqaPx(f.below.target.price)}</b> (-${Number(f.below.target.dist_pct).toFixed(2)}%)` : '-'}</div>
+            ${_liqaTable(f.below, false)}</div>`).join('') + '</div>';
+        _liqaHtml = [root.innerHTML, st ? st.textContent : '', sym];
+    } catch (e) { if (st) st.textContent = 'Lỗi: ' + e; }
+}
 let _riskData = {};
 function renderRiskAlert(data) {
     const root = document.getElementById('risk-alert-panel');
@@ -2739,6 +2779,16 @@ function renderDashboard(d) {
         </div>
         <div id="intraday-candidates" style="font-size:10px;margin:5px 0"></div>
         <div id="intraday-paper-list" style="margin-top:8px"><span style="color:#6e7681;font-size:11px">Đang tải...</span></div>
+    </div>`;
+    html += `<div class="section" id="liq-analysis-section">
+        <h2>🔎 Phân tích vùng thanh lý (12h / 24h)</h2>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:6px">Nhập coin → hiện các vùng thanh lý ước tính phía trên (short bị thanh lý → giá hay bị hút lên quét) và phía dưới. Cùng cách tính Auto Liquidity Zone (Binance OI, ngưỡng 0.27). <b>Chỉ để xem, không đặt lệnh.</b> Đây là ước tính, không phải đỉnh chắc chắn: pump mạnh có thể quét qua và chạy tiếp.</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="liqa-symbol" placeholder="PORTAL hoặc PORTALUSDT" style="width:170px" onkeydown="if(event.key==='Enter')runLiqAnalysis()">
+          <button class="btn btn-blue btn-sm" onclick="runLiqAnalysis()">Phân tích</button>
+          <span id="liqa-status" style="font-size:10px;color:#8b949e"></span>
+        </div>
+        <div id="liqa-result" style="margin-top:8px"></div>
     </div>`;
     html += `<div class="section" id="risk-alert-section">
         <h2>🛡 Cảnh báo rủi ro / kỷ luật (Telegram)</h2>
@@ -5105,6 +5155,7 @@ async function refresh(){
             renderIntradayPaper(d.intraday_paper, d.open_positions, d.running);
             renderGridCopy(d.grid_copy);
             renderRiskAlert(d.risk_alert);
+            restoreLiqAnalysis();
             renderCopyTrading(d.copy_trading, d.running);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
@@ -6272,6 +6323,25 @@ def _get_auto_liq_zone_safe():
         }
     except Exception as exc:
         return {"enabled": False, "items": [], "errors": [str(exc)]}
+
+
+@app.route("/api/liq-analysis", methods=["GET"])
+@require_auth
+def api_liq_analysis():
+    """Read-only 12h/24h liquidity zones for one coin (no orders)."""
+    symbol = (request.args.get("symbol") or "").strip().upper()
+    import re as _re
+    if not _re.match(r"^[A-Z0-9]{2,20}(USDT)?$", symbol):
+        return jsonify({"ok": False, "error": "Symbol không hợp lệ"}), 400
+    with _lock:
+        ex = _state.get("_exchange") if _state else None
+    if ex is None:
+        return jsonify({"ok": False, "error": "Exchange chưa sẵn sàng"}), 503
+    try:
+        from liq_analysis import analyze
+        return jsonify(analyze(ex, symbol))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 400
 
 
 def _risk_service():
