@@ -701,7 +701,18 @@ class AutoLiqZoneOrderService:
         qty = math.floor(capped_qty / step + 1e-12) * step
         qty = round(qty, int(decimals))
         if qty <= 0:
-            raise ValueError(f"quantity rounds to zero for {symbol}")
+            # Coin giá cao (BTC): 1 step đã lớn hơn size config. Cho phép làm tròn
+            # lên 1 step nếu notional không vượt quá 1.5× size đã cấu hình.
+            min_qty_notional = step * target
+            intended_notional = max_order_usdt * effective_leverage
+            if step <= max_qty and min_qty_notional <= intended_notional * 1.5:
+                qty = round(step, int(decimals))
+            else:
+                raise ValueError(
+                    f"{symbol}: lệnh tối thiểu {step:g} ≈ ${min_qty_notional:.2f} notional "
+                    f"(margin ${min_qty_notional / effective_leverage:.2f} ở {effective_leverage}x), "
+                    f"size đang đặt ${intended_notional:.2f} — tăng Max Order USDT"
+                )
         if qty * target < float(min_notional):
             raise ValueError(
                 f"order notional {qty * target:.8g} below minimum {min_notional}"
