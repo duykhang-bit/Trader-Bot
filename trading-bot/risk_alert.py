@@ -136,7 +136,7 @@ class RiskAlertService:
         self._stop = threading.Event()
         self._thread = None
         self._data = {"settings": dict(DEFAULTS), "last": {}, "alerts": [], "sent": {}, "seen": {},
-                      "no_sl_since": {}}
+                      "no_sl_since": {}, "notified_level": -1}
         self._load()
 
     def _load(self):
@@ -292,9 +292,11 @@ class RiskAlertService:
         if account_reasons and not single_dup:
             levels.append(acct_level)
             messages.append(self._account_text(report, account_reasons))
-        # Whole account: at most one Telegram per repeat window; earlier only
-        # if the worst level escalates (e.g. 🟠 -> 🔴).
-        if messages and self._should_send("account", max(levels), settings, now):
+        # Notify once when the account enters a warning level, then only when
+        # it rises to a higher level. Falling back is silent but re-arms, so a
+        # later rise is reported again. No time-based repeats.
+        current = max(levels) if messages else -1
+        if self._level_changed_up(current):
             self._send("\n\n".join(messages))
         return report
 
@@ -302,6 +304,13 @@ class RiskAlertService:
         no_sl = p["sl"] is None and missing_for >= NO_SL_GRACE_S
         return max(lev_level(p["eff_lev"]), 2 if no_sl else 0,
                    sl_level(p["sl_loss_pct"] or 0), 2 if p["leverage"] >= 20 else 0)
+
+    def _level_changed_up(self, current):
+        with self._lock:
+            prev = int(self._data.get("notified_level", -1))
+            self._data["notified_level"] = int(current)
+            self._persist_locked()
+        return current > prev and current >= 0
 
     def _should_send(self, key, level, settings, now):
         """Once per key per repeat window; earlier only if the level escalates."""
