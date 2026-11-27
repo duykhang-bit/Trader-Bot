@@ -41,6 +41,7 @@ CLIENT_PREFIX = "gridc_"
 MAX_LEVERAGE = 5
 MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min notional
 CYCLE_SECONDS = 5
+REQUIREMENT_REFRESH_S = 300
 MIN_GRIDS = 5
 MAX_STEP_PCT = 3.0
 MISMATCH_CONFIRMATIONS = 3
@@ -64,21 +65,85 @@ def build_levels(lower, upper, count, kind="ARITHMETIC"):
     return [lower + step * i for i in range(count + 1)]
 
 
+def _step_pct(lower, upper, count, kind):
+    lv = build_levels(lower, upper, count, kind)
+    return max((lv[i + 1] - lv[i]) / lv[i] for i in range(count)) * 100
+
+
+def select_grid(lower, upper, grids, kind, price, step, decimals, min_notional, total_notional):
+    """Pick the largest grid count (<= source) that the notional can fund.
+
+    A copied grid must stay a real grid: >= MIN_GRIDS levels and each step
+    <= MAX_STEP_PCT (or the source bot's own step if wider). Same qty on every
+    level; each order clears the exchange minimum at the lowest level; resting
+    orders sum <= funded notional * 1.25. Returns (chosen|None, min_count, max_step).
+    """
+    max_step = max(MAX_STEP_PCT, _step_pct(lower, upper, grids, kind) + 1e-9)
+    min_count = next((c for c in range(MIN_GRIDS, grids + 1)
+                      if _step_pct(lower, upper, c, kind) <= max_step), grids)
+    for count in range(grids, min_count - 1, -1):
+        levels = build_levels(lower, upper, count, kind)
+        nearest_raw = min(range(len(levels)), key=lambda i: abs(levels[i] - price))
+        qty = math.floor((total_notional / count) / price / step + 1e-12) * step
+        qty_min = math.ceil(min_notional * MIN_ORDER_NOTIONAL_BUFFER / min(levels) / step - 1e-12) * step
+        qty = round(max(qty, qty_min), int(decimals))
+        resting = qty * sum(x for i, x in enumerate(levels) if i != nearest_raw)
+        if qty > 0 and resting <= total_notional * 1.25:
+            return (count, levels, qty), min_count, max_step
+    return None, min_count, max_step
+
+
+def required_notional(lower, upper, grids, kind, price, step, decimals, min_notional):
+    """Smallest margin*leverage that select_grid accepts (None if never)."""
+    total = max(min_notional * MIN_ORDER_NOTIONAL_BUFFER * MIN_GRIDS / 1.25, 1.0)
+    for _ in range(400):
+        if select_grid(lower, upper, grids, kind, price, step, decimals, min_notional, total)[0]:
+            return round(total, 2)
+        total *= 1.02
+    return None
+
+
+def estimate_requirement(bot, price, filters):
+    """Requirement for copying one Binance grid bot at the current price."""
+    try:
+        lower, upper = float(bot.get("lower")), float(bot.get("upper"))
+        grids = int(bot.get("grids") or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "Thiếu thông số"}
+    kind = bot.get("type") or "ARITHMETIC"
+    if price <= 0 or filters is None:
+        return {"ok": False, "reason": "Không có giá/bộ lọc"}
+    if grids < MIN_GRIDS:
+        return {"ok": False, "reason": f"Bot gốc < {MIN_GRIDS} lưới"}
+    if not (lower < price < upper):
+        return {"ok": False, "reason": "Giá đã ra khỏi range"}
+    step, decimals, min_notional = filters
+    need = required_notional(lower, upper, grids, kind, price, step, decimals, min_notional)
+    if need is None:
+        return {"ok": False, "reason": "Range quá rộng"}
+    _, min_count, max_step = select_grid(lower, upper, grids, kind, price, step, decimals, min_notional, need)
+    chosen = select_grid(lower, upper, grids, kind, price, step, decimals, min_notional, need)[0]
+    return {"ok": True, "need_notional": need, "grids_at_min": chosen[0] if chosen else min_count,
+            "max_step": round(max_step, 2)}
+
+
 class GridCopyService:
     def __init__(self, exchange, *, notifier=None, pnl_callback=None,
-                 is_trading_enabled=lambda: False, on_symbols_changed=None,
+                 is_trading_enabled=lambda: False, on_symbols_changed=None, bots_provider=None,
                  now_fn=time.time, persistence_file=PERSISTENCE_FILE):
         self.exchange = exchange
         self.notifier = notifier
         self.pnl_callback = pnl_callback
         self.is_trading_enabled = is_trading_enabled
         self.on_symbols_changed = on_symbols_changed
+        self.bots_provider = bots_provider
+        self._req_ts = 0.0
         self._now = now_fn
         self._file = persistence_file
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
-        self._data = {"grids": {}, "history": [], "events": []}
+        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}}
         self._load()
 
     # ---------------- persistence ----------------
@@ -164,7 +229,52 @@ class GridCopyService:
                             grid["error"] = str(exc)[:200]
                             self._persist_locked()
             self._settle_history()
+            if self._now() - self._req_ts >= REQUIREMENT_REFRESH_S:
+                self._req_ts = self._now()
+                try:
+                    self.refresh_requirements()
+                except Exception as exc:
+                    logger.warning("[GridCopy] requirement refresh failed: %s", exc)
             self._stop.wait(CYCLE_SECONDS)
+
+    def refresh_requirements(self):
+        """Estimate the margin each listed Binance bot needs (shown on the web)."""
+        bots = list(self.bots_provider() or []) if self.bots_provider else []
+        if not bots:
+            return {}
+        ex = self.exchange
+        info = ex._get("/fapi/v1/exchangeInfo") or {}
+        filters = {}
+        wanted = {b.get("symbol") for b in bots}
+        for item in info.get("symbols", []):
+            if item.get("symbol") not in wanted:
+                continue
+            step, decimals, min_notional = 1.0, 0, 5.0
+            for f in item.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    step = float(f.get("stepSize", 1))
+                    decimals = 0 if step >= 1 else len(str(step).rstrip("0").split(".")[-1])
+                elif f.get("filterType") == "MIN_NOTIONAL":
+                    min_notional = float(f.get("notional", 5.0))
+            filters[item["symbol"]] = (step, decimals, min_notional)
+        marks = {}
+        for row in ex._get("/fapi/v1/premiumIndex") or []:
+            marks[row.get("symbol")] = _f(row.get("markPrice"))
+        result = {}
+        for bot in bots:
+            sym = bot.get("symbol")
+            est = estimate_requirement(bot, marks.get(sym, 0.0), filters.get(sym))
+            if est.get("ok"):
+                est["margin_at"] = {str(l): round(est["need_notional"] / l, 2) for l in range(1, MAX_LEVERAGE + 1)}
+            result[str(bot.get("id"))] = est
+        try:
+            available = round(_f(ex.get_account_balance()), 2)
+        except Exception:
+            available = None
+        with self._lock:
+            self._data["requirements"] = {"ts": self._now(), "available": available, "bots": result}
+            self._persist_locked()
+        return result
 
     # ---------------- start ----------------
     def start_grid(self, *, symbol, lower, upper, grids, kind="ARITHMETIC",
@@ -213,34 +323,12 @@ class GridCopyService:
         total_notional = margin * lev
         if grids < MIN_GRIDS:
             return {"ok": False, "error": f"Bot gốc chỉ có {grids} lưới, cần ít nhất {MIN_GRIDS}"}
-
-        def step_pct(count):
-            lv = build_levels(lower, upper, count, kind)
-            return max((lv[i + 1] - lv[i]) / lv[i] for i in range(count)) * 100
-
-        def plan(count):
-            levels = build_levels(lower, upper, count, kind)
-            nearest_raw = min(range(len(levels)), key=lambda i: abs(levels[i] - price))
-            qty = math.floor((total_notional / count) / price / step + 1e-12) * step
-            qty_min = math.ceil(min_notional * MIN_ORDER_NOTIONAL_BUFFER / min(levels) / step - 1e-12) * step
-            qty = round(max(qty, qty_min), int(decimals))
-            resting = qty * sum(x for i, x in enumerate(levels) if i != nearest_raw)
-            return levels, qty, resting, round(qty_min, int(decimals))
-
-        # A copied grid must still be a real grid: >= MIN_GRIDS levels and
-        # each step <= MAX_STEP_PCT (or the source bot's own step if wider).
-        max_step = max(MAX_STEP_PCT, step_pct(grids) + 1e-9)
-        min_count = next((c for c in range(MIN_GRIDS, grids + 1) if step_pct(c) <= max_step), grids)
-        chosen = None
-        for count in range(grids, min_count - 1, -1):
-            levels, qty, resting, _ = plan(count)
-            if qty > 0 and resting <= total_notional * 1.25:
-                chosen = (count, levels, qty)
-                break
+        chosen, min_count, max_step = select_grid(lower, upper, grids, kind, price, step,
+                                                  decimals, min_notional, total_notional)
         if chosen is None:
-            levels, _, _, qty_min = plan(min_count)
-            nearest_raw = min(range(len(levels)), key=lambda i: abs(levels[i] - price))
-            need_notional = qty_min * sum(x for i, x in enumerate(levels) if i != nearest_raw) / 1.25
+            need_notional = required_notional(lower, upper, grids, kind, price, step, decimals, min_notional)
+            if need_notional is None:
+                return {"ok": False, "error": "Vốn không đủ: range này quá rộng so với giá hiện tại, không copy được"}
             need_margin = need_notional / lev
             return {"ok": False, "error": (
                 f"Vốn không đủ cho grid đúng nghĩa: range này cần ≥{min_count} lưới "
