@@ -164,6 +164,36 @@ class CopyTradingTests(unittest.TestCase):
         self.svc._settle_closed()
         self.assertEqual(len(calls), 1)  # settled once only
 
+    def test_unfollow_stops_new_but_still_closes_open_copy_with_leader(self):
+        self.svc.follow("123", True)
+        self.http.positions = pos_payload(("SOLUSDT", 10, 70, 3, "LONG"))
+        self.svc.poll_once()
+        self.svc.follow("123", False)
+        self.assertIn("123", self.svc.snapshot()["following"])
+        self.http.positions = pos_payload(("SOLUSDT", 10, 70, 3, "LONG"), ("ETHUSDT", 1, 2000, 3, "LONG"))
+        self.svc.poll_once()
+        self.assertEqual(len(self.opened), 1)  # no new copy after unfollow
+        self.http.positions = pos_payload(("ETHUSDT", 1, 2000, 3, "LONG"))
+        self.svc.poll_once(); self.svc.poll_once()
+        self.assertEqual(self.closed, ["SOLUSDT"])
+        self.assertNotIn("123", self.svc.snapshot()["following"])  # removed once flat
+
+    def test_unfollow_without_open_copies_removes_immediately(self):
+        self.svc.follow("123", True)
+        self.svc.follow("123", False)
+        self.assertNotIn("123", self.svc.snapshot()["following"])
+
+    def test_manual_close(self):
+        self.svc.follow("123", True)
+        self.http.positions = pos_payload(("SOLUSDT", 10, 70, 3, "LONG"))
+        self.svc.poll_once()
+        cid = next(iter(self.svc.snapshot()["copies"]))
+        self.assertTrue(self.svc.manual_close(cid)["ok"])
+        self.assertEqual(self.closed, ["SOLUSDT"])
+        self.assertEqual(self.svc.snapshot()["closed"][-1]["close_reason"], "Đóng tay trên web")
+        self.svc.poll_once()
+        self.assertEqual(len(self.opened), 1)  # leader still open -> not re-entered
+
     def test_settings_validation(self):
         self.assertFalse(self.svc.update_settings(2, 50, 3, 3)["ok"])
         self.assertFalse(self.svc.update_settings(2, 5, 0, 3)["ok"])
