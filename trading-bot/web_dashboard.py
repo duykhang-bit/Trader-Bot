@@ -1618,7 +1618,7 @@ function renderRiskAlert(data) {
             margin dùng > ${inp('risk-margin', st.margin_warn_pct, 46, 5)}% ·
             SL mất > ${inp('risk-sl', st.sl_risk_warn_pct, 46, 0.5)}% vốn ·
             đòn bẩy ≥ ${inp('risk-lev', st.leverage_warn, 42, 1)}x ·
-            nhắc lại sau ${inp('risk-repeat', st.repeat_minutes, 46, 5)} phút
+            <span style="color:#8b949e">báo 1 lần khi vào mức cảnh báo, báo lại khi lên mức cao hơn</span>
             <button class="btn btn-blue btn-sm" onclick="saveRiskAlert()">Set</button>
             <button class="btn btn-gray btn-sm" onclick="testRiskAlert()">Gửi thử Tele</button>
           </div>
@@ -1651,7 +1651,7 @@ async function toggleRiskAlert() {
 }
 async function saveRiskAlert() {
     const v = id => document.getElementById(id)?.value;
-    const r = await apiPost('/api/risk-alert/settings', {pos_lev_warn:v('risk-pos-lev'), total_lev_warn:v('risk-total-lev'), margin_warn_pct:v('risk-margin'), sl_risk_warn_pct:v('risk-sl'), leverage_warn:v('risk-lev'), repeat_minutes:v('risk-repeat')});
+    const r = await apiPost('/api/risk-alert/settings', {pos_lev_warn:v('risk-pos-lev'), total_lev_warn:v('risk-total-lev'), margin_warn_pct:v('risk-margin'), sl_risk_warn_pct:v('risk-sl'), leverage_warn:v('risk-lev')});
     toast(r.ok ? 'Đã lưu ngưỡng cảnh báo' : (r.error || 'Lỗi'), !!r.ok);
     await refresh();
 }
@@ -1678,8 +1678,14 @@ function renderGridCopy(data) {
             Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="3" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
           </div>
           <div style="font-size:10px;color:#8b949e">Tự dừng + đóng hết khi: giá ra khỏi range quá X% · lỗ (đã trừ phí, gồm lỗ đang mở) chạm Max lỗ · vị thế bị lệnh khác can thiệp. Bot Pause thì không đặt lệnh lưới mới nhưng vẫn canh dừng lỗ.</div>
+          <div id="grid-last-attempt" style="margin-top:6px;font-size:11px"></div>
           <div id="grid-active" style="margin-top:6px"></div><div id="grid-history" style="margin-top:6px;font-size:11px"></div></div>`;
     }
+    const la = data.last_attempt || {};
+    const laEl = document.getElementById('grid-last-attempt');
+    if (laEl) laEl.innerHTML = la.ts ? `<div style="padding:6px 8px;border-radius:5px;background:#0d1117;border:1px solid ${la.ok ? '#3fb950' : '#f85149'}">
+        Lần bấm Copy gần nhất (${new Date(Number(la.ts)*1000).toLocaleTimeString()}): <b>${esc(la.symbol)}</b> · margin $${Number(la.margin||0)} × ${la.leverage}x →
+        ${la.ok ? '<b style="color:#3fb950">ĐÃ CHẠY</b>' : `<b style="color:#f85149">KHÔNG CHẠY</b>: ${esc(la.error || '')}`}</div>` : '';
     const grids = Object.values(data.grids || {});
     const act = document.getElementById('grid-active');
     if (act) act.innerHTML = grids.length ? `<div class="alq-grid">${grids.map(g => `<div class="alq-card" style="border-left:3px solid ${Number(g.pnl||0)>=0?'#3fb950':'#f85149'}">
