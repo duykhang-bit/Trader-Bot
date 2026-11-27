@@ -81,7 +81,7 @@ class GridCopyTests(unittest.TestCase):
             persistence_file=os.path.join(tempfile.mkdtemp(), "g.json"))
 
     def start(self, **kw):
-        args = dict(symbol="TESTUSDT", lower=90, upper=110, grids=4, margin_usdt=20, leverage=5)
+        args = dict(symbol="TESTUSDT", lower=90, upper=110, grids=10, margin_usdt=20, leverage=5)
         args.update(kw)
         return self.svc.start_grid(**args)
 
@@ -92,14 +92,14 @@ class GridCopyTests(unittest.TestCase):
         r = self.start()
         self.assertTrue(r["ok"], r)
         prices = self.orders_by_price()
-        self.assertEqual(sorted(prices), [90, 95, 105, 110])
-        self.assertEqual(prices[95]["side"], "BUY")
-        self.assertEqual(prices[105]["side"], "SELL")
+        self.assertEqual(sorted(prices), [90, 92, 94, 96, 98, 102, 104, 106, 108, 110])
+        self.assertEqual(prices[98]["side"], "BUY")
+        self.assertEqual(prices[102]["side"], "SELL")
 
     def test_buy_fill_places_sell_one_level_up_and_round_trip(self):
         self.start()
-        buy = self.orders_by_price()[95]
-        self.ex.price = 95
+        buy = self.orders_by_price()[98]
+        self.ex.price = 98
         self.ex.fill(buy["orderId"])
         self.svc.cycle("TESTUSDT")
         prices = self.orders_by_price()
@@ -108,14 +108,14 @@ class GridCopyTests(unittest.TestCase):
         self.ex.fill(prices[100]["orderId"])
         self.svc.cycle("TESTUSDT")
         prices = self.orders_by_price()
-        self.assertEqual(prices[95]["side"], "BUY")
+        self.assertEqual(prices[98]["side"], "BUY")
         self.assertEqual(self.ex.amount, 0)
         grid = self.svc.snapshot()["grids"]["TESTUSDT"]
         self.assertEqual((grid["buys"], grid["sells"], grid["status"]), (1, 1, "RUNNING"))
 
     def test_price_out_of_range_stops_and_closes(self):
         self.start(stop_pct=2)
-        buy = self.orders_by_price()[95]
+        buy = self.orders_by_price()[98]
         self.ex.fill(buy["orderId"])
         self.ex.price = 87  # below 90 * 0.98
         self.svc.cycle("TESTUSDT")
@@ -143,7 +143,7 @@ class GridCopyTests(unittest.TestCase):
 
     def test_paused_places_nothing_new_but_keeps_risk_checks(self):
         self.start()
-        buy = self.orders_by_price()[95]
+        buy = self.orders_by_price()[98]
         self.ex.fill(buy["orderId"])
         self.trading = False
         self.svc.cycle("TESTUSDT")
@@ -154,10 +154,10 @@ class GridCopyTests(unittest.TestCase):
 
     def test_cancelled_order_is_replaced(self):
         self.start()
-        sell = self.orders_by_price()[105]
+        sell = self.orders_by_price()[102]
         self.ex._delete("/fapi/v1/order", {"orderId": sell["orderId"]})
         self.svc.cycle("TESTUSDT")
-        self.assertEqual(self.orders_by_price()[105]["side"], "SELL")
+        self.assertEqual(self.orders_by_price()[102]["side"], "SELL")
 
     def test_validations(self):
         self.assertFalse(self.start(leverage=10)["ok"])
@@ -190,6 +190,25 @@ class GridCopyTests(unittest.TestCase):
         r = self.start(margin_usdt=1, leverage=1)
         self.assertFalse(r["ok"])
         self.assertIn("cần margin", r["error"])
+
+    def test_wide_range_small_capital_rejected_instead_of_2_grids(self):
+        # Like the 币安人生 case: 120-grid source, wide range, $4 x 5x.
+        self.ex.price = 0.4558
+        r = self.start(lower=0.1831, upper=0.5086, grids=120, kind="GEO", margin_usdt=4, leverage=5)
+        self.assertFalse(r["ok"])
+        self.assertIn("grid đúng nghĩa", r["error"])
+        self.assertEqual(self.ex.orders, {})
+
+    def test_source_with_too_few_grids_rejected(self):
+        self.assertFalse(self.start(grids=3)["ok"])
+
+    def test_steps_never_exceed_3pct(self):
+        r = self.start(lower=80, upper=125, grids=60, margin_usdt=40, leverage=5)
+        self.assertTrue(r["ok"], r)
+        prices = sorted(o["price"] for o in self.ex.orders.values()) + [100]
+        prices = sorted(prices)
+        self.assertGreaterEqual(r["grids"], 5)
+        self.assertTrue(all((b - a) / a <= 0.0301 for a, b in zip(prices, prices[1:])))
 
     def test_manual_stop(self):
         self.start()
