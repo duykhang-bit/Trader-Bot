@@ -98,13 +98,14 @@ def parse_leader_positions(payload):
 
 class CopyTradingService:
     def __init__(self, config, exchange, *, open_callback=None, close_callback=None,
-                 position_callback=None, is_trading_enabled=lambda: False,
+                 position_callback=None, pnl_callback=None, is_trading_enabled=lambda: False,
                  http_json=_http_json, now_fn=time.time, persistence_file=PERSISTENCE_FILE):
         self.config = config
         self.exchange = exchange
         self.open_callback = open_callback
         self.close_callback = close_callback
         self.position_callback = position_callback
+        self.pnl_callback = pnl_callback
         self.is_trading_enabled = is_trading_enabled
         self._http = http_json
         self._now = now_fn
@@ -163,7 +164,67 @@ class CopyTradingService:
 
     def snapshot(self):
         with self._lock:
-            return copy.deepcopy(self._data)
+            snap = copy.deepcopy(self._data)
+        snap["stats"] = self._stats(snap.get("closed") or [])
+        return snap
+
+    def _stats(self, closed):
+        now_local = time.localtime(self._now())
+        today = time.strftime("%Y-%m-%d", now_local)
+        month = time.strftime("%Y-%m", now_local)
+        out = {"trades": 0, "wins": 0, "losses": 0, "pending": 0, "net": 0.0,
+               "today": 0.0, "month": 0.0, "by_leader": {}, "by_day": {}}
+        for item in closed:
+            if not item.get("pnl_final"):
+                out["pending"] += 1
+                continue
+            net = _f(item.get("net_pnl"))
+            day = time.strftime("%Y-%m-%d", time.localtime(_f(item.get("closed_at"))))
+            out["trades"] += 1
+            out["wins"] += net > 0
+            out["losses"] += net <= 0
+            out["net"] += net
+            out["today"] += net if day == today else 0.0
+            out["month"] += net if day.startswith(month) else 0.0
+            out["by_day"][day] = round(out["by_day"].get(day, 0.0) + net, 4)
+            name = item.get("nickname") or item.get("leader") or "?"
+            row = out["by_leader"].setdefault(name, {"trades": 0, "wins": 0, "net": 0.0})
+            row["trades"] += 1
+            row["wins"] += net > 0
+            row["net"] = round(row["net"] + net, 4)
+        out["win_rate"] = round(out["wins"] / out["trades"] * 100, 1) if out["trades"] else 0.0
+        for key in ("net", "today", "month"):
+            out[key] = round(out[key], 4)
+        return out
+
+    def _settle_closed(self):
+        """Fill realized PnL + fees from Binance income for closed copies."""
+        if self.pnl_callback is None:
+            return
+        now = self._now()
+        with self._lock:
+            pending = [(i, copy.deepcopy(x)) for i, x in enumerate(self._data["closed"])
+                       if not x.get("pnl_final") and now - _f(x.get("closed_at")) >= 15
+                       and int(x.get("pnl_attempts", 0)) < 20]
+        for index, item in pending:
+            try:
+                res = self.pnl_callback(item["symbol"], int(_f(item.get("opened_at")) * 1000) - 5000,
+                                        int(_f(item.get("closed_at")) * 1000) + 120000) or {}
+                ok = res.get("ok", True)
+            except Exception:
+                res, ok = {}, False
+            with self._lock:
+                closed = self._data["closed"]
+                if index >= len(closed) or closed[index].get("opened_at") != item.get("opened_at"):
+                    continue
+                live = closed[index]
+                live["pnl_attempts"] = int(live.get("pnl_attempts", 0)) + 1
+                if ok and (res.get("records") or live["pnl_attempts"] >= 4):
+                    live["realized_pnl"] = round(_f(res.get("realized")), 6)
+                    live["fee"] = round(_f(res.get("fee")), 6)
+                    live["net_pnl"] = round(live["realized_pnl"] + live["fee"], 6)
+                    live["pnl_final"] = True
+                self._persist_locked()
 
     # ---------------- lifecycle ----------------
     def start(self):
@@ -359,6 +420,7 @@ class CopyTradingService:
                 if not scanning and self._now() - last >= SCAN_INTERVAL:
                     self.start_scan()
                 self.poll_once()
+                self._settle_closed()
             except Exception as exc:
                 logger.warning("[CopyTrade] worker error: %s", exc)
             self._wake.wait(POLL_INTERVAL)
