@@ -1581,7 +1581,9 @@ function renderCopyTrading(data, botRunning) {
             const use = Math.max(myMargin, need);
             if (canUse !== null && use > canUse) {
                 const at5 = Math.ceil(Number((q.margin_at || {})['5'] || q.need_notional / 5) * 1.02 * 100) / 100;
-                const hint = levIn < 5 && at5 <= canUse ? `<br><span style="color:#d29922">đủ nếu đổi Lev = 5</span>` : '';
+                const hint = levIn < 5 && at5 <= canUse
+                    ? `<br><button class="btn btn-green btn-sm" style="margin-top:3px" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}', ${Math.max(myMargin, at5)}, 5)">Copy $${Math.max(myMargin, at5).toFixed(2)} · 5x</button>`
+                    : '';
                 return `<span style="font-size:10px;color:#f85149">Cần $${use.toFixed(2)} · có $${canUse.toFixed(2)}<br>thiếu $${(use - canUse).toFixed(2)}</span>${hint}`;
             }
             return `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}', ${use})">Copy $${use.toFixed(2)} · ${levIn}x</button>`;
@@ -1741,9 +1743,9 @@ async function saveGridSettings() {
     if (el) { el.style.color = r.ok ? '#3fb950' : '#f85149'; el.textContent = r.ok ? '✓ Đã lưu' : ('Lỗi: ' + (r.error || '')); }
     if (r.ok && _gridData) { _gridData.settings = r.settings; await refresh(); }
 }
-async function startGridCopy(botId, sym, margin) {
+async function startGridCopy(botId, sym, margin, lev) {
     const gs = (_gridData && _gridData.settings) || {};
-    const body = {bot_id: botId, margin_usdt: margin, leverage: gs.leverage, stop_pct: gs.stop_pct, max_loss_usdt: gs.max_loss_usdt};
+    const body = {bot_id: botId, margin_usdt: margin, leverage: lev || gs.leverage, stop_pct: gs.stop_pct, max_loss_usdt: gs.max_loss_usdt};
     if (!confirm(`Chạy grid THẬT ${sym}: margin $${body.margin_usdt} × ${body.leverage}x, max lỗ $${body.max_loss_usdt}?`)) return;
     const r = await apiPost('/api/grid-copy/start', body);
     toast(r.ok ? `Đã chạy grid ${sym}: ${r.grids} lưới${r.reduced ? ' (giảm để đủ vốn)' : ''}, đặt ${r.placed} lệnh` : (r.error || 'Lỗi'), !!r.ok);
