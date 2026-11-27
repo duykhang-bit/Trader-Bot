@@ -1511,6 +1511,28 @@ function renderCopyTrading(data, botRunning) {
               SL ${Number(c.sl).toPrecision(6)} · PnL <b style="color:${Number(c.pnl||0)>=0?'#3fb950':'#f85149'}">${Number(c.pnl||0)>=0?'+':''}$${Number(c.pnl||0).toFixed(2)}</b>${c.protected===false?' <b style="color:#f85149">CHƯA CÓ SL</b>':''}</div></div>`).join('');
         openRoot.innerHTML = (fol || cps) ? `<div class="alq-grid">${cps}${fol}</div>` : '';
     }
+    const stats = data.stats || {};
+    const sr = document.getElementById('copy-stats');
+    const money = v => { const n = Number(v||0); return `<b style="color:${n>=0?'#3fb950':'#f85149'}">${n>=0?'+':''}$${n.toFixed(2)}</b>`; };
+    if (sr) {
+        const leaders = Object.entries(stats.by_leader || {}).map(([n,r]) => `${esc(n)}: ${r.trades} lệnh, thắng ${r.wins}, ${money(r.net)}`).join(' · ');
+        const days = Object.entries(stats.by_day || {}).sort((a,b)=>a[0]<b[0]?1:-1).slice(0,7).map(([d,v]) => `${esc(d.slice(5))} ${money(v)}`).join(' · ');
+        sr.innerHTML = `<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:12px">
+            📊 <b>Kết quả copy (đã trừ phí + funding, số từ Binance)</b><br>
+            Hôm nay ${money(stats.today)} · Tháng này ${money(stats.month)} · Tổng ${money(stats.net)} ·
+            ${stats.trades||0} lệnh đã đóng · Thắng ${stats.wins||0} / Thua ${stats.losses||0} (${Number(stats.win_rate||0).toFixed(1)}%)
+            ${stats.pending ? ` · ${stats.pending} lệnh đang chờ Binance chốt số` : ''} · Đang mở ${copies.length} (PnL mở ${money(pnl)})
+            ${days ? `<div style="font-size:10px;color:#8b949e;margin-top:3px">Theo ngày: ${days}</div>` : ''}
+            ${leaders ? `<div style="font-size:10px;color:#8b949e;margin-top:3px">Theo trader: ${leaders}</div>` : ''}</div>`;
+    }
+    const hr = document.getElementById('copy-history');
+    if (hr) {
+        const rows = (data.closed || []).slice().reverse().map(c => `<tr>
+            <td>${new Date(Number(c.closed_at||0)*1000).toLocaleString()}</td><td>${esc(c.nickname)}</td><td>${esc(c.symbol)}</td><td>${esc(c.side)}</td>
+            <td>${Number(c.entry||0).toPrecision(6)}</td><td>${c.exit ? Number(c.exit).toPrecision(6) : '-'}</td>
+            <td>${c.pnl_final ? money(c.net_pnl) : '<span style="color:#8b949e">đang tính…</span>'}</td><td style="font-size:10px">${esc(c.close_reason||'')}</td></tr>`).join('');
+        hr.innerHTML = rows ? `<b>Lịch sử lệnh copy</b><div style="overflow-x:auto"><table><tr><th>Đóng lúc</th><th>Trader</th><th>Coin</th><th>Side</th><th>Entry</th><th>Exit</th><th>Lời/lỗ ròng</th><th>Lý do</th></tr>${rows}</table></div>` : '';
+    }
     const lr = document.getElementById('copy-leaders');
     if (lr) {
         const rows = (data.leaders || []).map(x => `<tr style="${x.pass?'':'opacity:.55'}">
@@ -2528,7 +2550,9 @@ function renderDashboard(d) {
           <button class="btn btn-gray btn-sm" onclick="scanCopyLeaders()">🔍 Cập nhật top ngay</button>
           <span id="copy-scan-status" style="font-size:10px;color:#8b949e"></span>
         </div>
+        <div id="copy-stats" style="margin-top:8px"></div>
         <div id="copy-open" style="margin-top:8px"></div>
+        <div id="copy-history" style="margin-top:8px;font-size:11px"></div>
         <div id="copy-leaders" style="margin-top:8px;font-size:11px"></div>
         <div id="copy-bots" style="margin-top:8px;font-size:11px"></div>
         <div id="copy-events" style="margin-top:8px;font-size:10px;color:#8b949e"></div>
