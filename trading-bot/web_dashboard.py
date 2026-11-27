@@ -1556,7 +1556,9 @@ function renderCopyTrading(data, botRunning) {
         const reqAll = (_gridData && _gridData.requirements) || {};
         const reqs = reqAll.bots || {};
         const avail = Number(reqAll.available);
-        const levIn = Math.max(1, Math.min(5, Number(document.getElementById('grid-lev')?.value || 5)));
+        const gs = (_gridData && _gridData.settings) || {};
+        const levIn = Math.max(1, Math.min(5, Number(gs.leverage || 5)));
+        const myMargin = Number(gs.margin_usdt || 0);
         const canUse = Number.isFinite(avail) ? avail * 0.75 : null;
         const needCell = b => {
             const q = reqs[String(b.id)];
@@ -1569,14 +1571,24 @@ function renderCopyTrading(data, botRunning) {
                 + (levIn < 5 ? ` <span style="color:#8b949e">($${at5.toFixed(2)} ở 5x)</span>` : '')
                 + `<br><span style="font-size:9px;color:#8b949e">≥${q.grids_at_min} lưới · nấc ≤${Number(q.max_step).toFixed(1)}%</span>`;
         };
+        const copyCell = b => {
+            if (gridActive.has(b.symbol)) return '<span style="color:#3fb950">đang chạy</span>';
+            const q = reqs[String(b.id)];
+            if (!q || !q.ok) return '<span style="font-size:10px;color:#6e7681">—</span>';
+            const atLev = Number((q.margin_at || {})[String(levIn)] || q.need_notional / levIn);
+            const need = Math.ceil(atLev * 1.02 * 100) / 100;
+            const use = Math.max(myMargin, need);
+            if (canUse !== null && use > canUse) return `<span style="font-size:10px;color:#f85149">Thiếu $${(use - canUse).toFixed(2)}</span>`;
+            return `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}', ${use})">Copy $${use.toFixed(2)} · ${levIn}x</button>`;
+        };
         const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
             <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td>
             <td>${needCell(b)}</td>
-            <td>${gridActive.has(b.symbol) ? '<span style="color:#3fb950">đang chạy</span>' : `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}')">Copy</button>`}</td></tr>`).join('');
+            <td>${copyCell(b)}</td></tr>`).join('');
         br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">Bấm Copy → bot đặt grid Neutral cùng coin/range/số lưới trên tài khoản của mày, dùng Margin/Lev/Stop/Max lỗ ở trên (không dùng Lev 50–75x của bot gốc). Vốn nhỏ thì số lưới tự giảm để mỗi lệnh đủ tối thiểu Binance.</span>
             <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th>Margin tối thiểu để copy</th><th></th></tr>${rows}</table></div>
-            <div style="font-size:10px;color:#8b949e;margin-top:3px">Margin tối thiểu tính theo Lev đang nhập ở trên, cập nhật mỗi 5 phút.
-            ${canUse !== null ? `Hiện mày đặt được tối đa <b>$${canUse.toFixed(2)}</b> (75% số dư khả dụng $${avail.toFixed(2)}). Muốn copy thì nhập ô Margin ≥ số ở cột này rồi bấm Copy: <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
+            <div style="font-size:10px;color:#8b949e;margin-top:3px">Margin tối thiểu tính theo Lev đã lưu (${levIn}x), cập nhật mỗi 5 phút. Nút Copy ghi sẵn số tiền sẽ dùng = max(Margin đã lưu, mức tối thiểu).
+            ${canUse !== null ? `Hiện mày dùng được tối đa <b>$${canUse.toFixed(2)}</b> cho grid (75% số dư khả dụng $${avail.toFixed(2)}): <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
     }
     const ev = document.getElementById('copy-events');
     if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
@@ -1672,12 +1684,13 @@ function renderGridCopy(data) {
         root.innerHTML = `<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px">
           <b>🔲 Grid copy của mày</b>
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;margin:5px 0">
-            Margin $<input id="grid-margin" type="number" min="1" max="500" step="1" value="10" style="width:52px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
-            Lev <input id="grid-lev" type="number" min="1" max="5" step="1" value="3" style="width:40px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
-            Dừng khi giá ra khỏi range % <input id="grid-stop" type="number" min="0.5" max="20" step="0.5" value="2" style="width:46px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
-            Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="3" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Margin $<input id="grid-margin" type="number" min="1" max="500" step="0.5" value="${Number((data.settings||{}).margin_usdt ?? 10)}" onchange="saveGridSettings()" style="width:52px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Lev <input id="grid-lev" type="number" min="1" max="5" step="1" value="${Number((data.settings||{}).leverage ?? 5)}" onchange="saveGridSettings()" style="width:40px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Dừng khi giá ra khỏi range % <input id="grid-stop" type="number" min="0.5" max="20" step="0.5" value="${Number((data.settings||{}).stop_pct ?? 2)}" onchange="saveGridSettings()" style="width:46px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="${Number((data.settings||{}).max_loss_usdt ?? 2)}" onchange="saveGridSettings()" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
           </div>
-          <div style="font-size:10px;color:#8b949e">Tự dừng + đóng hết khi: giá ra khỏi range quá X% · lỗ (đã trừ phí, gồm lỗ đang mở) chạm Max lỗ · vị thế bị lệnh khác can thiệp. Bot Pause thì không đặt lệnh lưới mới nhưng vẫn canh dừng lỗ.</div>
+          <span id="grid-settings-saved" style="font-size:10px;color:#3fb950"></span>
+          <div style="font-size:10px;color:#8b949e">Thay đổi ô nào là tự LƯU (giữ sau khi restart). Tự dừng + đóng hết khi: giá ra khỏi range quá X% · lỗ (đã trừ phí, gồm lỗ đang mở) chạm Max lỗ · vị thế bị lệnh khác can thiệp. Bot Pause thì không đặt lệnh lưới mới nhưng vẫn canh dừng lỗ.</div>
           <div id="grid-last-attempt" style="margin-top:6px;font-size:11px"></div>
           <div id="grid-active" style="margin-top:6px"></div><div id="grid-history" style="margin-top:6px;font-size:11px"></div></div>`;
     }
@@ -1703,9 +1716,16 @@ function renderGridCopy(data) {
         hist.innerHTML = rows ? `<b>Lịch sử grid</b> · tổng ${money(total)}<div style="overflow-x:auto"><table><tr><th>Dừng lúc</th><th>Coin</th><th>Khớp</th><th>Lời/lỗ ròng</th><th>Lý do</th></tr>${rows}</table></div>` : '';
     }
 }
-async function startGridCopy(botId, sym) {
+async function saveGridSettings() {
     const v = id => Number(document.getElementById(id)?.value || 0);
-    const body = {bot_id: botId, margin_usdt: v('grid-margin'), leverage: v('grid-lev'), stop_pct: v('grid-stop'), max_loss_usdt: v('grid-maxloss')};
+    const r = await apiPost('/api/grid-copy/settings', {margin_usdt: v('grid-margin'), leverage: v('grid-lev'), stop_pct: v('grid-stop'), max_loss_usdt: v('grid-maxloss')});
+    const el = document.getElementById('grid-settings-saved');
+    if (el) { el.style.color = r.ok ? '#3fb950' : '#f85149'; el.textContent = r.ok ? '✓ Đã lưu' : ('Lỗi: ' + (r.error || '')); }
+    if (r.ok && _gridData) { _gridData.settings = r.settings; await refresh(); }
+}
+async function startGridCopy(botId, sym, margin) {
+    const gs = (_gridData && _gridData.settings) || {};
+    const body = {bot_id: botId, margin_usdt: margin, leverage: gs.leverage, stop_pct: gs.stop_pct, max_loss_usdt: gs.max_loss_usdt};
     if (!confirm(`Chạy grid THẬT ${sym}: margin $${body.margin_usdt} × ${body.leverage}x, max lỗ $${body.max_loss_usdt}?`)) return;
     const r = await apiPost('/api/grid-copy/start', body);
     toast(r.ok ? `Đã chạy grid ${sym}: ${r.grids} lưới${r.reduced ? ' (giảm để đủ vốn)' : ''}, đặt ${r.placed} lệnh` : (r.error || 'Lỗi'), !!r.ok);
@@ -6298,6 +6318,17 @@ def api_grid_copy_start():
         logger.error(f"[GridCopy] start failed: {exc}", exc_info=True)
         result = {"ok": False, "error": str(exc)[:200]}
     return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/grid-copy/settings", methods=["POST"])
+@require_auth
+def api_grid_copy_settings():
+    service = _grid_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    d = request.get_json() or {}
+    result = service.update_settings(d.get("margin_usdt"), d.get("leverage"), d.get("stop_pct"), d.get("max_loss_usdt"))
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 @app.route("/api/grid-copy/stop", methods=["POST"])
