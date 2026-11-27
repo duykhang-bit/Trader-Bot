@@ -43,7 +43,7 @@ MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min noti
 CYCLE_SECONDS = 5
 MAX_AVAILABLE_FRACTION = 0.75  # keep 25% free for fees/funding/other exits
 REQUIREMENT_REFRESH_S = 300
-BALANCE_REFRESH_S = 30
+BALANCE_REFRESH_S = 1800  # 30 phút; còn cập nhật ngay sau mỗi lần Copy/Dừng
 MIN_GRIDS = 5
 MAX_STEP_PCT = 3.0
 MISMATCH_CONFIRMATIONS = 3
@@ -328,6 +328,7 @@ class GridCopyService:
     def start_grid(self, **kwargs):
         """Start a grid and remember the outcome so the web can show it."""
         result = self._start_grid(**kwargs)
+        self._bal_ts = 0.0  # refresh balance on the next cycle
         with self._lock:
             self._data["last_attempt"] = {
                 "ts": self._now(), "symbol": str(kwargs.get("symbol") or ""),
@@ -644,6 +645,7 @@ class GridCopyService:
                 self._event_locked(f"STOP grid {symbol}: {reason}", symbol)
             self._persist_locked()
         self._symbols_changed()
+        self._bal_ts = 0.0
         self._notify(f"🔲 <b>GRID STOP</b> {symbol}\nLý do: {reason}")
         return {"ok": True}
 
