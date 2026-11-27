@@ -7956,11 +7956,30 @@ if __name__ == "__main__":
         logger.info("[CopyTrade] CLOSE %s %s qty=%s", symbol, item["side"], qty)
         return {"ok": True, "exit": exit_price}
 
+    def _copy_realized_pnl(symbol, start_ms, end_ms):
+        """Realized PnL + commission + funding for one copy window (Binance income)."""
+        records = exchange._get("/fapi/v1/income", {
+            "symbol": symbol, "startTime": int(start_ms), "endTime": int(end_ms), "limit": 1000,
+        }, signed=True) or []
+        realized = fee = 0.0
+        count = 0
+        for row in records:
+            kind = str(row.get("incomeType", ""))
+            value = float(row.get("income", 0) or 0)
+            if kind == "REALIZED_PNL":
+                realized += value
+                count += 1
+            elif kind in ("COMMISSION", "FUNDING_FEE", "INSURANCE_CLEAR"):
+                fee += value
+                count += 1
+        return {"ok": True, "realized": realized, "fee": fee, "records": count}
+
     copy_trading = CopyTradingService(
         config, exchange,
         open_callback=_copy_real_entry,
         close_callback=_copy_real_close,
         position_callback=exchange.get_position,
+        pnl_callback=_copy_realized_pnl,
         is_trading_enabled=lambda: bool(state.get("running")) and not bool(state.get("paused")),
     )
     state["_copy_trading_service"] = copy_trading
