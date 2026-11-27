@@ -1560,7 +1560,7 @@ function renderCopyTrading(data, botRunning) {
         const gs = (_gridData && _gridData.settings) || {};
         const levIn = Math.max(1, Math.min(5, Number(gs.leverage || 5)));
         const myMargin = Number(gs.margin_usdt || 0);
-        const canUse = Number.isFinite(avail) ? avail * 0.75 : null;
+        const canUse = Number.isFinite(avail) ? avail * 0.90 : null;
         const needCell = b => {
             const q = reqs[String(b.id)];
             if (!q) return '<span style="color:#6e7681">đang tính…</span>';
@@ -1595,7 +1595,7 @@ function renderCopyTrading(data, botRunning) {
         br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">Bấm Copy → bot đặt grid Neutral cùng coin/range/số lưới trên tài khoản của mày, dùng Margin/Lev/Stop/Max lỗ ở trên (không dùng Lev 50–75x của bot gốc). Vốn nhỏ thì số lưới tự giảm để mỗi lệnh đủ tối thiểu Binance.</span>
             <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th>Margin tối thiểu để copy</th><th></th></tr>${rows}</table></div>
             <div style="font-size:10px;color:#8b949e;margin-top:3px">Margin tối thiểu tính theo Lev đã lưu (${levIn}x), cập nhật mỗi 5 phút. Nút Copy ghi sẵn số tiền sẽ dùng = max(Margin đã lưu, mức tối thiểu).
-            ${canUse !== null ? `Hiện mày dùng được tối đa <b>$${canUse.toFixed(2)}</b> cho grid (75% số dư khả dụng $${avail.toFixed(2)}): <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
+            ${canUse !== null ? `Hiện mày dùng được tối đa <b>$${canUse.toFixed(2)}</b> cho grid (90% số dư khả dụng $${avail.toFixed(2)}): <b style="color:#3fb950">xanh</b> = đủ vốn, <b style="color:#f85149">đỏ</b> = chưa đủ.` : ''}</div>` : '';
     }
     const ev = document.getElementById('copy-events');
     if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
@@ -1711,7 +1711,8 @@ function renderGridCopy(data) {
     const balEl = document.getElementById('grid-balance');
     if (balEl && b.ts) balEl.innerHTML = `💰 Vốn $${Number(b.equity).toFixed(2)} · <b>khả dụng $${Number(b.available).toFixed(2)}</b>
         · lệnh chờ đang giữ $${Number(b.orders_margin).toFixed(2)} · vị thế đang giữ $${Number(b.positions_margin).toFixed(2)}
-        → grid dùng được tối đa <b style="color:#3fb950">$${Number(b.grid_cap).toFixed(2)}</b> (75% khả dụng).
+        → grid dùng được tối đa <b style="color:#3fb950">$${Number(b.grid_cap).toFixed(2)}</b> (90% khả dụng).
+        <button class="btn btn-blue btn-sm" onclick="refreshGridBalance()">🔄 Cập nhật số dư</button>
         ${Number(b.orders_margin) > 0 ? '<span style="color:#d29922">Muốn thêm tiền cho grid: hủy bớt lệnh chờ (Auto Liq…) để trả margin.</span>' : ''}
         <span style="color:#6e7681">(${new Date(Number(b.ts)*1000).toLocaleTimeString()})</span>`;
     const la = data.last_attempt || {};
@@ -1735,6 +1736,11 @@ function renderGridCopy(data) {
         const total = (data.history || []).filter(g => g.pnl_final).reduce((a,g)=>a+Number(g.final_pnl||0),0);
         hist.innerHTML = rows ? `<b>Lịch sử grid</b> · tổng ${money(total)}<div style="overflow-x:auto"><table><tr><th>Dừng lúc</th><th>Coin</th><th>Khớp</th><th>Lời/lỗ ròng</th><th>Lý do</th></tr>${rows}</table></div>` : '';
     }
+}
+async function refreshGridBalance() {
+    const r = await apiPost('/api/grid-copy/refresh-balance', {});
+    toast(r.ok ? `Khả dụng $${Number(r.balance.available).toFixed(2)} · grid dùng được $${Number(r.balance.grid_cap).toFixed(2)}` : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
 }
 async function saveGridSettings() {
     const v = id => Number(document.getElementById(id)?.value || 0);
@@ -6349,6 +6355,18 @@ def api_grid_copy_settings():
     d = request.get_json() or {}
     result = service.update_settings(d.get("margin_usdt"), d.get("leverage"), d.get("stop_pct"), d.get("max_loss_usdt"))
     return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/grid-copy/refresh-balance", methods=["POST"])
+@require_auth
+def api_grid_copy_refresh_balance():
+    service = _grid_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    try:
+        return jsonify({"ok": True, "balance": service.refresh_balance()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
 
 
 @app.route("/api/grid-copy/stop", methods=["POST"])
