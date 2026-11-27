@@ -41,7 +41,7 @@ CLIENT_PREFIX = "gridc_"
 MAX_LEVERAGE = 5
 MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min notional
 CYCLE_SECONDS = 5
-MAX_AVAILABLE_FRACTION = 0.75  # keep 25% free for fees/funding/other exits
+MAX_AVAILABLE_FRACTION = 0.90  # keep 10% free for fees/funding
 REQUIREMENT_REFRESH_S = 300
 BALANCE_REFRESH_S = 1800  # 30 phút; còn cập nhật ngay sau mỗi lần Copy/Dừng
 MIN_GRIDS = 5
