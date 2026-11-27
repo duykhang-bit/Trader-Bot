@@ -144,7 +144,8 @@ class GridCopyService:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
-        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {}}
+        self._data = {"grids": {}, "history": [], "events": [], "requirements": {}, "last_attempt": {},
+                      "settings": {"margin_usdt": 10.0, "leverage": 5, "stop_pct": 2.0, "max_loss_usdt": 2.0}}
         self._load()
 
     # ---------------- persistence ----------------
@@ -278,6 +279,25 @@ class GridCopyService:
         return result
 
     # ---------------- start ----------------
+    def update_settings(self, margin_usdt, leverage, stop_pct, max_loss_usdt):
+        try:
+            values = {"margin_usdt": round(float(margin_usdt), 2), "leverage": int(leverage),
+                      "stop_pct": float(stop_pct), "max_loss_usdt": float(max_loss_usdt)}
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Giá trị không hợp lệ"}
+        if not (1 <= values["margin_usdt"] <= 500):
+            return {"ok": False, "error": "Margin 1–500 USDT"}
+        if not (1 <= values["leverage"] <= MAX_LEVERAGE):
+            return {"ok": False, "error": f"Lev 1–{MAX_LEVERAGE}x"}
+        if not (0.5 <= values["stop_pct"] <= 20):
+            return {"ok": False, "error": "Dừng ngoài range 0.5–20%"}
+        if not (0.5 <= values["max_loss_usdt"] <= 500):
+            return {"ok": False, "error": "Max lỗ 0.5–500 USDT"}
+        with self._lock:
+            self._data["settings"] = values
+            self._persist_locked()
+        return {"ok": True, "settings": values}
+
     def start_grid(self, **kwargs):
         """Start a grid and remember the outcome so the web can show it."""
         result = self._start_grid(**kwargs)
