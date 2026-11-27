@@ -66,51 +66,68 @@ class RiskAlertTests(unittest.TestCase):
         self.assertAlmostEqual(p["sl_loss"], 2.0)
         self.assertAlmostEqual(p["sl_loss_pct"], 2.0)
 
-    def test_big_position_alerts_once_then_repeats_after_cooldown(self):
-        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])  # $140 = 4.2x equity
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
+    def stop_at(self, sym, price):
+        return {"symbol": sym, "orderType": "STOP_MARKET", "triggerPrice": str(price), "reduceOnly": True}
+
+    def test_notifies_once_per_level_never_repeats_on_time(self):
+        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])  # 424% equity -> CAO
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5)]
         self.svc.check_once()
         sent = self.n.telegram.sent
-        self.assertEqual(len(sent), 1)  # one bundled message, no duplicate account alert
+        self.assertEqual(len(sent), 1)
         self.assertIn("424% vốn", sent[0])
-        self.assertNotIn("TỔNG TÀI KHOẢN", sent[0])
         self.assertIn("mất 100% vốn khi giá ngược 23.57%", sent[0])
-        for _ in range(5):
+        for _ in range(300):  # 100 minutes at the same level
             self.clock[0] += 20
             self.svc.check_once()
         self.assertEqual(len(sent), 1)
-        self.clock[0] += 61 * 60
-        self.svc.check_once()
-        self.assertEqual(len(sent), 2)
 
-    def test_reason_change_same_level_does_not_resend(self):
+    def test_higher_level_notifies_again(self):
         self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5)]
         self.svc.check_once()
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "70.7", "reduceOnly": True}]
-        self.clock[0] += 20
-        self.svc.check_once()  # SL moved, loss now 4.2% -> still level CAO
-        self.assertEqual(len(self.n.telegram.sent), 1)
-
-    def test_escalation_sends_immediately(self):
-        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
-        self.svc.check_once()
-        self.ex.acc = account(33, [("SOLUSDT", 6, 70, 10)])  # 1272% equity -> CỰC CAO
+        self.ex.acc = account(33, [("SOLUSDT", 6, 70, 10)])  # 1272% -> CỰC CAO
         self.clock[0] += 20
         self.svc.check_once()
         self.assertEqual(len(self.n.telegram.sent), 2)
         self.assertIn("CỰC CAO", self.n.telegram.sent[1])
 
-    def test_transient_sl_gap_is_ignored(self):
-        self.ex.acc = account(100, [("SOLUSDT", 1, 70, 3)])
-        stop = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
-        self.ex.algo = stop
+    def test_lower_level_is_silent_and_rearms(self):
+        self.ex.acc = account(33, [("SOLUSDT", 6, 70, 10)])
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.9)]
         self.svc.check_once()
-        self.ex.algo = []          # monitor cancels the SL...
+        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])  # drops to CAO: silent
         self.clock[0] += 20
         self.svc.check_once()
-        self.ex.algo = stop        # ...and places the new one
+        self.assertEqual(len(self.n.telegram.sent), 1)
+        self.ex.acc = account(33, [("SOLUSDT", 6, 70, 10)])  # rises again: notify
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.assertEqual(len(self.n.telegram.sent), 2)
+
+    def test_back_to_safe_then_new_risk_notifies(self):
+        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5)]
+        self.svc.check_once()
+        self.ex.acc = account(33, [])
+        self.ex.algo = []
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.ex.acc = account(33, [("ETHUSDT", 0.04, 3500, 10)])
+        self.ex.algo = [self.stop_at("ETHUSDT", 3480)]
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.assertEqual(len(self.n.telegram.sent), 2)
+        self.assertIn("ETHUSDT", self.n.telegram.sent[1])
+
+    def test_transient_sl_gap_is_ignored(self):
+        self.ex.acc = account(100, [("SOLUSDT", 1, 70, 3)])
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5)]
+        self.svc.check_once()
+        self.ex.algo = []
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5)]
         self.clock[0] += 20
         self.svc.check_once()
         self.assertEqual(self.n.telegram.sent, [])
@@ -126,28 +143,13 @@ class RiskAlertTests(unittest.TestCase):
         self.assertEqual(len(self.n.telegram.sent), 1)
         self.assertIn("KHÔNG có SL", self.n.telegram.sent[0])
 
-    def test_one_message_per_hour_for_whole_account(self):
-        # Two big coins at once -> exactly one bundled message.
+    def test_two_coins_one_bundled_message(self):
         self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10), ("ETHUSDT", 0.08, 3500, 10)])
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True},
-                        {"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "triggerPrice": "3480", "reduceOnly": True}]
+        self.ex.algo = [self.stop_at("SOLUSDT", 69.5), self.stop_at("ETHUSDT", 3480)]
         self.svc.check_once()
-        sent = self.n.telegram.sent
-        self.assertEqual(len(sent), 1)
-        self.assertIn("SOLUSDT", sent[0])
-        self.assertIn("ETHUSDT", sent[0])
-        # Same level for the next 59 minutes: silence, even if a coin closes/reopens.
-        for k in range(59):
-            self.clock[0] += 60
-            if k == 10:
-                self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10)])
-            if k == 20:
-                self.ex.acc = account(100, [("SOLUSDT", 4, 70, 10), ("ETHUSDT", 0.08, 3500, 10)])
-            self.svc.check_once()
-        self.assertEqual(len(sent), 1)
-        self.clock[0] += 2 * 60
-        self.svc.check_once()
-        self.assertEqual(len(sent), 2)
+        self.assertEqual(len(self.n.telegram.sent), 1)
+        self.assertIn("SOLUSDT", self.n.telegram.sent[0])
+        self.assertIn("ETHUSDT", self.n.telegram.sent[0])
 
     def test_account_margin_usage_alert_includes_pending_orders(self):
         self.ex.acc = account(33, [], pos_margin=0, order_margin=32)
