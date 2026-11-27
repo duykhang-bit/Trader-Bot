@@ -8009,6 +8009,7 @@ if __name__ == "__main__":
         exchange, notifier=notifier, pnl_callback=_copy_realized_pnl,
         is_trading_enabled=lambda: bool(state.get("running")) and not bool(state.get("paused")),
         on_symbols_changed=_grid_symbols_changed,
+        bots_provider=lambda: copy_trading.snapshot().get("bots") or [],
     )
     state["_grid_copy_service"] = grid_copy
     grid_copy.start()
