@@ -41,6 +41,7 @@ CLIENT_PREFIX = "gridc_"
 MAX_LEVERAGE = 5
 MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min notional
 CYCLE_SECONDS = 5
+MAX_AVAILABLE_FRACTION = 0.75  # keep 25% free for fees/funding/other exits
 REQUIREMENT_REFRESH_S = 300
 MIN_GRIDS = 5
 MAX_STEP_PCT = 3.0
@@ -316,8 +317,9 @@ class GridCopyService:
         if ex._get("/fapi/v1/openOrders", {"symbol": symbol}, signed=True):
             return {"ok": False, "error": f"{symbol} đang có lệnh chờ — grid cần coin trống"}
         available = _f(ex.get_account_balance())
-        if available <= 0 or margin > available * 0.5:
-            return {"ok": False, "error": f"Margin grid phải ≤50% số dư khả dụng (${available:.2f})"}
+        if available <= 0 or margin > available * MAX_AVAILABLE_FRACTION:
+            return {"ok": False, "error": (f"Margin grid phải ≤{MAX_AVAILABLE_FRACTION*100:.0f}% số dư khả dụng: "
+                                           f"tối đa ${available * MAX_AVAILABLE_FRACTION:.2f} (khả dụng ${available:.2f})")}
         step, max_qty, decimals, min_notional = ex.get_qty_precision(symbol)
         step, min_notional = float(step), float(min_notional or 5.0)
         total_notional = margin * lev
