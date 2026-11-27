@@ -245,6 +245,7 @@ class RiskAlertService:
         if not settings.get("enabled", True):
             return report
         messages = []
+        levels = []
         current_syms = {p["symbol"] for p in report["positions"]}
         for p in report["positions"]:
             key = p["symbol"]
@@ -268,8 +269,8 @@ class RiskAlertService:
                 reasons.append(f"dính SL mất {p['sl_loss_pct']:.1f}% vốn (${p['sl_loss']:.2f})")
             if reasons:
                 level = self._position_level(p, missing_for)
-                if self._should_send(f"pos:{key}", level, settings, now):
-                    messages.append(self._position_text(p, report, reasons, level))
+                levels.append(level)
+                messages.append(self._position_text(p, report, reasons, level))
         with self._lock:
             tracked = self._data.setdefault("no_sl_since", {})
             for sym in list(tracked):
@@ -288,9 +289,12 @@ class RiskAlertService:
         single_dup = (len(report["positions"]) <= 1 and report["margin_pct"] <= settings["margin_warn_pct"])
         acct_level = max(lev_level(report["total_eff_lev"]), margin_level(report["margin_pct"]),
                          sl_level(report["sl_total_pct"]))
-        if account_reasons and not single_dup and self._should_send("acct", acct_level, settings, now):
+        if account_reasons and not single_dup:
+            levels.append(acct_level)
             messages.append(self._account_text(report, account_reasons))
-        if messages:
+        # Whole account: at most one Telegram per repeat window; earlier only
+        # if the worst level escalates (e.g. 🟠 -> 🔴).
+        if messages and self._should_send("account", max(levels), settings, now):
             self._send("\n\n".join(messages))
         return report
 
