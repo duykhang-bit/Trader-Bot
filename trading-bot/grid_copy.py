@@ -41,6 +41,8 @@ CLIENT_PREFIX = "gridc_"
 MAX_LEVERAGE = 5
 MIN_ORDER_NOTIONAL_BUFFER = 1.15  # place each order >= 1.15 x exchange min notional
 CYCLE_SECONDS = 5
+MIN_GRIDS = 5
+MAX_STEP_PCT = 3.0
 MISMATCH_CONFIRMATIONS = 3
 TERMINAL = {"CANCELED", "EXPIRED", "REJECTED", "EXPIRED_IN_MATCH"}
 
@@ -209,27 +211,42 @@ class GridCopyService:
         step, max_qty, decimals, min_notional = ex.get_qty_precision(symbol)
         step, min_notional = float(step), float(min_notional or 5.0)
         total_notional = margin * lev
-        per_order_min = max(min_notional * MIN_ORDER_NOTIONAL_BUFFER, step * upper)
-        fit = int(total_notional // per_order_min)
-        if min(grids, fit) < 2:
-            need = per_order_min * 2 / lev
-            return {"ok": False, "error": f"Vốn không đủ: cần margin ≥ ${need:.2f} ở {lev}x cho tối thiểu 2 lưới"}
-        # Same qty on every level (like Binance). Every order must clear the
-        # exchange minimum at the lowest level, and the sum of all resting
-        # orders must stay within the funded notional (+25% slack).
-        chosen = None
-        for count in range(min(grids, fit), 1, -1):
+        if grids < MIN_GRIDS:
+            return {"ok": False, "error": f"Bot gốc chỉ có {grids} lưới, cần ít nhất {MIN_GRIDS}"}
+
+        def step_pct(count):
+            lv = build_levels(lower, upper, count, kind)
+            return max((lv[i + 1] - lv[i]) / lv[i] for i in range(count)) * 100
+
+        def plan(count):
             levels = build_levels(lower, upper, count, kind)
             nearest_raw = min(range(len(levels)), key=lambda i: abs(levels[i] - price))
             qty = math.floor((total_notional / count) / price / step + 1e-12) * step
             qty_min = math.ceil(min_notional * MIN_ORDER_NOTIONAL_BUFFER / min(levels) / step - 1e-12) * step
             qty = round(max(qty, qty_min), int(decimals))
             resting = qty * sum(x for i, x in enumerate(levels) if i != nearest_raw)
+            return levels, qty, resting, round(qty_min, int(decimals))
+
+        # A copied grid must still be a real grid: >= MIN_GRIDS levels and
+        # each step <= MAX_STEP_PCT (or the source bot's own step if wider).
+        max_step = max(MAX_STEP_PCT, step_pct(grids) + 1e-9)
+        min_count = next((c for c in range(MIN_GRIDS, grids + 1) if step_pct(c) <= max_step), grids)
+        chosen = None
+        for count in range(grids, min_count - 1, -1):
+            levels, qty, resting, _ = plan(count)
             if qty > 0 and resting <= total_notional * 1.25:
                 chosen = (count, levels, qty)
                 break
         if chosen is None:
-            return {"ok": False, "error": "Vốn không đủ cho tối thiểu 2 lưới ở range này (range quá rộng so với vốn)"}
+            levels, _, _, qty_min = plan(min_count)
+            nearest_raw = min(range(len(levels)), key=lambda i: abs(levels[i] - price))
+            need_notional = qty_min * sum(x for i, x in enumerate(levels) if i != nearest_raw) / 1.25
+            need_margin = need_notional / lev
+            return {"ok": False, "error": (
+                f"Vốn không đủ cho grid đúng nghĩa: range này cần ≥{min_count} lưới "
+                f"(mỗi nấc ≤{max_step:.1f}%) → cần margin ≥ ${need_margin:.2f} ở {lev}x"
+                + (f" (hoặc ${need_notional / MAX_LEVERAGE:.2f} ở {MAX_LEVERAGE}x)" if lev < MAX_LEVERAGE else "")
+                + ". Chọn bot range hẹp hơn hoặc thêm vốn.")}
         count, levels, qty = chosen
         effective = int(ex.set_leverage(symbol, lev) or 0)
         if effective <= 0:
