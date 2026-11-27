@@ -69,30 +69,59 @@ class RiskAlertTests(unittest.TestCase):
     def test_big_position_alerts_once_then_repeats_after_cooldown(self):
         self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])  # $140 = 4.2x equity
         self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
-        pos = lambda: [t for t in self.n.telegram.sent if "KỶ LUẬT" in t]
-        acct = lambda: [t for t in self.n.telegram.sent if "TỔNG TÀI KHOẢN" in t]
         self.svc.check_once()
-        self.assertEqual(len(pos()), 1)
-        self.assertEqual(len(acct()), 1)  # 4.2x total > 4x
-        self.assertIn("424% vốn", pos()[0])
-        self.assertIn("mất 100% vốn khi giá ngược 23.57%", pos()[0])
+        sent = self.n.telegram.sent
+        self.assertEqual(len(sent), 1)  # one bundled message, no duplicate account alert
+        self.assertIn("424% vốn", sent[0])
+        self.assertNotIn("TỔNG TÀI KHOẢN", sent[0])
+        self.assertIn("mất 100% vốn khi giá ngược 23.57%", sent[0])
+        for _ in range(5):
+            self.clock[0] += 20
+            self.svc.check_once()
+        self.assertEqual(len(sent), 1)
+        self.clock[0] += 61 * 60
         self.svc.check_once()
-        self.assertEqual(len(pos()), 1)
-        self.clock[0] += 31 * 60
-        self.svc.check_once()
-        self.assertEqual(len(pos()), 2)
+        self.assertEqual(len(sent), 2)
 
-    def test_small_position_with_sl_is_quiet(self):
+    def test_reason_change_same_level_does_not_resend(self):
+        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])
+        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
+        self.svc.check_once()
+        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "70.7", "reduceOnly": True}]
+        self.clock[0] += 20
+        self.svc.check_once()  # SL moved, loss now 4.2% -> still level CAO
+        self.assertEqual(len(self.n.telegram.sent), 1)
+
+    def test_escalation_sends_immediately(self):
+        self.ex.acc = account(33, [("SOLUSDT", 2, 70, 10)])
+        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
+        self.svc.check_once()
+        self.ex.acc = account(33, [("SOLUSDT", 6, 70, 10)])  # 1272% equity -> CỰC CAO
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.assertEqual(len(self.n.telegram.sent), 2)
+        self.assertIn("CỰC CAO", self.n.telegram.sent[1])
+
+    def test_transient_sl_gap_is_ignored(self):
         self.ex.acc = account(100, [("SOLUSDT", 1, 70, 3)])
-        self.ex.algo = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69", "reduceOnly": True}]
+        stop = [{"symbol": "SOLUSDT", "orderType": "STOP_MARKET", "triggerPrice": "69.5", "reduceOnly": True}]
+        self.ex.algo = stop
+        self.svc.check_once()
+        self.ex.algo = []          # monitor cancels the SL...
+        self.clock[0] += 20
+        self.svc.check_once()
+        self.ex.algo = stop        # ...and places the new one
+        self.clock[0] += 20
         self.svc.check_once()
         self.assertEqual(self.n.telegram.sent, [])
 
-    def test_missing_sl_alerts_after_60s(self):
+    def test_missing_sl_alerts_after_grace(self):
         self.ex.acc = account(100, [("SOLUSDT", 1, 70, 3)])
         self.svc.check_once()
-        self.assertEqual(self.n.telegram.sent, [])
         self.clock[0] += 61
+        self.svc.check_once()
+        self.assertEqual(self.n.telegram.sent, [])
+        self.clock[0] += 30
         self.svc.check_once()
         self.assertEqual(len(self.n.telegram.sent), 1)
         self.assertIn("KHÔNG có SL", self.n.telegram.sent[0])
