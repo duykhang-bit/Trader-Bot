@@ -243,9 +243,18 @@ def _finish_pump_reservation(prepared, *, placed: bool, in_trade: bool = True):
         _pump_entry_coordinator.placement_failed(reservation)
 
 
+def _is_grid_symbol(symbol: str) -> bool:
+    """Symbols owned by GridCopyService: other monitors must not touch them."""
+    symbol = str(symbol or "").strip().upper()
+    with lock:
+        return symbol in state.get("grid_copy_symbols", set())
+
+
 def _is_protected_pending_symbol(symbol: str) -> bool:
     """Whether automatic/bulk cleanup must preserve every order on symbol."""
     symbol = str(symbol or "").strip().upper()
+    if _is_grid_symbol(symbol):
+        return True
     with lock:
         protected = tuple(state.get("protected_pending_order_coins", []))
     return any(
@@ -1962,7 +1971,8 @@ def price_ws_streamer():
                     return
 
                 # ── MAX LOSS REALTIME CHECK — check ngay trên WS tick ──
-                if getattr(config, "MAX_LOSS_ENABLED", True):
+                # Grid symbols use the grid's own whole-grid max loss.
+                if getattr(config, "MAX_LOSS_ENABLED", True) and not _is_grid_symbol(sym):
                     max_loss = getattr(config, "MAX_LOSS_PER_POSITION", 20.0)
                     with lock:
                         open_pos_ws = list(state.get("open_positions", []))
@@ -2358,7 +2368,7 @@ def price_updater(exchange):
                 for p in open_pos:
                     sym = p["symbol"]
                     amt = float(p.get("positionAmt", 0))
-                    if abs(amt) == 0:
+                    if abs(amt) == 0 or _is_grid_symbol(sym):
                         continue
 
                     # Tính PnL trực tiếp từ Binance (không dùng _pnl cache)
@@ -2685,7 +2695,7 @@ def position_reversal_monitor(exchange, notifier):
                     continue
 
                 # ── CHỈ áp dụng cho lệnh pump — bỏ qua lệnh scan thường ──
-                if symbol not in pump_trade_syms:
+                if symbol not in pump_trade_syms or _is_grid_symbol(symbol):
                     continue
 
                 side       = "SHORT" if amt < 0 else "LONG"
@@ -3002,7 +3012,7 @@ def scan_position_protector(exchange, notifier):
                     continue
 
                 # Chỉ xử lý lệnh SCAN thường — bỏ qua pump trades
-                if symbol in pump_trade_syms:
+                if symbol in pump_trade_syms or _is_grid_symbol(symbol):
                     continue
 
                 side       = "LONG" if amt > 0 else "SHORT"
@@ -3264,7 +3274,7 @@ def auto_profit_lock(exchange, notifier):
             for pos in open_positions:
                 sym     = pos.get("symbol", "")
                 amt     = float(pos.get("positionAmt", 0))
-                if amt == 0:
+                if amt == 0 or _is_grid_symbol(sym):
                     continue
 
                 entry      = float(pos.get("entryPrice", 0))
@@ -3423,7 +3433,7 @@ def mfe_scan_monitor(exchange, notifier):
                     continue
 
                 # Chỉ áp dụng cho lệnh KHÔNG phải pump
-                if sym in pump_syms:
+                if sym in pump_syms or _is_grid_symbol(sym):
                     continue
 
                 entry = float(pos.get("entryPrice", 0))
@@ -3577,8 +3587,7 @@ def trailing_profit_lock(exchange, notifier):
                 amt = float(pos.get("positionAmt", 0))
                 entry = float(pos.get("entryPrice", 0))
                 mark = float(pos.get("markPrice", 0))
-
-                if entry <= 0 or mark <= 0:
+                if entry <= 0 or mark <= 0 or _is_grid_symbol(sym):
                     continue
 
                 is_long = amt > 0
@@ -6344,7 +6353,7 @@ def limit_order_monitor(exchange, notifier):
                     for pos in unprotected:
                         sym = pos["symbol"]
                         # Bỏ qua nếu còn pending entry order chưa khớp
-                        if sym in pending_entry_syms:
+                        if sym in pending_entry_syms or _is_grid_symbol(sym):
                             logger.debug(f"[AutoSLTP] Skip {sym}: còn pending entry order")
                             continue
                         # Bỏ qua nếu đã đặt trong 5 phút gần đây
@@ -6522,6 +6531,8 @@ def profit_protection_monitor(exchange, notifier):
 
             for pos in open_pos:
                 sym    = pos["symbol"]
+                if _is_grid_symbol(sym):
+                    continue
                 # Fix 4: hỗ trợ cả Binance raw (positionAmt/entryPrice) và formatted (entry/side)
                 _pos_amt = pos.get("positionAmt")
                 if _pos_amt is not None:
@@ -7017,7 +7028,7 @@ def partial_tp_monitor(exchange, notifier):
                 symbol = pos["symbol"]
                 amt    = float(pos.get("positionAmt", 0))
                 entry  = float(pos.get("entryPrice", 0))
-                if entry <= 0 or amt == 0:
+                if entry <= 0 or amt == 0 or _is_grid_symbol(symbol):
                     continue
 
                 is_long  = amt > 0
@@ -7986,6 +7997,22 @@ if __name__ == "__main__":
     copy_trading.start()
     atexit.register(copy_trading.stop)
 
+    # Neutral grid copying a Binance grid bot's range/grid count. Its symbols
+    # are registered so every other monitor/cleanup leaves them alone.
+    from grid_copy import GridCopyService
+
+    def _grid_symbols_changed(symbols):
+        with lock:
+            state["grid_copy_symbols"] = set(symbols)
+
+    grid_copy = GridCopyService(
+        exchange, notifier=notifier, pnl_callback=_copy_realized_pnl,
+        is_trading_enabled=lambda: bool(state.get("running")) and not bool(state.get("paused")),
+        on_symbols_changed=_grid_symbols_changed,
+    )
+    state["_grid_copy_service"] = grid_copy
+    grid_copy.start()
+    atexit.register(grid_copy.stop)
     # Cancel/reconcile only deterministic pump-owned retest LIMITs. This runs
     # before pump_limit_orders is initialized so no old order can fill after
     # its SL/TP metadata has been discarded.
