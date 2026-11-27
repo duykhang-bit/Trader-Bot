@@ -6910,6 +6910,10 @@ def api_auto_sltp():
         from auto_sltp import get_positions_without_sltp, auto_set_sltp
         liq_tracker = _state.get("liq_tracker") if _state else None
         unprotected = get_positions_without_sltp(_exchange)
+        # Grid coins manage their own exits (range stop / max loss); a per-order
+        # SL/TP there would break the grid.
+        grid_syms = set(_state.get("grid_copy_symbols", set())) if _state else set()
+        unprotected = [p for p in unprotected if p.get("symbol") not in grid_syms]
 
         if symbol == "ALL":
             if not unprotected:
