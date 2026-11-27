@@ -1552,10 +1552,12 @@ function renderCopyTrading(data, botRunning) {
     }
     const br = document.getElementById('copy-bots');
     if (br) {
+        const gridActive = new Set(Object.keys((_gridData && _gridData.grids) || {}));
         const rows = (data.bots || []).map(b => `<tr><td>${esc(b.symbol)}</td><td style="color:#3fb950">${Number(b.roi).toFixed(0)}%</td><td>${Number(b.days).toFixed(0)}</td><td>${Number(b.mdd_7d).toFixed(1)}%</td>
-            <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td><td>$${Number(b.min_investment).toFixed(0)}</td></tr>`).join('');
-        br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">(Chỉ để xem: Binance KHÔNG cho tạo grid bot qua API nên bot không tự copy được. Muốn chạy thì vào app Binance → Giao dịch → Bot → Grid Futures → Quảng trường, chọn đúng coin/range/lưới rồi bấm Copy. Bảng lọc bot chạy ≥30 ngày; Lev 50–75x rất dễ cháy.)</span>
-            <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev</th><th>Vốn tối thiểu</th></tr>${rows}</table></div>` : '';
+            <td>${esc(b.lower)}–${esc(b.upper)}</td><td>${esc(b.grids)}</td><td>${esc(b.leverage)}x</td>
+            <td>${gridActive.has(b.symbol) ? '<span style="color:#3fb950">đang chạy</span>' : `<button class="btn btn-green btn-sm" onclick="startGridCopy('${esc(b.id)}', '${esc(b.symbol)}')">Copy</button>`}</td></tr>`).join('');
+        br.innerHTML = rows ? `<b>Top Grid Bot Futures Binance</b> <span style="font-size:9px;color:#8b949e">Bấm Copy → bot đặt grid Neutral cùng coin/range/số lưới trên tài khoản của mày, dùng Margin/Lev/Stop/Max lỗ ở trên (không dùng Lev 50–75x của bot gốc). Vốn nhỏ thì số lưới tự giảm để mỗi lệnh đủ tối thiểu Binance.</span>
+            <div style="overflow-x:auto"><table><tr><th>Coin</th><th>ROI</th><th>Ngày</th><th>MDD 7d</th><th>Range</th><th>Lưới</th><th>Lev gốc</th><th></th></tr>${rows}</table></div>` : '';
     }
     const ev = document.getElementById('copy-events');
     if (ev) ev.innerHTML = (data.events || []).slice(-8).reverse().map(e => `${new Date(Number(e.ts)*1000).toLocaleTimeString()} · ${esc(e.msg)}`).join('<br>');
@@ -1575,6 +1577,58 @@ async function saveCopySettings() {
 async function followCopyLeader(id, enabled) {
     const r = await apiPost('/api/copy-trading/follow', {id, enabled});
     toast(r.ok ? (enabled ? `Đã copy · bỏ qua ${r.ignored_existing||0} vị thế cũ, chờ lệnh mới` : 'Đã bỏ copy') : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+let _gridData = {grids:{}, history:[], events:[]};
+let _gridInputsInit = false;
+function renderGridCopy(data) {
+    if (!data) return;
+    _gridData = data;
+    const root = document.getElementById('grid-copy-panel');
+    if (!root) return;
+    const esc = _macroEsc;
+    const money = v => { const n = Number(v||0); return `<b style="color:${n>=0?'#3fb950':'#f85149'}">${n>=0?'+':''}$${n.toFixed(2)}</b>`; };
+    if (!document.getElementById('grid-margin')) {
+        root.innerHTML = `<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px">
+          <b>🔲 Grid copy của mày</b>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;margin:5px 0">
+            Margin $<input id="grid-margin" type="number" min="1" max="500" step="1" value="10" style="width:52px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Lev <input id="grid-lev" type="number" min="1" max="5" step="1" value="3" style="width:40px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Dừng khi giá ra khỏi range % <input id="grid-stop" type="number" min="0.5" max="20" step="0.5" value="2" style="width:46px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+            Max lỗ $ <input id="grid-maxloss" type="number" min="0.5" max="500" step="0.5" value="3" style="width:50px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:3px;color:#e6edf3">
+          </div>
+          <div style="font-size:10px;color:#8b949e">Tự dừng + đóng hết khi: giá ra khỏi range quá X% · lỗ (đã trừ phí, gồm lỗ đang mở) chạm Max lỗ · vị thế bị lệnh khác can thiệp. Bot Pause thì không đặt lệnh lưới mới nhưng vẫn canh dừng lỗ.</div>
+          <div id="grid-active" style="margin-top:6px"></div><div id="grid-history" style="margin-top:6px;font-size:11px"></div></div>`;
+    }
+    const grids = Object.values(data.grids || {});
+    const act = document.getElementById('grid-active');
+    if (act) act.innerHTML = grids.length ? `<div class="alq-grid">${grids.map(g => `<div class="alq-card" style="border-left:3px solid ${Number(g.pnl||0)>=0?'#3fb950':'#f85149'}">
+        <div class="alq-head"><span class="alq-title">${esc(g.symbol)} · ${esc(g.status)}</span><button class="btn btn-red btn-sm" onclick="stopGridCopy('${esc(g.symbol)}')">Dừng & đóng</button></div>
+        <div style="font-size:11px">Range ${Number(g.lower).toPrecision(6)}–${Number(g.upper).toPrecision(6)} · ${g.grids} lưới${g.grids < g.source_grids ? ` (gốc ${g.source_grids})` : ''} · qty ${g.qty}/lệnh · ${g.leverage}x · margin $${Number(g.margin).toFixed(2)}<br>
+        Giá ${Number(g.mark||0).toPrecision(6)} · Vị thế ${Number(g.position||0)} · Lệnh chờ ${g.open_orders} · Khớp ${g.fills} (mua ${g.buys}/bán ${g.sells})<br>
+        Đã chốt ${money(Number(g.realized||0)+Number(g.fee||0))} · Đang mở ${money(g.unrealized)} · <b>Tổng ${money(g.pnl)}</b> · Max lỗ $${Number(g.max_loss).toFixed(2)}<br>
+        <span style="font-size:10px;color:#8b949e">Chạy từ ${new Date(Number(g.started_at)*1000).toLocaleString()}</span>
+        ${g.error ? `<div style="color:#f85149;font-size:10px">${esc(g.error)}</div>` : ''}</div></div>`).join('')}</div>` : '<span style="font-size:11px;color:#6e7681">Chưa chạy grid nào — bấm Copy ở bảng Top Grid Bot bên dưới.</span>';
+    const hist = document.getElementById('grid-history');
+    if (hist) {
+        const rows = (data.history || []).slice().reverse().map(g => `<tr><td>${new Date(Number(g.stopped_at||0)*1000).toLocaleString()}</td><td>${esc(g.symbol)}</td><td>${g.fills}</td>
+            <td>${g.pnl_final ? money(g.final_pnl) : '<span style="color:#8b949e">đang tính…</span>'}</td><td style="font-size:10px">${esc(g.stop_reason||'')}</td></tr>`).join('');
+        const total = (data.history || []).filter(g => g.pnl_final).reduce((a,g)=>a+Number(g.final_pnl||0),0);
+        hist.innerHTML = rows ? `<b>Lịch sử grid</b> · tổng ${money(total)}<div style="overflow-x:auto"><table><tr><th>Dừng lúc</th><th>Coin</th><th>Khớp</th><th>Lời/lỗ ròng</th><th>Lý do</th></tr>${rows}</table></div>` : '';
+    }
+}
+async function startGridCopy(botId, sym) {
+    const v = id => Number(document.getElementById(id)?.value || 0);
+    const body = {bot_id: botId, margin_usdt: v('grid-margin'), leverage: v('grid-lev'), stop_pct: v('grid-stop'), max_loss_usdt: v('grid-maxloss')};
+    if (!confirm(`Chạy grid THẬT ${sym}: margin $${body.margin_usdt} × ${body.leverage}x, max lỗ $${body.max_loss_usdt}?`)) return;
+    const r = await apiPost('/api/grid-copy/start', body);
+    toast(r.ok ? `Đã chạy grid ${sym}: ${r.grids} lưới${r.reduced ? ' (giảm để đủ vốn)' : ''}, đặt ${r.placed} lệnh` : (r.error || 'Lỗi'), !!r.ok);
+    await refresh();
+}
+async function stopGridCopy(sym) {
+    if (!confirm(`Dừng grid ${sym}: hủy hết lệnh lưới và đóng vị thế MARKET?`)) return;
+    const r = await apiPost('/api/grid-copy/stop', {symbol: sym});
+    toast(r.ok ? `Đã dừng grid ${sym}` : (r.error || 'Lỗi'), !!r.ok);
     await refresh();
 }
 async function closeCopyTrade(id, sym) {
@@ -2569,6 +2623,7 @@ function renderDashboard(d) {
         <div id="copy-open" style="margin-top:8px"></div>
         <div id="copy-history" style="margin-top:8px;font-size:11px"></div>
         <div id="copy-leaders" style="margin-top:8px;font-size:11px"></div>
+        <div id="grid-copy-panel" style="margin-top:10px"></div>
         <div id="copy-bots" style="margin-top:8px;font-size:11px"></div>
         <div id="copy-events" style="margin-top:8px;font-size:10px;color:#8b949e"></div>
     </div>`;
@@ -4905,6 +4960,7 @@ async function refresh(){
             if (_macroCalendarData) renderMacroCalendar();
             renderAutoLiqZone(d.auto_liq_zone);
             renderIntradayPaper(d.intraday_paper, d.open_positions, d.running);
+            renderGridCopy(d.grid_copy);
             renderCopyTrading(d.copy_trading, d.running);
             if (_newsData) renderNews();
             if (_pnlData)  renderPnlStats();
@@ -4954,6 +5010,7 @@ function _patchDashboard(d) {
     // Auto liquidity-zone cards (data is local service snapshot, no network call).
     renderAutoLiqZone(d.auto_liq_zone);
     renderIntradayPaper(d.intraday_paper);
+    renderGridCopy(d.grid_copy);
     renderCopyTrading(d.copy_trading, d.running);
 
     // Bot status dot
@@ -5760,6 +5817,7 @@ def api_state():
         "auto_liq_zone": _get_auto_liq_zone_safe(),
         "intraday_paper": _get_intraday_paper_safe(),
         "copy_trading": _get_copy_trading_safe(),
+        "grid_copy": _get_grid_copy_safe(),
         "ai_bias": _get_ai_bias_safe(),
     })
     return resp
@@ -6068,6 +6126,56 @@ def _get_auto_liq_zone_safe():
         }
     except Exception as exc:
         return {"enabled": False, "items": [], "errors": [str(exc)]}
+
+
+def _grid_service():
+    with _lock:
+        return _state.get("_grid_copy_service") if _state else None
+
+
+def _get_grid_copy_safe():
+    try:
+        service = _grid_service()
+        return service.snapshot() if service else {"grids": {}, "history": [], "events": []}
+    except Exception as exc:
+        return {"grids": {}, "history": [], "events": [], "error": str(exc)}
+
+
+@app.route("/api/grid-copy/start", methods=["POST"])
+@require_auth
+def api_grid_copy_start():
+    service = _grid_service()
+    copy_service = _copy_service()
+    if service is None or copy_service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    d = request.get_json() or {}
+    bot_id = str(d.get("bot_id") or "")
+    source = next((b for b in (copy_service.snapshot().get("bots") or [])
+                   if str(b.get("id")) == bot_id), None)
+    if source is None:
+        return jsonify({"ok": False, "error": "Không tìm thấy bot trong danh sách, bấm Cập nhật top"}), 404
+    try:
+        result = service.start_grid(
+            symbol=source.get("symbol"), lower=source.get("lower"), upper=source.get("upper"),
+            grids=source.get("grids"), kind=source.get("type") or "ARITHMETIC",
+            margin_usdt=d.get("margin_usdt"), leverage=d.get("leverage"),
+            stop_pct=d.get("stop_pct", 2), max_loss_usdt=d.get("max_loss_usdt"),
+            source={"bot_id": bot_id, "roi": source.get("roi"), "leverage": source.get("leverage")},
+        )
+    except Exception as exc:
+        logger.error(f"[GridCopy] start failed: {exc}", exc_info=True)
+        result = {"ok": False, "error": str(exc)[:200]}
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
+@app.route("/api/grid-copy/stop", methods=["POST"])
+@require_auth
+def api_grid_copy_stop():
+    service = _grid_service()
+    if service is None:
+        return jsonify({"ok": False, "error": "Dịch vụ chưa khởi động"}), 503
+    result = service.stop_grid((request.get_json() or {}).get("symbol"), "Dừng tay trên web")
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 def _copy_service():
